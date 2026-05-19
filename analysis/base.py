@@ -6,6 +6,19 @@ from typing import Literal
 import pandas as pd
 
 Status = Literal["bullish", "bearish", "neutral"]
+Strength = Literal["Strong", "Medium", "Weak"]
+
+STRENGTH_COLORS: dict[str, str] = {
+    "Strong": "#155724",
+    "Medium": "#856404",
+    "Weak": "#721c24",
+}
+
+STRENGTH_BG: dict[str, str] = {
+    "Strong": "#d4edda",
+    "Medium": "#fff3cd",
+    "Weak": "#f8d7da",
+}
 
 
 class BaseAnalysis(ABC):
@@ -21,6 +34,7 @@ class BaseAnalysis(ABC):
 
         Returns:
             Dictionary of analysis results specific to the subclass.
+            Must include 'strength' key with a Strength value.
         """
 
     @abstractmethod
@@ -29,6 +43,14 @@ class BaseAnalysis(ABC):
 
         Returns:
             "bullish", "bearish", or "neutral".
+        """
+
+    @abstractmethod
+    def get_strength(self) -> Strength:
+        """Return the signal confidence rating after running analyse().
+
+        Returns:
+            "Strong", "Medium", or "Weak".
         """
 
     @abstractmethod

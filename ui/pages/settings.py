@@ -3,15 +3,17 @@
 import streamlit as st
 
 from config.credentials import clear_credentials
+from config.preferences import load_preferences, reset_preferences
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
-from storage.database import db_path
+from storage.database import clear_all_analysis_history, clear_all_notes, db_path
+from utils.export import exports_dir
 
 
 def render_settings() -> None:
     """Render the application settings page."""
     st.title("⚙️ Settings")
 
-    # App info
+    # ---------- About ----------
     st.markdown("### About")
     col1, col2 = st.columns(2)
     with col1:
@@ -22,19 +24,64 @@ def render_settings() -> None:
 
     st.markdown("---")
 
-    # Database info
+    # ---------- Storage ----------
     st.markdown("### Storage")
-    st.info(f"Database location: `{db_path()}`")
+    st.info(f"Database: `{db_path()}`")
 
     st.markdown("---")
 
-    # Credentials management
+    # ---------- User Preferences ----------
+    st.markdown("### User Preferences")
+    st.caption("Preferences are saved automatically when you change selections in the sidebar.")
+    try:
+        prefs = load_preferences()
+        st.json(prefs, expanded=True)
+    except Exception:
+        st.caption("No saved preferences found.")
+
+    if st.button("Reset Preferences to Defaults", type="secondary", use_container_width=False):
+        try:
+            reset_preferences()
+            st.success("Preferences reset to defaults.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Failed to reset preferences: {exc}")
+
+    st.markdown("---")
+
+    # ---------- Data Management ----------
+    st.markdown("### Data Management")
+    st.warning(
+        "These actions are irreversible. Analysis history and notes will be permanently deleted."
+    )
+
+    dm1, dm2 = st.columns(2)
+    with dm1:
+        if st.button("Clear All Analysis History", type="secondary", use_container_width=True):
+            try:
+                clear_all_analysis_history()
+                st.success("All analysis history cleared.")
+            except Exception as exc:
+                st.error(f"Failed to clear history: {exc}")
+    with dm2:
+        if st.button("Clear All Stock Notes", type="secondary", use_container_width=True):
+            try:
+                clear_all_notes()
+                st.success("All stock notes cleared.")
+            except Exception as exc:
+                st.error(f"Failed to clear notes: {exc}")
+
+    st.markdown("---")
+
+    # ---------- Credentials ----------
     st.markdown("### Credentials")
-    st.warning("Clearing credentials will require re-entering API keys on next run.")
+    st.caption("Clearing credentials will require re-entering API keys on next run.")
 
     col_a, col_b = st.columns(2)
     with col_a:
-        source_to_clear = st.selectbox("Clear credentials for", ["All sources"] + SUPPORTED_DATA_SOURCES)
+        source_to_clear = st.selectbox(
+            "Clear credentials for", ["All sources"] + SUPPORTED_DATA_SOURCES
+        )
     with col_b:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Clear Credentials", type="secondary"):
@@ -54,21 +101,35 @@ def render_settings() -> None:
 
     st.markdown("---")
 
-    # Pending features roadmap
+    # ---------- Exports ----------
+    st.markdown("### Exports")
+    export_path = exports_dir()
+    st.info(f"Export files are saved to: `{export_path}`")
+    st.caption("Navigate to that folder manually to access exported Excel and PDF files.")
+
+    st.markdown("---")
+
+    # ---------- Roadmap ----------
     st.markdown("### Pending Features Roadmap")
-    pending = [
+    roadmap = [
+        "Dark theme toggle",
+        "Telegram alert notifications",
+        "Email alert notifications",
+        "Live market news feed",
+        "Multi-exchange global support (NYSE, NASDAQ, LSE)",
+        "Backtesting engine with historical signal replay",
+        "Docker containerisation for one-command setup",
+        "TradingView full data integration (pending stable library)",
+        "Increase watchlist limit beyond 10",
+        "Run multiple analysis types simultaneously",
         "Real-time auto-refresh every 5 minutes during market hours",
-        "Zerodha Kite Connect full integration (historical data + orders)",
-        "Upstox API full integration (instrument key mapping)",
-        "TradingView full historical data support",
-        "NSE India historical data scraping",
+        "Zerodha Kite Connect order placement integration",
+        "Upstox API instrument key mapping",
         "Portfolio P&L tracking",
-        "Email / push alert notifications",
         "Custom alert conditions (price triggers, RSI thresholds)",
         "Multi-timeframe analysis overlay",
-        "Export analysis report to PDF",
-        "Chart drawing tools (trend lines, Fibonacci)",
+        "Chart drawing tools (trend lines, Fibonacci retracements)",
         "Sector-wise heatmap view",
     ]
-    for item in pending:
+    for item in roadmap:
         st.markdown(f"- {item}")

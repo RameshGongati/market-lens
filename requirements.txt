@@ -7,8 +7,12 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 kiteconnect>=5.0.1
 upstox-python-sdk>=2.9.0
-tvdatafeed>=2.0.0
 cryptography>=42.0.0
 apscheduler>=3.10.4
 python-dotenv>=1.0.1
 pytz>=2024.1
+openpyxl>=3.1.0
+reportlab>=4.0.0
+# tvdatafeed - NOT available on PyPI or GitHub currently
+# TradingView integration is scaffolded but pending a stable library
+# Pending item - Phase 3
