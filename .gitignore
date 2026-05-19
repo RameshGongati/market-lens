@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.streamlit/
+
+# Market Lens specific
+*.db
+*.db-journal
+credentials.json
+.market-lens/
