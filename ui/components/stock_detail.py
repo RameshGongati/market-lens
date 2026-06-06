@@ -15,6 +15,7 @@ from storage.database import (
     get_notes,
     save_note,
 )
+from ui.components.tradingview_chart import render_tradingview_chart
 from utils.helpers import format_timestamp, get_company_name
 from utils.logger import get_logger
 
@@ -107,26 +108,43 @@ def render_stock_detail(
             logger.warning("Fallback chart fetch failed for %s: %s", symbol, exc)
             history_df = None
 
-    # Chart controls row: type toggle on the left, period selector on the right
+    # Chart controls row: type toggle on the left, period selector on the right.
+    # The period selector only applies to the Plotly-rendered chart types —
+    # the TradingView widget has its own built-in timeframe controls.
     ct_col, pd_col = st.columns([2, 5])
     with ct_col:
         chart_type = st.radio(
             "Chart Type",
-            ["Candlestick", "Line"],
+            ["Candlestick", "Line", "TradingView"],
             horizontal=True,
             key="chart_type_radio",
         )
-    with pd_col:
-        selected_period = st.radio(
-            "Period",
-            list(_PERIOD_DAYS.keys()),
-            index=4,           # default: 1Y (show all fetched data)
-            horizontal=True,
-            key="chart_period_radio",
-            label_visibility="collapsed",
-        )
+    selected_period = "1Y"
+    if chart_type != "TradingView":
+        with pd_col:
+            selected_period = st.radio(
+                "Period",
+                list(_PERIOD_DAYS.keys()),
+                index=4,           # default: 1Y (show all fetched data)
+                horizontal=True,
+                key="chart_period_radio",
+                label_visibility="collapsed",
+            )
 
-    if history_df is not None and not history_df.empty:
+    if chart_type == "TradingView":
+        render_tradingview_chart(
+            symbol=symbol,
+            exchange=exchange,
+            height=600,
+            default_interval="D",
+            compact=False,
+            theme="light",
+        )
+        st.caption(
+            "💡 TradingView chart includes live data, all timeframes and drawing tools. "
+            "Use ⛶ button for full screen view."
+        )
+    elif history_df is not None and not history_df.empty:
         # Slice the 1-year dataset to the selected period without a new fetch
         df_view = _filter_by_period(history_df, selected_period)
         fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)

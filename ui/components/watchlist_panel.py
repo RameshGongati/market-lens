@@ -7,6 +7,7 @@ import streamlit as st
 
 from config.settings import EXCHANGES, MAX_STOCKS_PER_WATCHLIST, MAX_WATCHLISTS
 from data.manager import DataSourceManager
+from ui.components.tradingview_chart import render_tradingview_chart
 from utils.helpers import format_currency, search_stocks
 from utils.logger import get_logger
 from watchlist.manager import (
@@ -242,7 +243,14 @@ def render_watchlist_panel() -> None:
 
         for stock in stocks:
             price_data = prices.get(stock.symbol)
-            sc1, sc2 = st.columns([5, 1])
+
+            # Per-stock session-state flag controlling the inline TradingView
+            # mini-chart toggle. Initialised once so the key is always present
+            # before the toggle button or the conditional render below reads it.
+            chart_key = f"show_tv_chart_{stock.id}"
+            st.session_state.setdefault(chart_key, False)
+
+            sc1, sc2, sc3 = st.columns([5, 1, 1])
 
             with sc1:
                 if price_data and price_data.get("price", 0) > 0:
@@ -273,9 +281,34 @@ def render_watchlist_panel() -> None:
                     )
 
             with sc2:
+                chart_icon = "📉" if st.session_state[chart_key] else "📈"
+                if st.button(
+                    chart_icon,
+                    key=f"tv_toggle_{stock.id}",
+                    help="Show/hide TradingView chart",
+                ):
+                    st.session_state[chart_key] = not st.session_state[chart_key]
+
+            with sc3:
                 if st.button("✕", key=f"rem_stock_{stock.id}"):
                     remove_stock(selected_wl.id, stock.id)
                     st.rerun()
+
+            # Expandable inline TradingView mini-chart for this stock
+            if st.session_state[chart_key]:
+                st.markdown("---")
+                render_tradingview_chart(
+                    symbol=stock.symbol,
+                    exchange=stock.exchange,
+                    height=420,
+                    default_interval="D",
+                    compact=True,
+                    theme="light",
+                )
+                st.caption(
+                    "💡 Click ⛶ for full screen view. Scroll inside chart to zoom in/out."
+                )
+                st.markdown("---")
     else:
         st.caption("No stocks in this watchlist yet.")
 
