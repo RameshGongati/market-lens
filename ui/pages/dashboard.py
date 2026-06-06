@@ -1,5 +1,6 @@
 """Main dashboard page — watchlist analysis grid."""
 
+import yfinance as yf
 import streamlit as st
 
 from alerts.manager import check_and_trigger_alerts
@@ -280,12 +281,30 @@ def _render_detail_view() -> None:
     exchange = result.get("exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
+    # Fetch 1-year daily OHLCV data for the chart.
+    # Cached per symbol so reruns (radio buttons, notes, etc.) skip the fetch.
+    cache_key = f"detail_hist_{symbol}"
+    history_df = st.session_state.get(cache_key)
+
+    if history_df is None or getattr(history_df, "empty", True):
+        try:
+            suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
+            hist = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
+            if not hist.empty:
+                st.session_state[cache_key] = hist
+                history_df = hist
+            else:
+                history_df = None
+        except Exception as exc:
+            logger.warning("History prefetch failed for %s: %s", symbol, exc)
+            history_df = None
+
     render_stock_detail(
         symbol=symbol,
         exchange=exchange,
         analysis_type=analysis_type,
         result=result,
-        history_df=None,
+        history_df=history_df,
         stock_id=stock_id,
     )
 

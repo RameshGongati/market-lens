@@ -22,6 +22,9 @@ logger = get_logger(__name__)
 
 _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
 
+# Lookback windows (calendar days) for the period selector buttons
+_PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+
 
 def render_stock_detail(
     symbol: str,
@@ -90,18 +93,49 @@ def render_stock_detail(
 
     # ---------- Chart section ----------
     st.markdown("### Price Chart")
-    chart_type = st.radio(
-        "Chart Type",
-        ["Candlestick", "Line"],
-        horizontal=True,
-        key="chart_type_radio",
-    )
+
+    # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
+    # user navigated here without running a full analysis), try fetching 1 year
+    # of daily data directly from Yahoo Finance before giving up.
+    if history_df is None or history_df.empty:
+        try:
+            import yfinance as yf
+            suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
+            fetched = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
+            history_df = fetched if not fetched.empty else None
+        except Exception as exc:
+            logger.warning("Fallback chart fetch failed for %s: %s", symbol, exc)
+            history_df = None
+
+    # Chart controls row: type toggle on the left, period selector on the right
+    ct_col, pd_col = st.columns([2, 5])
+    with ct_col:
+        chart_type = st.radio(
+            "Chart Type",
+            ["Candlestick", "Line"],
+            horizontal=True,
+            key="chart_type_radio",
+        )
+    with pd_col:
+        selected_period = st.radio(
+            "Period",
+            list(_PERIOD_DAYS.keys()),
+            index=4,           # default: 1Y (show all fetched data)
+            horizontal=True,
+            key="chart_period_radio",
+            label_visibility="collapsed",
+        )
 
     if history_df is not None and not history_df.empty:
-        fig = _build_chart(symbol, history_df, result, analysis_type, chart_type)
+        # Slice the 1-year dataset to the selected period without a new fetch
+        df_view = _filter_by_period(history_df, selected_period)
+        fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Price chart unavailable — historical data was not passed to this view.")
+        st.warning(
+            "Unable to load chart data. "
+            "Please check your internet connection and try again."
+        )
 
     st.markdown("---")
 
@@ -172,6 +206,32 @@ def _render_metrics(result: dict[str, Any], analysis_type: str) -> None:
     for col, (label, value) in zip(cols, metrics):
         with col:
             st.metric(label, value)
+
+
+# ---------------------------------------------------------------------------
+# Period filter helper
+# ---------------------------------------------------------------------------
+
+def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
+    """Return the slice of *df* covering the requested lookback period.
+
+    Handles both tz-aware and tz-naive DatetimeIndex so the comparison
+    never raises a mixed-timezone TypeError.  Falls back to the full
+    DataFrame if the sliced result would be empty.
+
+    Args:
+        df: OHLCV DataFrame with a DatetimeIndex.
+        period: One of "1W", "1M", "3M", "6M", "1Y".
+
+    Returns:
+        Sliced (or original) DataFrame.
+    """
+    days = _PERIOD_DAYS.get(period, 365)
+    tz = df.index.tz                              # None for tz-naive index
+    now = pd.Timestamp.now(tz=tz)
+    cutoff = now - pd.Timedelta(days=days)
+    sliced = df[df.index >= cutoff]
+    return sliced if not sliced.empty else df
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +355,16 @@ def _build_chart(
         fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
 
     fig.update_layout(
-        height=520 + (120 if show_rsi else 0),
+        height=500 + (120 if show_rsi else 0),
         template="plotly_white",
-        xaxis_rangeslider_visible=False,
+        xaxis_rangeslider_visible=False,   # hide default rangeslider on price row
         margin={"t": 40, "b": 20, "l": 60, "r": 20},
         hovermode="x unified",
+    )
+    # Place the rangeslider at the very bottom of the chart (below the last subplot)
+    bottom_xaxis = f"xaxis{rows}"   # "xaxis2" for 2-row, "xaxis3" for 3-row
+    fig.update_layout(
+        **{bottom_xaxis: {"rangeslider": {"visible": True, "thickness": 0.04}}}
     )
     fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
