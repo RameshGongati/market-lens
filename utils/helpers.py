@@ -104,12 +104,19 @@ def get_company_name(symbol: str) -> str:
     return symbol
 
 
-def search_stocks(query: str, limit: int = 10) -> list[dict[str, str]]:
-    """Search stocks by symbol or company name prefix.
+def search_stocks(query: str, limit: int = 20) -> list[dict[str, str]]:
+    """Search stocks by symbol or company name substring.
+
+    Results are ordered by match quality:
+    1. Exact symbol match (e.g. "ITC" → ITC Ltd).
+    2. Symbol starts with the query (e.g. "SUZ" → SUZLON).
+    3. All other matches where the query appears anywhere in the
+       symbol or the company name (e.g. "suz" also matches MARUTI
+       because its full name contains "Suzuki").
 
     Args:
-        query: Search string (case-insensitive).
-        limit: Maximum number of results to return.
+        query: Search string (case-insensitive, minimum 1 character).
+        limit: Maximum number of results to return (default 20).
 
     Returns:
         List of matching stock dicts with symbol, name, exchange keys.
@@ -117,11 +124,22 @@ def search_stocks(query: str, limit: int = 10) -> list[dict[str, str]]:
     if not query or len(query) < 1:
         return []
     q = query.upper()
-    results = [
-        s for s in _load_stock_list()
-        if q in s.get("symbol", "").upper() or q in s.get("name", "").upper()
-    ]
-    return results[:limit]
+
+    exact_sym: list[dict[str, str]] = []
+    starts_sym: list[dict[str, str]] = []
+    other: list[dict[str, str]] = []
+
+    for s in _load_stock_list():
+        sym = s.get("symbol", "").upper()
+        name = s.get("name", "").upper()
+        if sym == q:
+            exact_sym.append(s)
+        elif sym.startswith(q):
+            starts_sym.append(s)
+        elif q in sym or q in name:
+            other.append(s)
+
+    return (exact_sym + starts_sym + other)[:limit]
 
 
 def safe_get(data: dict[str, Any], key: str, default: Any = None) -> Any:

@@ -14,6 +14,36 @@ from watchlist.manager import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Search callback (module-level so Streamlit can identify it across reruns)
+# ---------------------------------------------------------------------------
+
+def _on_stock_selected() -> None:
+    """on_change callback for the search results selectbox.
+
+    Parses the selected option string (``"SYMBOL — Name (EXCHANGE)"``),
+    pre-fills the symbol and exchange session-state keys so the input
+    widgets below reflect the selection immediately, then clears the
+    search query so the results dropdown closes.
+    """
+    chosen: str = st.session_state.get("wl_search_result", "") or ""
+    if not chosen:
+        return
+
+    # Parse "SYMBOL — Company Name (NSE)" → symbol and exchange
+    sym_part = chosen.split(" — ", 1)[0].strip()
+    exchange_part = "BSE" if chosen.strip().endswith("(BSE)") else "NSE"
+
+    st.session_state.wl_symbol_field = sym_part
+    st.session_state.wl_exchange_field = exchange_part
+    # Clear the search so the dropdown closes after selection
+    st.session_state.wl_search_query = ""
+
+
+# ---------------------------------------------------------------------------
+# Public component
+# ---------------------------------------------------------------------------
+
 def render_watchlist_panel() -> None:
     """Render the full watchlist management UI panel."""
     st.subheader("Manage Watchlists")
@@ -53,15 +83,14 @@ def render_watchlist_panel() -> None:
             st.rerun()
 
     stocks = get_stocks(selected_wl.id)
-    stock_count = len(stocks)
-    st.markdown(f"**Stocks: {stock_count}/{MAX_STOCKS_PER_WATCHLIST}**")
+    st.markdown(f"**Stocks: {len(stocks)}/{MAX_STOCKS_PER_WATCHLIST}**")
 
     if stocks:
         for stock in stocks:
-            scol1, scol2 = st.columns([5, 1])
-            with scol1:
+            sc1, sc2 = st.columns([5, 1])
+            with sc1:
                 st.write(f"**{stock.symbol}** ({stock.exchange})")
-            with scol2:
+            with sc2:
                 if st.button("✕", key=f"rem_stock_{stock.id}"):
                     remove_stock(selected_wl.id, stock.id)
                     st.rerun()
@@ -69,64 +98,98 @@ def render_watchlist_panel() -> None:
         st.caption("No stocks in this watchlist yet.")
 
     st.markdown("---")
-
     st.markdown("**Add Stock**")
-    _render_add_stock_form(selected_wl.id)
+    _render_add_stock_section(selected_wl.id)
 
 
-def _render_add_stock_form(watchlist_id: int) -> None:
-    """Render the add-stock form with live autocomplete search.
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
 
-    Shows a text input for searching stocks by symbol or company name.
-    When a match is selected the symbol and exchange fields are pre-filled.
+def _render_add_stock_section(watchlist_id: int) -> None:
+    """Live-search autocomplete + symbol/exchange inputs + Add button.
+
+    All widgets are plain (no form wrapper) so that:
+    - The search input triggers an immediate rerun on each keystroke.
+    - The ``on_change`` callback on the results selectbox can write back
+      to the symbol and exchange keys before those widgets render.
     """
-    search_query = st.text_input(
+    # Initialise session-state keys with defaults on first render.
+    st.session_state.setdefault("wl_search_query", "")
+    st.session_state.setdefault("wl_symbol_field", "")
+    st.session_state.setdefault("wl_exchange_field", EXCHANGES[0])
+
+    # ── Search input ──────────────────────────────────────────────────────
+    st.text_input(
         "Search symbol or company name",
-        key="stock_search_query",
+        key="wl_search_query",
         placeholder="e.g. RELIANCE or Reliance Industries",
-        help="Start typing to search from 600+ NSE/BSE stocks",
+        help="Results update instantly as you type. Selecting a stock fills the fields below.",
     )
+    search_query: str = st.session_state.get("wl_search_query", "")
 
-    pre_symbol = ""
-    pre_exchange = EXCHANGES[0]
-
-    if search_query and len(search_query) >= 1:
-        matches = search_stocks(search_query, limit=10)
+    # ── Results dropdown ──────────────────────────────────────────────────
+    if search_query:
+        matches = search_stocks(search_query, limit=20)
         if matches:
+            count = len(matches)
+            st.caption(
+                f"Found **{count}** stock{'s' if count != 1 else ''} matching '{search_query}'"
+            )
             options = [
                 f"{s['symbol']} — {s['name']} ({s['exchange']})" for s in matches
             ]
-            chosen = st.selectbox(
-                "Select stock",
+            # If the stored selection is no longer valid for the current
+            # options (query changed), drop it so the box resets cleanly.
+            if st.session_state.get("wl_search_result") not in options:
+                st.session_state.pop("wl_search_result", None)
+
+            st.selectbox(
+                "Select stock from results",
                 options,
-                key="stock_search_result",
+                key="wl_search_result",
+                on_change=_on_stock_selected,
                 label_visibility="collapsed",
             )
-            idx = options.index(chosen)
-            pre_symbol = matches[idx]["symbol"]
-            pre_exchange = matches[idx]["exchange"]
         else:
-            st.caption("No matches found. You can still type the symbol manually below.")
+            st.caption(f"No stocks found for: **'{search_query}'**")
+    else:
+        st.caption("Type to search stocks…")
 
-    with st.form("add_stock_form", clear_on_submit=True):
-        sym_col, ex_col = st.columns([3, 1])
-        with sym_col:
-            new_symbol = st.text_input(
-                "Symbol",
-                value=pre_symbol,
-                max_chars=20,
-                placeholder="e.g. RELIANCE",
-            )
-        with ex_col:
-            ex_idx = EXCHANGES.index(pre_exchange) if pre_exchange in EXCHANGES else 0
-            new_exchange = st.selectbox("Exchange", EXCHANGES, index=ex_idx)
-        if st.form_submit_button("Add Stock", use_container_width=True):
-            if new_symbol.strip():
-                try:
-                    add_stock(watchlist_id, new_symbol.strip(), new_exchange)
-                    st.success(f"Added {new_symbol.upper()} ({new_exchange}).")
-                    st.rerun()
-                except ValueError as exc:
-                    st.error(str(exc))
-            else:
-                st.warning("Please enter a stock symbol.")
+    # ── Symbol / Exchange / Add ───────────────────────────────────────────
+    c1, c2, c3 = st.columns([3, 1, 2])
+    with c1:
+        symbol: str = st.text_input(
+            "Symbol",
+            key="wl_symbol_field",
+            max_chars=20,
+            placeholder="e.g. RELIANCE",
+        )
+    with c2:
+        exchange: str = st.selectbox(  # type: ignore[assignment]
+            "Exchange",
+            EXCHANGES,
+            key="wl_exchange_field",
+        )
+    with c3:
+        st.markdown("<br>", unsafe_allow_html=True)  # visual alignment
+        add_clicked = st.button(
+            "➕ Add Stock", type="primary", use_container_width=True
+        )
+
+    if add_clicked:
+        sym = symbol.strip().upper()
+        if sym:
+            try:
+                add_stock(watchlist_id, sym, exchange)
+                st.success(f"Added **{sym}** ({exchange}).")
+                # Reset all search and entry state for the next addition.
+                st.session_state.wl_search_query = ""
+                st.session_state.wl_symbol_field = ""
+                st.session_state.wl_exchange_field = EXCHANGES[0]
+                st.session_state.pop("wl_search_result", None)
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+        else:
+            st.warning("Please enter or select a stock symbol.")
