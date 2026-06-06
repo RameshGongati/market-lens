@@ -36,8 +36,10 @@ def _on_stock_selected() -> None:
 
     st.session_state.wl_symbol_field = sym_part
     st.session_state.wl_exchange_field = exchange_part
-    # Clear the search so the dropdown closes after selection
-    st.session_state.wl_search_query = ""
+    # Delete the search key (not assign) so Streamlit doesn't raise
+    # StreamlitAPIException for a key bound to an active widget.
+    if "wl_search_query" in st.session_state:
+        del st.session_state["wl_search_query"]
 
 
 # ---------------------------------------------------------------------------
@@ -183,11 +185,20 @@ def _render_add_stock_section(watchlist_id: int) -> None:
             try:
                 add_stock(watchlist_id, sym, exchange)
                 st.success(f"Added **{sym}** ({exchange}).")
-                # Reset all search and entry state for the next addition.
-                st.session_state.wl_search_query = ""
-                st.session_state.wl_symbol_field = ""
-                st.session_state.wl_exchange_field = EXCHANGES[0]
-                st.session_state.pop("wl_search_result", None)
+                # Delete widget-bound keys rather than assigning to them —
+                # Streamlit raises StreamlitAPIException if you set (=) a key
+                # that is already bound to a rendered widget in this run.
+                # Deletion is always safe and causes the widget to reset to
+                # its default on the next rerun, which also refreshes the
+                # stock list displayed above.
+                for _key in (
+                    "wl_search_query",
+                    "wl_search_result",
+                    "wl_symbol_field",
+                    "wl_exchange_field",
+                ):
+                    if _key in st.session_state:
+                        del st.session_state[_key]
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
