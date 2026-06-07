@@ -26,6 +26,7 @@ from typing import Any
 import pandas as pd
 
 from analysis.base import BaseAnalysis, Status, Strength
+from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
 from utils.logger import get_logger
@@ -75,7 +76,11 @@ class DemandSupplyAnalysis(BaseAnalysis):
 
         Returns a dict with (at minimum):
             * ``all_zones`` — every detected zone, as dicts (Zone.to_dict()
-              plus legacy alias keys).
+              plus legacy alias keys). This is the *filtered, display*
+              list — see ``analysis.zone_engine.filters.filter_zones`` —
+              not the raw, full-history scan.
+            * ``all_zones_count`` — total number of zones ``detect_zones``
+              found before filtering, for the "(of N detected)" summary.
             * ``nearest_demand`` / ``nearest_supply`` — nearest zone (as a
               dict) below/above the current price, or ``None``.
             * ``current_price`` — latest close.
@@ -98,9 +103,19 @@ class DemandSupplyAnalysis(BaseAnalysis):
             current_price = float(data["Close"].iloc[-1])
 
             # --- Rule: scan all 4 patterns (DBR/RBR/RBD/DBD) -----------------
+            # detect_zones() reports every structure across the full history —
+            # keep that count for the summary, but never draw/expose the raw
+            # list directly: it's far too noisy for a chart (20+ overlapping
+            # zones). filter_zones() reduces it to the meaningful, tradeable
+            # subset (fresh + scoring >=5, overlaps merged, nearest 3 per
+            # side) that everything below — display, nearest zones, status —
+            # is derived from. See analysis.zone_engine.filters.filter_zones.
             zones = detect_zones(data)
-            demand_zones = [z for z in zones if z.category == "demand"]
-            supply_zones = [z for z in zones if z.category == "supply"]
+            all_zones_count = len(zones)
+            display_zones = filter_zones(zones, current_price)
+
+            demand_zones = [z for z in display_zones if z.category == "demand"]
+            supply_zones = [z for z in display_zones if z.category == "supply"]
 
             nearest_demand = _nearest_below(demand_zones, current_price)
             nearest_supply = _nearest_above(supply_zones, current_price)
@@ -114,7 +129,9 @@ class DemandSupplyAnalysis(BaseAnalysis):
             active_zone = nd_dict if status == "bullish" else ns_dict if status == "bearish" else None
             strength = _legacy_strength(active_zone)
 
-            summary = _build_summary(demand_zones, supply_zones, nd_dict, ns_dict, current_price, status)
+            summary = _build_summary(
+                all_zones_count, demand_zones, supply_zones, nd_dict, ns_dict, current_price, status
+            )
 
             self._status = status
             self._strength = strength
@@ -122,8 +139,10 @@ class DemandSupplyAnalysis(BaseAnalysis):
             self._result = {
                 "symbol": symbol,
                 "current_price": current_price,
-                # New Zone-spec shape
-                "all_zones": [_zone_dict(z) for z in zones],
+                # New Zone-spec shape — already filtered down to the
+                # meaningful/tradeable subset (see filter_zones).
+                "all_zones": [_zone_dict(z) for z in display_zones],
+                "all_zones_count": all_zones_count,
                 "nearest_demand": nd_dict,
                 "nearest_supply": ns_dict,
                 "status": status,
@@ -233,6 +252,7 @@ def _fmt_score(score: float) -> str:
 
 
 def _build_summary(
+    all_zones_count: int,
     demand_zones: list[Zone],
     supply_zones: list[Zone],
     nearest_demand: dict[str, Any] | None,
@@ -242,10 +262,15 @@ def _build_summary(
 ) -> str:
     """Build a one-line summary, e.g.:
 
-    "3 demand zones, 2 supply zones | Nearest demand 1121-1178
+    "Showing 4 key zones (of 23 detected) | Nearest demand 1121-1178
     (DBR, score 6, Strong) | price between zones"
+
+    The headline now reports both how many zones survived filtering (what
+    actually gets drawn) and how many were detected in total, so users
+    understand the chart isn't hiding information — it's decluttering it.
     """
-    parts = [f"{len(demand_zones)} demand zones, {len(supply_zones)} supply zones"]
+    shown = len(demand_zones) + len(supply_zones)
+    parts = [f"Showing {shown} key zone{'s' if shown != 1 else ''} (of {all_zones_count} detected)"]
 
     candidates = []
     if nearest_demand:

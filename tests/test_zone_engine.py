@@ -12,6 +12,8 @@ import pandas as pd
 import pytest
 
 from analysis.zone_engine.candles import classify_candle
+from analysis.zone_engine.filters import filter_zones
+from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
 from analysis.zone_engine.scoring import entry_recommendation
 
@@ -30,6 +32,48 @@ def _make_df(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
             "Close": [r[3] for r in rows],
             "Volume": [10_000] * len(rows),
         }
+    )
+
+
+def _make_zone(
+    *,
+    category: str = "demand",
+    proximal: float = 100.0,
+    distal: float = 95.0,
+    odd_score: float = 7.0,
+    times_tested: int = 0,
+    zone_type: str | None = None,
+) -> Zone:
+    """Build a ``Zone`` directly with only the fields ``filter_zones`` cares
+    about varying; everything else gets a plausible, fixed default.
+
+    ``filter_zones`` operates purely on ``Zone`` attributes (category,
+    proximal/distal, odd_score, times_tested, ...), so constructing zones
+    directly gives the tests precise control without needing to hand-craft
+    OHLC sequences that happen to produce specific scores/test counts.
+    """
+    if zone_type is None:
+        zone_type = "DBR" if category == "demand" else "RBD"
+    return Zone(
+        zone_type=zone_type,
+        category=category,
+        proximal=proximal,
+        distal=distal,
+        proximal_exceptional=proximal,
+        distal_exceptional=distal,
+        base_start_idx=0,
+        base_end_idx=1,
+        legout_idx=2,
+        num_base_candles=2,
+        odd_score=odd_score,
+        freshness_points=3.0 if times_tested == 0 else (1.5 if times_tested == 1 else 0.0),
+        strength_points=2.0,
+        time_points=2.0,
+        times_tested=times_tested,
+        zone_strength="Strong",
+        entry_recommendation="Entry Type 1 (aggressive)",
+        created_at_index=2,
+        is_fresh=times_tested == 0,
     )
 
 
@@ -298,3 +342,74 @@ def test_detect_zones_handles_empty_dataframe():
 def test_detect_zones_handles_short_dataframe():
     df = _make_df([(100, 105, 95, 102), (102, 108, 100, 106)])
     assert detect_zones(df) == []
+
+
+# ---------------------------------------------------------------------------
+# Display filtering: filter_zones() declutters the raw zone list
+# ---------------------------------------------------------------------------
+
+def test_filter_zones_removes_zones_tested_two_or_more_times():
+    """Rule: FRESHNESS FILTER — drop zones with times_tested >= 2; keep
+    only fresh (0) and once-tested (1) zones."""
+    fresh = _make_zone(category="demand", proximal=90, distal=85, times_tested=0)
+    once = _make_zone(category="demand", proximal=80, distal=75, times_tested=1)
+    twice = _make_zone(category="demand", proximal=70, distal=65, times_tested=2)
+    thrice = _make_zone(category="demand", proximal=60, distal=55, times_tested=3)
+
+    result = filter_zones([fresh, once, twice, thrice], current_price=100.0)
+    kept = {z.proximal for z in result}
+
+    assert fresh.proximal in kept
+    assert once.proximal in kept
+    assert twice.proximal not in kept
+    assert thrice.proximal not in kept
+
+
+def test_filter_zones_removes_zones_scoring_below_five():
+    """Rule: SCORE FILTER — drop zones with odd_score < 5 (the documented
+    "no trade below 5" cutoff)."""
+    high_score = _make_zone(category="supply", proximal=110, distal=115, odd_score=7.0)
+    borderline = _make_zone(category="supply", proximal=120, distal=125, odd_score=5.0)
+    low_score = _make_zone(category="supply", proximal=130, distal=135, odd_score=4.5)
+
+    result = filter_zones([high_score, borderline, low_score], current_price=100.0)
+    kept = {z.proximal for z in result}
+
+    assert high_score.proximal in kept
+    assert borderline.proximal in kept
+    assert low_score.proximal not in kept
+
+
+def test_filter_zones_keeps_only_nearest_three_per_side():
+    """Rule: NEAREST-N FILTER — keep at most the 3 demand zones (proximal
+    below current_price) and 3 supply zones (proximal above) closest to
+    price, nearest first; at most 6 zones survive in total."""
+    current_price = 100.0
+
+    # Five non-overlapping demand zones below price and five non-overlapping
+    # supply zones above it — none merge, so the nearest-N filter alone
+    # determines what survives.
+    demand_zones = [
+        _make_zone(category="demand", proximal=p, distal=p - 4)
+        for p in (95, 90, 85, 80, 75)
+    ]
+    supply_zones = [
+        _make_zone(category="supply", proximal=p, distal=p + 4)
+        for p in (105, 110, 115, 120, 125)
+    ]
+
+    result = filter_zones(demand_zones + supply_zones, current_price)
+    kept_demand = [z for z in result if z.category == "demand"]
+    kept_supply = [z for z in result if z.category == "supply"]
+
+    assert len(result) == 6
+    assert len(kept_demand) == 3
+    assert len(kept_supply) == 3
+    # Nearest-to-price first on each side.
+    assert [z.proximal for z in kept_demand] == [95, 90, 85]
+    assert [z.proximal for z in kept_supply] == [105, 110, 115]
+
+
+def test_filter_zones_handles_empty_list():
+    """Graceful handling of an empty input list."""
+    assert filter_zones([], current_price=100.0) == []

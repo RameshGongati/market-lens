@@ -160,6 +160,11 @@ def render_stock_detail(
         # Slice the 1-year dataset to the selected period without a new fetch
         df_view = _filter_by_period(history_df, selected_period)
         fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)
+        if analysis_type == "Demand/Supply Zones":
+            st.caption(
+                "Showing nearest fresh zones (score >= 5). "
+                "Tested/used-up zones hidden."
+            )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning(
@@ -332,7 +337,7 @@ def _build_chart(
 
     # --- Analysis overlays ---
     if analysis_type == "Demand/Supply Zones":
-        _add_zone_overlays(fig, result)
+        _add_zone_overlays(fig, result, df)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
     elif analysis_type == "Short Term Investment":
@@ -404,23 +409,120 @@ def _build_chart(
     return fig
 
 
-def _add_zone_overlays(fig: go.Figure, result: dict[str, Any]) -> None:
-    for zone in result.get("demand_zones", []):
-        fig.add_hrect(
-            y0=zone["bottom"], y1=zone["top"],
-            fillcolor="rgba(40,167,69,0.12)",
+# Rule: zone styling — semi-transparent fills (demand=green, supply=red),
+# subtle boundary-line colors that echo the fill, and dark text colors for
+# the right-edge labels so they stay readable over the candlesticks.
+_ZONE_FILL_COLORS = {"demand": "rgba(40,167,69,0.15)", "supply": "rgba(220,53,69,0.15)"}
+_ZONE_LINE_COLORS = {"demand": "rgba(40,167,69,0.55)", "supply": "rgba(220,53,69,0.55)"}
+_ZONE_TEXT_COLORS = {"demand": "#1e7e34", "supply": "#a71d2a"}  # dark green / dark red
+
+
+def _fmt_zone_score(score: float) -> str:
+    """Format an ODD score without a trailing ``.0`` for whole numbers
+    (e.g. ``6`` rather than ``6.0``) — mirrors analysis/demand_supply.py."""
+    return f"{score:g}"
+
+
+def _stagger_label_positions(zones: list[dict[str, Any]], min_gap: float) -> list[float]:
+    """Compute right-edge label y-positions for *zones*, nudging any whose
+    natural (price-aligned) positions sit closer than *min_gap* apart so
+    overlapping zone labels stay readable.
+
+    Walks zones from lowest to highest price, keeping each label at its
+    natural midpoint unless that would place it within *min_gap* of the
+    previous (lower) label — in which case it gets pushed up just far
+    enough to clear it. Returns positions in the same order as *zones*.
+    """
+    if not zones:
+        return []
+
+    order = sorted(range(len(zones)), key=lambda i: zones[i]["mid"])
+    positions = [0.0] * len(zones)
+    prev_pos: float | None = None
+    for i in order:
+        natural = zones[i]["mid"]
+        pos = natural if prev_pos is None else max(natural, prev_pos + min_gap)
+        positions[i] = pos
+        prev_pos = pos
+    return positions
+
+
+def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+    """Draw the filtered demand/supply zones as decluttered chart overlays.
+
+    ``result["demand_zones"]``/``result["supply_zones"]`` are already the
+    filtered, ranked subset produced by ``filter_zones`` (at most 3 + 3 —
+    see analysis/zone_engine/filters.py and analysis/demand_supply.py), so
+    this never has to reason about the raw, noisy full-history zone list —
+    it only has to draw what's already been chosen well.
+
+    Each zone gets:
+      * a semi-transparent rectangle (green=demand, red=supply) spanning
+        the full visible chart width, from its distal to proximal line;
+      * a SOLID line on the proximal edge (the tradeable boundary) and a
+        DOTTED line on the distal edge (the invalidation boundary);
+      * a label at the right edge of the chart — "{TYPE} | Score {score} |
+        {strength}" — colored dark green/red, with vertical positions
+        staggered so labels for zones close in price don't overlap.
+    """
+    zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+    if not zones or df.empty:
+        return
+
+    x0, x1 = df.index[0], df.index[-1]
+
+    # Minimum vertical spacing between labels, scaled to the chart's price
+    # range so it "just works" across very different stocks/price levels.
+    price_span = float(df["High"].max() - df["Low"].min()) or 1.0
+    min_gap = price_span * 0.035
+    label_positions = _stagger_label_positions(zones, min_gap)
+
+    for zone, label_y in zip(zones, label_positions):
+        category = zone.get("category", "demand")
+        fill_color = _ZONE_FILL_COLORS.get(category, _ZONE_FILL_COLORS["demand"])
+        line_color = _ZONE_LINE_COLORS.get(category, _ZONE_LINE_COLORS["demand"])
+        text_color = _ZONE_TEXT_COLORS.get(category, _ZONE_TEXT_COLORS["demand"])
+        proximal, distal = zone["proximal"], zone["distal"]
+        top, bottom = zone["top"], zone["bottom"]
+
+        # Shaded zone rectangle, full chart width, drawn beneath the candles.
+        fig.add_shape(
+            type="rect",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=bottom, y1=top,
+            fillcolor=fill_color,
             line_width=0,
-            annotation_text=f"Demand ({zone.get('touches', 0)} tests)",
-            annotation_position="right",
+            layer="below",
             row=1, col=1,
         )
-    for zone in result.get("supply_zones", []):
-        fig.add_hrect(
-            y0=zone["bottom"], y1=zone["top"],
-            fillcolor="rgba(220,53,69,0.12)",
-            line_width=0,
-            annotation_text=f"Supply ({zone.get('touches', 0)} tests)",
-            annotation_position="right",
+        # Proximal boundary (the tradeable edge nearest price) — SOLID.
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=proximal, y1=proximal,
+            line={"color": line_color, "width": 1.25, "dash": "solid"},
+            layer="below",
+            row=1, col=1,
+        )
+        # Distal boundary (the far/invalidation edge) — DOTTED.
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=distal, y1=distal,
+            line={"color": line_color, "width": 1, "dash": "dot"},
+            layer="below",
+            row=1, col=1,
+        )
+        # Right-edge label, vertically staggered to avoid overlap.
+        fig.add_annotation(
+            x=x1, y=label_y,
+            xref="x", yref="y",
+            xanchor="left", yanchor="middle",
+            text=f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} | {zone['zone_strength']}",
+            showarrow=False,
+            align="left",
+            font={"color": text_color, "size": 11},
+            bgcolor="rgba(255,255,255,0.75)",
             row=1, col=1,
         )
 
