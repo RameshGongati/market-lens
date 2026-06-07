@@ -32,6 +32,24 @@ _LONG_BASE_POINTS = 0.0      # > 6 base candles
 _AGGRESSIVE_ENTRY_SCORE = 7.0
 _CONFIRMATION_ENTRY_SCORE = 5.0
 
+# Rule: Stage 3 confluence rating — a SEPARATE bonus scorecard layered on
+# top of the documented 7-point ODD ``odd_score`` above (never merged into
+# it; see ``analysis.zone_engine.fibonacci`` / ``analysis.zone_engine.enhancers``
+# module docstrings for why this stays additive context). Points:
+#   * EMA 20 confluence (the zone's ``ema20_enhancer`` flag)        -> +1
+#   * each Fibonacci retracement level inside the zone, capped at 2 -> +1 each
+#   * the golden ratio (0.618) specifically inside the zone         -> +1 extra
+_EMA20_CONFLUENCE_POINTS = 1
+_FIB_LEVEL_POINTS = 1
+_MAX_FIB_LEVEL_POINTS = 2
+_GOLDEN_RATIO_BONUS_POINTS = 1
+_GOLDEN_RATIO = 0.618
+
+# Rule: Confluence labels — 0 points reads as "None", 1-2 as "Moderate",
+# 3 or more as "High".
+_MODERATE_CONFLUENCE_MIN = 1
+_HIGH_CONFLUENCE_MIN = 3
+
 
 class ZoneScore(TypedDict):
     """Computed ODD scorecard plus the labels derived from it."""
@@ -179,3 +197,68 @@ def score_zone(
         entry_recommendation=entry_recommendation(total),
         is_fresh=times_tested == 0,
     )
+
+
+class ConfluenceRating(TypedDict):
+    """Stage 3 confluence scorecard — additive context, kept entirely
+    separate from the documented 7-point ODD ``odd_score`` above (see
+    ``confluence_rating``)."""
+
+    confluence_score: int
+    confluence_label: str
+    factors: list[str]
+
+
+def confluence_rating(ema20_enhancer: bool, fib_result: dict) -> ConfluenceRating:
+    """Rate how much independent confluence supports a zone — a SEPARATE
+    bonus scorecard from the documented 7-point ODD ``odd_score`` (see the
+    constants block above for the exact rule this encodes; never folded into
+    ``odd_score`` — see ``analysis.zone_engine.fibonacci``/``enhancers``
+    module docstrings for why this stays additive context).
+
+    Points awarded (each cited inline):
+      * EMA 20 confluence (``ema20_enhancer`` is True)                 -> +1
+      * each Fibonacci retracement level inside the zone, capped at 2  -> +1 each
+      * the golden ratio (0.618) specifically inside the zone          -> +1 extra
+
+    Labels: 0 points -> "None", 1-2 points -> "Moderate", 3+ points -> "High".
+
+    Args:
+        ema20_enhancer: The zone's Stage 2 EMA 20 confluence flag (see
+            ``analysis.zone_engine.enhancers.ema20_confluence``).
+        fib_result: A ``FibConfluence`` dict (or any mapping with a
+            ``levels_in_zone`` key), typically from
+            ``analysis.zone_engine.fibonacci.fib_confluence``. Gracefully
+            treated as "no Fib levels" when missing/empty.
+
+    Returns:
+        A ``ConfluenceRating`` dict with the total ``confluence_score``, its
+        derived ``confluence_label``, and a human-readable ``factors`` list
+        explaining what contributed (for summaries/tooltips).
+    """
+    factors: list[str] = []
+    score = 0
+
+    if ema20_enhancer:
+        score += _EMA20_CONFLUENCE_POINTS
+        factors.append("EMA 20 confluence")
+
+    levels_in_zone: list[float] = list((fib_result or {}).get("levels_in_zone", []))
+    fib_points = min(len(levels_in_zone), _MAX_FIB_LEVEL_POINTS) * _FIB_LEVEL_POINTS
+    if fib_points:
+        score += fib_points
+        noun = "level" if fib_points == _FIB_LEVEL_POINTS else "levels"
+        factors.append(f"{fib_points} Fib {noun} in zone")
+
+    if _GOLDEN_RATIO in levels_in_zone:
+        score += _GOLDEN_RATIO_BONUS_POINTS
+        factors.append("Golden ratio (0.618) in zone")
+
+    if score >= _HIGH_CONFLUENCE_MIN:
+        label = "High"
+    elif score >= _MODERATE_CONFLUENCE_MIN:
+        label = "Moderate"
+    else:
+        label = "None"
+
+    return ConfluenceRating(confluence_score=score, confluence_label=label, factors=factors)

@@ -1,6 +1,6 @@
 """Data models for the demand/supply zone engine."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -33,6 +33,18 @@ class Zone:
       ``trade_warning`` (the trend-alignment safety verdict — a demand
       zone is only considered tradeable in an uptrend, a supply zone only
       in a downtrend; sideways markets make every zone untradeable).
+    * Stage 3 context — an OPT-IN ("Enhance with Fibonacci Confluence"
+      checkbox) layer on top of everything above, also never folded into
+      ``odd_score``: ``fib_confluence``/``fib_levels_in_zone``/
+      ``fib_strongest`` (whether/which retracement levels of the most
+      recent swing line up with the zone, see
+      ``analysis.zone_engine.fibonacci.fib_confluence``) and
+      ``confluence_score``/``confluence_label`` (the combined EMA20+Fib
+      confluence scorecard — a SEPARATE rating from ``odd_score``, see
+      ``analysis.zone_engine.scoring.confluence_rating``). When the
+      Fibonacci enhancer is switched off, every one of these fields stays
+      at its conservative default below — byte-for-byte identical to
+      Stage 2 behaviour.
     """
 
     zone_type: str                  # "DBR" | "RBR" | "RBD" | "DBD"
@@ -60,6 +72,13 @@ class Zone:
     ema20_enhancer: bool = False    # True when EMA 20 is in/near the zone (confluence bonus)
     is_tradeable: bool = True       # per the trend-alignment safety rule
     trade_warning: str = ""         # explanation when is_tradeable is False
+
+    # --- Stage 3 context (opt-in, additive — never folded into odd_score) -
+    fib_confluence: bool = False                    # True when a Fib level is in/near the zone
+    fib_levels_in_zone: list = field(default_factory=list)  # ratios whose price falls inside the zone
+    fib_strongest: float | None = None              # strongest Fib ratio in/near the zone (0.618 first)
+    confluence_score: int = 0                       # combined EMA20+Fib bonus score (separate from odd_score)
+    confluence_label: str = "None"                  # "None" | "Moderate" | "High"
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain-dict representation (for caching/serialising/UI)."""

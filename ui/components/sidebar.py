@@ -108,6 +108,32 @@ def render_sidebar() -> None:
             st.session_state.selected_analysis_type = selected_analysis
             save_preferences({"selected_analysis_type": selected_analysis})
 
+        # ---------- Stage 3: Fibonacci confluence (opt-in) ----------
+        # Only relevant to Demand/Supply Zones — hidden for every other
+        # analysis type. Mirrors the selectbox pattern above: read the
+        # current app-state value, compare against the widget's return, and
+        # persist + save_preferences() only on a real change.
+        if selected_analysis == "Demand/Supply Zones":
+            current_use_fib = st.session_state.get("use_fibonacci", False)
+            use_fibonacci = st.checkbox(
+                "Enhance with Fibonacci Confluence",
+                value=current_use_fib,
+                key="sidebar_use_fibonacci",
+            )
+            if use_fibonacci != current_use_fib:
+                st.session_state.use_fibonacci = use_fibonacci
+                save_preferences({"use_fibonacci": use_fibonacci})
+
+            # Disabled placeholder for a future feature — no logic, just a
+            # visible "coming soon" marker directly below the Fibonacci
+            # toggle.
+            st.checkbox(
+                "Options Trading (coming soon)",
+                value=False,
+                disabled=True,
+                key="sidebar_options_trading_placeholder",
+            )
+
         st.markdown("---")
 
         # ---------- Run Analysis ----------

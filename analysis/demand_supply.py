@@ -18,6 +18,16 @@ Both feed a trend-alignment safety check (``_apply_trend_alignment``) that
 marks zones disagreeing with the trend as not tradeable, with an
 explanatory ``trade_warning`` — see ``_enrich_zone``.
 
+Stage 3 adds a further, OPT-IN layer: switch on ``use_fibonacci`` (the
+"Enhance with Fibonacci Confluence" sidebar checkbox) and every zone also
+gets ``fib_confluence``/``fib_levels_in_zone``/``fib_strongest`` (whether
+retracement levels of the most recent swing line up with it — see
+``analysis.zone_engine.fibonacci``) plus a combined ``confluence_score``/
+``confluence_label`` (EMA20 + Fibonacci, a SEPARATE rating from
+``odd_score`` — see ``analysis.zone_engine.scoring.confluence_rating``).
+With the checkbox off (the default), ``analyse`` skips all of this work and
+every zone keeps the Stage 2 defaults — byte-for-byte identical behaviour.
+
 Backward compatibility: the rest of the app (``ui/pages/dashboard.py`` and
 ``ui/components/stock_detail.py``) was written against the previous
 pivot-point engine's result shape and indexes zone dicts directly —
@@ -39,9 +49,11 @@ import pandas as pd
 
 from analysis.base import BaseAnalysis, Status, Strength
 from analysis.zone_engine.enhancers import ema20_confluence
+from analysis.zone_engine.fibonacci import calculate_fib_levels, fib_confluence, find_recent_swing
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
+from analysis.zone_engine.scoring import confluence_rating
 from analysis.zone_engine.trend import detect_trend
 from utils.logger import get_logger
 
@@ -93,8 +105,25 @@ class DemandSupplyAnalysis(BaseAnalysis):
         self._strength: Strength = "Weak"
         self._summary: str = "No analysis run yet."
 
-    def analyse(self, symbol: str, data: pd.DataFrame) -> dict[str, Any]:
+    def analyse(self, symbol: str, data: pd.DataFrame, use_fibonacci: bool = False) -> dict[str, Any]:
         """Detect demand/supply zones and classify the current price position.
+
+        Args:
+            symbol: The stock ticker being analysed.
+            data: OHLCV DataFrame with columns Open, High, Low, Close, Volume.
+            use_fibonacci: Stage 3 OPT-IN switch — the "Enhance with
+                Fibonacci Confluence" sidebar checkbox. ``False`` (the
+                default) skips all Fibonacci work entirely and leaves every
+                zone's ``fib_*``/``confluence_*`` fields at their Stage 2
+                defaults, with no ``fib_swing``/``fib_levels`` keys in the
+                result — byte-for-byte identical to Stage 2 behaviour. When
+                ``True``, anchors retracement levels to the most recent
+                swing (``analysis.zone_engine.fibonacci.find_recent_swing``),
+                checks each display zone for confluence with them, and rates
+                the combined EMA20+Fibonacci confluence — see
+                ``_enrich_zone``/``_enrich_zone_with_fibonacci``. This never
+                changes Stage 1 detection/scoring or Stage 2 trend/EMA20
+                math; ``odd_score`` is identical either way.
 
         Returns a dict with (at minimum):
             * ``all_zones`` — every detected zone, as dicts (Zone.to_dict()
@@ -131,6 +160,23 @@ class DemandSupplyAnalysis(BaseAnalysis):
             ``analysis.zone_engine.enhancers.ema20_confluence``), and
             ``is_tradeable``/``trade_warning`` (the trend-alignment safety
             verdict — see ``_apply_trend_alignment``).
+
+            Stage 3 additions (only populated when ``use_fibonacci=True``;
+            otherwise every zone keeps the conservative defaults below and
+            neither ``fib_swing`` nor ``fib_levels`` appears in the result
+            at all):
+              * ``fib_swing`` — the ``SwingInfo`` anchoring the retracement
+                (see ``analysis.zone_engine.fibonacci.find_recent_swing``).
+              * ``fib_levels`` — ``{ratio: price}`` for the four documented
+                retracement levels (0.382/0.5/0.618/0.786), see
+                ``analysis.zone_engine.fibonacci.calculate_fib_levels``.
+              * Per zone: ``fib_confluence``/``fib_levels_in_zone``/
+                ``fib_strongest`` (whether/which levels line up with it,
+                see ``analysis.zone_engine.fibonacci.fib_confluence``) and
+                ``confluence_score``/``confluence_label`` (the combined
+                EMA20+Fibonacci confluence rating — a SEPARATE scorecard
+                from ``odd_score``, see
+                ``analysis.zone_engine.scoring.confluence_rating``).
         """
         if data.empty or len(data) < _MIN_CANDLES:
             self._result = {"error": "Insufficient data for demand/supply analysis."}
@@ -160,7 +206,24 @@ class DemandSupplyAnalysis(BaseAnalysis):
             # filter_zones chose to show (see _enrich_zone).
             trend_detail = detect_trend(data)
             trend = trend_detail["trend"]
-            display_zones = [_enrich_zone(z, data, trend) for z in display_zones]
+
+            # --- Stage 3: OPT-IN Fibonacci confluence context ----------------
+            # Only computed when the "Enhance with Fibonacci Confluence"
+            # checkbox is on; when it's off, fib_swing/fib_levels are simply
+            # never added to the result and every zone keeps its Stage 2
+            # defaults (see _enrich_zone) — byte-for-byte identical to
+            # Stage 2 behaviour. Anchored to the most recent significant
+            # swing across the *full* history, not just the display zones —
+            # see analysis.zone_engine.fibonacci.find_recent_swing.
+            fib_swing = None
+            fib_levels: dict[float, float] = {}
+            if use_fibonacci:
+                fib_swing = find_recent_swing(data)
+                fib_levels = calculate_fib_levels(fib_swing)
+
+            display_zones = [
+                _enrich_zone(z, data, trend, use_fibonacci, fib_levels) for z in display_zones
+            ]
 
             demand_zones = [z for z in display_zones if z.category == "demand"]
             supply_zones = [z for z in display_zones if z.category == "supply"]
@@ -180,7 +243,7 @@ class DemandSupplyAnalysis(BaseAnalysis):
 
             summary = _build_summary(
                 all_zones_count, demand_zones, supply_zones, nd_dict, ns_dict,
-                current_price, status, trend,
+                current_price, status, trend, use_fibonacci,
             )
 
             self._status = status
@@ -191,7 +254,8 @@ class DemandSupplyAnalysis(BaseAnalysis):
                 "current_price": current_price,
                 # New Zone-spec shape — already filtered down to the
                 # meaningful/tradeable subset (see filter_zones), enriched
-                # with Stage 2 trend/EMA20 context (see _enrich_zone).
+                # with Stage 2 trend/EMA20 context and (when switched on)
+                # Stage 3 Fibonacci confluence context (see _enrich_zone).
                 "all_zones": [_zone_dict(z) for z in display_zones],
                 "all_zones_count": all_zones_count,
                 "nearest_demand": nd_dict,
@@ -207,6 +271,13 @@ class DemandSupplyAnalysis(BaseAnalysis):
                 "supply_zones": [_zone_dict(z) for z in supply_zones],
                 "strength": strength,
             }
+            # Stage 3: only ever present when the Fibonacci enhancer was
+            # switched on — their absence is how stock_detail.py detects
+            # whether to draw the retracement lines (see _add_fibonacci_lines)
+            # and the result stays byte-for-byte identical to Stage 2 when off.
+            if use_fibonacci:
+                self._result["fib_swing"] = fib_swing
+                self._result["fib_levels"] = fib_levels
         except Exception as exc:
             logger.error("DemandSupplyAnalysis failed for %s: %s", symbol, exc)
             self._result = {"error": str(exc)}
@@ -277,18 +348,70 @@ def _apply_trend_alignment(zone: Zone, trend: str) -> Zone:
     return replace(zone, trend_at_zone=trend, is_tradeable=False, trade_warning=_SUPPLY_IN_UPTREND_WARNING)
 
 
-def _enrich_zone(zone: Zone, data: pd.DataFrame, trend: str) -> Zone:
-    """Attach Stage 2 *context* to a display zone — the EMA 20 confluence
-    bonus flag and the trend-alignment tradeability verdict — without
-    touching any Stage 1 detection/scoring field (``odd_score`` and
-    friends pass through ``dataclasses.replace`` untouched).
+def _enrich_zone(
+    zone: Zone,
+    data: pd.DataFrame,
+    trend: str,
+    use_fibonacci: bool = False,
+    fib_levels: dict[float, float] | None = None,
+) -> Zone:
+    """Attach Stage 2 (and, opt-in, Stage 3) *context* to a display zone —
+    the EMA 20 confluence bonus flag, the trend-alignment tradeability
+    verdict and (when ``use_fibonacci`` is on) the Fibonacci confluence
+    rating — without touching any Stage 1 detection/scoring field
+    (``odd_score`` and friends pass through ``dataclasses.replace``
+    untouched throughout).
 
-    See ``analysis.zone_engine.enhancers.ema20_confluence`` and
-    ``_apply_trend_alignment`` for the rules each flag encodes.
+    See ``analysis.zone_engine.enhancers.ema20_confluence``,
+    ``_apply_trend_alignment`` and ``_enrich_zone_with_fibonacci`` for the
+    rules each piece of context encodes.
+
+    Args:
+        zone: The display zone to enrich.
+        data: Full OHLCV DataFrame (for the EMA 20 confluence check).
+        trend: The overall market trend ("UP"/"DOWN"/"SIDEWAYS").
+        use_fibonacci: Stage 3 OPT-IN switch — when ``False`` (the
+            default), the zone's ``fib_*``/``confluence_*`` fields are left
+            at their Stage 2 defaults entirely untouched (byte-for-byte
+            identical to Stage 2 behaviour).
+        fib_levels: ``{ratio: price}`` retracement levels to check the zone
+            against — only consulted when ``use_fibonacci`` is True and
+            non-empty (graceful "nothing to anchor to" handling when swing
+            detection couldn't find one — see ``find_recent_swing``).
     """
     confluence = ema20_confluence(data, zone)
     enriched = replace(zone, ema20_enhancer=confluence["is_enhancer"])
-    return _apply_trend_alignment(enriched, trend)
+    enriched = _apply_trend_alignment(enriched, trend)
+
+    if use_fibonacci and fib_levels:
+        enriched = _enrich_zone_with_fibonacci(enriched, fib_levels)
+
+    return enriched
+
+
+def _enrich_zone_with_fibonacci(zone: Zone, fib_levels: dict[float, float]) -> Zone:
+    """Stage 3 (opt-in): attach the Fibonacci confluence bonus to *zone* —
+    purely additive context, layered on top of everything ``_enrich_zone``
+    has already attached (including the just-set ``ema20_enhancer`` flag,
+    which feeds the combined rating below) without touching ``odd_score``
+    or any other Stage 1/2 field.
+
+    Computes the per-zone Fibonacci confluence
+    (``analysis.zone_engine.fibonacci.fib_confluence``) and combines it with
+    the EMA 20 flag into a SEPARATE ``confluence_score``/``confluence_label``
+    scorecard (``analysis.zone_engine.scoring.confluence_rating`` — never
+    merged into ``odd_score``).
+    """
+    fib_result = fib_confluence(zone, fib_levels)
+    rating = confluence_rating(zone.ema20_enhancer, fib_result)
+    return replace(
+        zone,
+        fib_confluence=fib_result["has_confluence"],
+        fib_levels_in_zone=fib_result["levels_in_zone"],
+        fib_strongest=fib_result["strongest_level"],
+        confluence_score=rating["confluence_score"],
+        confluence_label=rating["confluence_label"],
+    )
 
 
 def _zone_mid(zone: dict[str, Any]) -> float:
@@ -377,6 +500,33 @@ def _zone_flags_suffix(zone: dict[str, Any]) -> str:
     return flags
 
 
+def _fib_summary_parts(zone: dict[str, Any] | None, use_fibonacci: bool) -> list[str]:
+    """Stage 3 (opt-in): render the headline zone's Fibonacci confluence
+    context as extra summary segments, e.g. ``["Fib 0.618 in zone",
+    "Confluence: High"]``.
+
+    Only produces anything when ``use_fibonacci`` is on (the checkbox off
+    means the zone carries nothing but Stage 2 defaults, and the summary
+    must stay byte-for-byte identical to Stage 2's) — see ``_enrich_zone``/
+    ``_enrich_zone_with_fibonacci`` for where these fields come from.
+
+    Reports the strongest level only when it actually fell *inside* the
+    zone (the higher-conviction case the "Fib X in zone" wording promises);
+    the combined ``confluence_label`` is always surfaced so a zone whose
+    only confluence is the EMA 20 still gets its rating shown.
+    """
+    if not use_fibonacci or not zone:
+        return []
+
+    parts: list[str] = []
+    levels_in_zone = zone.get("fib_levels_in_zone") or []
+    strongest = zone.get("fib_strongest")
+    if strongest is not None and strongest in levels_in_zone:
+        parts.append(f"Fib {strongest:g} in zone")
+    parts.append(f"Confluence: {zone.get('confluence_label', 'None')}")
+    return parts
+
+
 def _build_summary(
     all_zones_count: int,
     demand_zones: list[Zone],
@@ -386,18 +536,23 @@ def _build_summary(
     price: float,
     status: Status,
     trend: str,
+    use_fibonacci: bool = False,
 ) -> str:
     """Build a one-line summary, e.g.:
 
     "Trend: UP | Showing 4 key zones (of 23 detected) | Nearest demand
-    1121-1178 (DBR, score 6, Strong, EMA20 confluence, TRADEABLE) | price
-    near fresh demand"
+    1121-1178 (DBR, score 6, Strong, EMA20 confluence, TRADEABLE) | Fib
+    0.618 in zone | Confluence: High | price near fresh demand"
 
     Stage 2 adds the leading "Trend: ..." headline (from the 50 SMA clock
     method) and appends each nearest zone's additive context — its EMA 20
     confluence bonus (when present) and trend-alignment tradeability
-    verdict — to its descriptor. The "(of N detected)" / "price ..." parts
-    from Stage 1's decluttering summary are preserved unchanged.
+    verdict — to its descriptor. Stage 3 (opt-in — see ``use_fibonacci``)
+    appends the headline zone's Fibonacci confluence context as further
+    segments (see ``_fib_summary_parts``); with the checkbox off these are
+    simply absent and the summary is byte-for-byte identical to Stage 2's.
+    The "(of N detected)" / "price ..." parts from Stage 1's decluttering
+    summary are preserved unchanged.
     """
     shown = len(demand_zones) + len(supply_zones)
     parts = [
@@ -411,13 +566,16 @@ def _build_summary(
     if nearest_supply:
         candidates.append(("Nearest supply", nearest_supply))
 
+    headline_zone: dict[str, Any] | None = None
     if candidates:
-        label, zone = min(candidates, key=lambda lz: abs(_zone_mid(lz[1]) - price))
+        label, headline_zone = min(candidates, key=lambda lz: abs(_zone_mid(lz[1]) - price))
         parts.append(
-            f"{label} {zone['bottom']:.0f}-{zone['top']:.0f} "
-            f"({zone['zone_type']}, score {_fmt_score(zone['odd_score'])}, "
-            f"{zone['zone_strength']}{_zone_flags_suffix(zone)})"
+            f"{label} {headline_zone['bottom']:.0f}-{headline_zone['top']:.0f} "
+            f"({headline_zone['zone_type']}, score {_fmt_score(headline_zone['odd_score'])}, "
+            f"{headline_zone['zone_strength']}{_zone_flags_suffix(headline_zone)})"
         )
+
+    parts.extend(_fib_summary_parts(headline_zone, use_fibonacci))
 
     bias = {
         "bullish": "near fresh demand",

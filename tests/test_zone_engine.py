@@ -11,13 +11,19 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from analysis.demand_supply import _apply_trend_alignment
+from analysis.demand_supply import DemandSupplyAnalysis, _apply_trend_alignment
 from analysis.zone_engine.candles import classify_candle
 from analysis.zone_engine.enhancers import ema20_confluence
+from analysis.zone_engine.fibonacci import (
+    SwingInfo,
+    calculate_fib_levels,
+    fib_confluence,
+    find_recent_swing,
+)
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import entry_recommendation
+from analysis.zone_engine.scoring import confluence_rating, entry_recommendation
 from analysis.zone_engine.trend import detect_trend
 
 
@@ -574,3 +580,233 @@ def test_trend_alignment_marks_aligned_zones_tradeable():
         aligned_sideways = _apply_trend_alignment(zone, "SIDEWAYS")
         assert aligned_sideways.is_tradeable is False
         assert aligned_sideways.trade_warning == "Sideways trend - avoid"
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Fibonacci confluence — swing detection
+# ---------------------------------------------------------------------------
+
+# The swing low (50, idx 0) occurs *before* the swing high (150, idx 5)
+# -> chronologically "up" (price swung up into the high).
+_SWING_UP_ROWS = [
+    (100, 105, 50, 102),    # idx 0: swing low = 50
+    (102, 110, 100, 108),   # idx 1
+    (108, 115, 105, 112),   # idx 2
+    (112, 120, 110, 118),   # idx 3
+    (118, 130, 115, 125),   # idx 4
+    (125, 150, 120, 145),   # idx 5: swing high = 150
+]
+
+# The mirror image: swing high (150, idx 0) occurs *before* the swing low
+# (50, idx 5) -> chronologically "down" (price swung down into the low).
+_SWING_DOWN_ROWS = [
+    (125, 150, 120, 145),   # idx 0: swing high = 150
+    (118, 130, 115, 125),   # idx 1
+    (112, 120, 110, 118),   # idx 2
+    (108, 115, 105, 112),   # idx 3
+    (102, 110, 100, 108),   # idx 4
+    (100, 105, 50, 102),    # idx 5: swing low = 50
+]
+
+
+def test_find_recent_swing_up():
+    """Rule: direction — the swing low occurring *before* the swing high
+    chronologically is an "up" swing (price swung up into the high; Fib
+    retracements are then measured back down from it)."""
+    df = _make_df(_SWING_UP_ROWS)
+    swing = find_recent_swing(df, lookback=10)
+
+    assert swing["swing_high"] == pytest.approx(150.0)
+    assert swing["swing_low"] == pytest.approx(50.0)
+    assert swing["swing_high_idx"] == 5
+    assert swing["swing_low_idx"] == 0
+    assert swing["direction"] == "up"
+
+
+def test_find_recent_swing_down():
+    """Rule: direction — the swing high occurring *before* the swing low
+    chronologically is a "down" swing (price swung down into the low; Fib
+    retracements are then measured back up from it)."""
+    df = _make_df(_SWING_DOWN_ROWS)
+    swing = find_recent_swing(df, lookback=10)
+
+    assert swing["swing_high"] == pytest.approx(150.0)
+    assert swing["swing_low"] == pytest.approx(50.0)
+    assert swing["swing_high_idx"] == 0
+    assert swing["swing_low_idx"] == 5
+    assert swing["direction"] == "down"
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Fibonacci confluence — retracement levels
+# ---------------------------------------------------------------------------
+
+def test_calculate_fib_levels_up_swing():
+    """Rule: for an "up" swing, level = swing_high - (range * ratio) — verify
+    the documented golden-ratio (0.618) math precisely (range = 100,
+    200 - 100*0.618 = 138.2), plus the other three documented levels."""
+    swing = SwingInfo(
+        swing_high=200.0, swing_low=100.0, swing_high_idx=10, swing_low_idx=2, direction="up",
+    )
+
+    levels = calculate_fib_levels(swing)
+
+    assert set(levels.keys()) == {0.382, 0.5, 0.618, 0.786}
+    assert levels[0.618] == pytest.approx(200.0 - 100.0 * 0.618)
+    assert levels[0.618] == pytest.approx(138.2)
+    assert levels[0.5] == pytest.approx(150.0)
+    assert levels[0.382] == pytest.approx(200.0 - 100.0 * 0.382)
+    assert levels[0.786] == pytest.approx(200.0 - 100.0 * 0.786)
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Fibonacci confluence — per-zone confluence check
+# ---------------------------------------------------------------------------
+
+def test_fib_confluence_level_in_zone():
+    """Rule: a Fib level whose price falls between the zone's distal/proximal
+    lines counts as "in zone" -> has_confluence True, with that ratio
+    reported as the strongest level (0.618, the golden ratio, wins the
+    documented priority — it's also the only one in or near this zone)."""
+    zone = _make_zone(category="demand", proximal=102.0, distal=98.0)
+    fib_levels = {0.382: 120.0, 0.5: 110.0, 0.618: 100.0, 0.786: 90.0}
+
+    result = fib_confluence(zone, fib_levels)
+
+    assert result["levels_in_zone"] == [0.618]
+    assert result["levels_near_zone"] == []
+    assert result["has_confluence"] is True
+    assert result["confluence_count"] == 1
+    assert result["strongest_level"] == 0.618
+
+
+def test_fib_confluence_no_levels():
+    """Rule: when no Fib level sits in or near the zone, has_confluence is
+    False, both level lists are empty and strongest_level is None — the
+    conservative "no confluence found" result."""
+    zone = _make_zone(category="supply", proximal=500.0, distal=510.0)
+    fib_levels = {0.382: 120.0, 0.5: 110.0, 0.618: 100.0, 0.786: 90.0}
+
+    result = fib_confluence(zone, fib_levels)
+
+    assert result["levels_in_zone"] == []
+    assert result["levels_near_zone"] == []
+    assert result["has_confluence"] is False
+    assert result["confluence_count"] == 0
+    assert result["strongest_level"] is None
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: confluence rating — a SEPARATE scorecard from odd_score
+# ---------------------------------------------------------------------------
+
+def test_confluence_rating_high():
+    """Rule: EMA 20 confluence (+1) plus the golden ratio 0.618 sitting in
+    the zone (+1 for the level itself, +1 extra for being the golden ratio)
+    totals 3 points -> the "High" label (3+ points)."""
+    fib_result = {
+        "levels_in_zone": [0.618],
+        "levels_near_zone": [],
+        "has_confluence": True,
+        "confluence_count": 1,
+        "strongest_level": 0.618,
+    }
+
+    rating = confluence_rating(ema20_enhancer=True, fib_result=fib_result)
+
+    assert rating["confluence_score"] == 3
+    assert rating["confluence_label"] == "High"
+    assert rating["factors"]   # explains what contributed
+
+
+def test_confluence_rating_none():
+    """Rule: no EMA 20 confluence and no Fib levels in the zone -> 0 points
+    -> the "None" label."""
+    fib_result = {
+        "levels_in_zone": [],
+        "levels_near_zone": [],
+        "has_confluence": False,
+        "confluence_count": 0,
+        "strongest_level": None,
+    }
+
+    rating = confluence_rating(ema20_enhancer=False, fib_result=fib_result)
+
+    assert rating["confluence_score"] == 0
+    assert rating["confluence_label"] == "None"
+    assert rating["factors"] == []
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: orchestrator — Fibonacci is OPT-IN
+# ---------------------------------------------------------------------------
+
+# A clean, fresh DBR demand zone (same shape/scores as _DBR_GAP_FRESH_ROWS —
+# proximal=113, distal=108, odd_score=7) followed by twenty "boring" filler
+# candles that stay well clear of the zone (low > 113 throughout, so it
+# remains untested/fresh) and can't be mistaken for a legin/legout (their
+# body_pct ~= 0.5/6 = 0.083 is well below the "exciting" >= 0.60 cutoff).
+# This pads the DataFrame past _MIN_CANDLES (20) without disturbing the
+# single zone the engine should detect, letting these orchestrator-level
+# tests assert on a deterministic, single-zone result.
+_FIB_ANALYSE_ROWS = [
+    (120, 121, 110, 111),   # legin (bearish, exciting)
+    (111, 113, 109, 112),   # base candle 1 (boring)
+    (112, 114, 108, 113),   # base candle 2 (boring) -> proximal=113, distal=108
+    (116, 126, 115, 125),   # legout opens at 116 > 114 -> GAP, bullish & exciting
+] + [
+    (130 + i, 134 + i, 128 + i, 130.5 + i) for i in range(20)   # boring filler, well above the zone
+]
+
+
+def test_analyse_without_fibonacci_leaves_fib_fields_default():
+    """Stage 3 rule: Fibonacci is OPT-IN — with the checkbox off (the
+    default), every zone keeps the Stage 2 defaults for every fib_*/
+    confluence_* field, and the result carries no fib_swing/fib_levels keys
+    at all (byte-for-byte identical to Stage 2 behaviour)."""
+    df = _make_df(_FIB_ANALYSE_ROWS)
+
+    result = DemandSupplyAnalysis().analyse("TEST", df)
+
+    assert "error" not in result
+    zones = result["all_zones"]
+    assert zones   # sanity: the engineered data does produce zone(s) to check
+
+    for zone in zones:
+        assert zone["fib_confluence"] is False
+        assert zone["fib_levels_in_zone"] == []
+        assert zone["fib_strongest"] is None
+        assert zone["confluence_score"] == 0
+        assert zone["confluence_label"] == "None"
+
+    assert "fib_swing" not in result
+    assert "fib_levels" not in result
+
+
+def test_odd_score_unchanged_when_fibonacci_enabled():
+    """CRITICAL Stage 3 rule: enabling the Fibonacci confluence enhancer must
+    NEVER change the documented 7-point ODD odd_score (or any other Stage 1
+    scoring/structure field) — confluence_score/fib_* are always a separate,
+    additive layer (see analysis.zone_engine.scoring.confluence_rating /
+    analysis.zone_engine.fibonacci), composed in *after* detection/scoring/
+    filtering have already produced the display zones."""
+    df = _make_df(_FIB_ANALYSE_ROWS)
+
+    without_fib = DemandSupplyAnalysis().analyse("TEST", df, use_fibonacci=False)
+    with_fib = DemandSupplyAnalysis().analyse("TEST", df, use_fibonacci=True)
+
+    zones_without = without_fib["all_zones"]
+    zones_with = with_fib["all_zones"]
+    assert zones_without and zones_with
+    assert len(zones_without) == len(zones_with)
+
+    for z_without, z_with in zip(zones_without, zones_with):
+        assert z_with["odd_score"] == pytest.approx(z_without["odd_score"])
+        assert z_with["freshness_points"] == pytest.approx(z_without["freshness_points"])
+        assert z_with["strength_points"] == pytest.approx(z_without["strength_points"])
+        assert z_with["time_points"] == pytest.approx(z_without["time_points"])
+        assert z_with["times_tested"] == z_without["times_tested"]
+        assert z_with["zone_strength"] == z_without["zone_strength"]
+        assert z_with["entry_recommendation"] == z_without["entry_recommendation"]
+        assert z_with["proximal"] == pytest.approx(z_without["proximal"])
+        assert z_with["distal"] == pytest.approx(z_without["distal"])

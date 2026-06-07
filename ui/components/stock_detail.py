@@ -354,6 +354,9 @@ def _build_chart(
     if analysis_type == "Demand/Supply Zones":
         _add_trend_context_lines(fig, df)
         _add_zone_overlays(fig, result, df)
+        # Stage 3 (opt-in) — only draws anything when the Fibonacci
+        # confluence checkbox was on (detected via result["fib_levels"]).
+        _add_fibonacci_lines(fig, result, df)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
     elif analysis_type == "Short Term Investment":
@@ -445,6 +448,17 @@ _AVOID_FLAG_COLOR = "#e8590c"       # dark orange
 # Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
 _TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
 
+# Stage 3 (opt-in): Fibonacci retracement line styling — per the documented
+# importance ranking, the golden ratio (0.618) is drawn solid and slightly
+# thicker than the others (which are dashed) so it stands out as the most
+# important retracement level on the chart.
+_FIB_LINE_STYLES: dict[float, dict[str, Any]] = {
+    0.382: {"color": "#add8e6", "dash": "dash", "width": 1},    # light blue dashed
+    0.5:   {"color": "#ff7f0e", "dash": "dash", "width": 1},    # orange dashed
+    0.618: {"color": "#d4af37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
+    0.786: {"color": "#9b59b6", "dash": "dash", "width": 1},    # purple dashed
+}
+
 
 def _fmt_zone_score(score: float) -> str:
     """Format an ODD score without a trailing ``.0`` for whole numbers
@@ -493,16 +507,27 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
       * a label at the right edge of the chart — "{TYPE} | Score {score} |
         {strength}", with the Stage 2 context flags appended: "| EMA20"
         when ``ema20_enhancer`` is set (a confluence bonus — see
-        analysis.zone_engine.enhancers), and a colored "| TRADEABLE"
-        (green) or "| AVOID" (orange) verdict from the trend-alignment
-        safety rule (see analysis.demand_supply._apply_trend_alignment).
-        The base label is dark green/red; vertical positions are
-        staggered so labels for zones close in price don't overlap.
+        analysis.zone_engine.enhancers), Stage 3's "| Fib" / "| Confluence:
+        {label}" (opt-in — only when the Fibonacci checkbox was on, see
+        below), and a colored "| TRADEABLE" (green) or "| AVOID" (orange)
+        verdict from the trend-alignment safety rule (see
+        analysis.demand_supply._apply_trend_alignment). The base label is
+        dark green/red; vertical positions are staggered so labels for
+        zones close in price don't overlap.
+
+    Stage 3 (opt-in): when the Fibonacci confluence checkbox was on for
+    this analysis — detected, like ``_add_fibonacci_lines``, via the
+    presence of ``result["fib_levels"]`` — each zone's label additionally
+    gets "| Fib" (only when ``fib_confluence`` is set on that zone) and
+    "| Confluence: {confluence_label}" (the combined EMA20+Fib rating, see
+    analysis.zone_engine.scoring.confluence_rating). With the checkbox off
+    neither is shown — the label is byte-for-byte identical to Stage 2's.
     """
     zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
     if not zones or df.empty:
         return
 
+    fib_active = bool(result.get("fib_levels"))
     x0, x1 = df.index[0], df.index[-1]
 
     # Minimum vertical spacing between labels, scaled to the chart's price
@@ -553,6 +578,13 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         # text supports inline <span style="color:..."> for exactly this
         # kind of "mostly one color, one bit highlighted" label.
         flags = " | EMA20" if zone.get("ema20_enhancer") else ""
+        # Stage 3 (opt-in): only when the Fibonacci checkbox was on for
+        # this analysis — otherwise the label stays byte-for-byte identical
+        # to Stage 2's (see fib_active / module docstring above).
+        if fib_active:
+            if zone.get("fib_confluence"):
+                flags += " | Fib"
+            flags += f" | Confluence: {zone.get('confluence_label', 'None')}"
         if zone.get("is_tradeable"):
             flags += f" | <span style='color:{_TRADEABLE_FLAG_COLOR}'>TRADEABLE</span>"
         else:
@@ -615,6 +647,57 @@ def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
         ),
         row=1, col=1,
     )
+
+
+def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+    """Stage 3 (opt-in): draw the Fibonacci retracement levels as horizontal
+    reference lines on the price chart.
+
+    Detection follows the documented rule — *presence* of ``result["fib_levels"]``
+    is how this module tells whether the "Enhance with Fibonacci Confluence"
+    checkbox was on for this analysis (``analyse`` only ever adds that key
+    when ``use_fibonacci=True`` — see analysis/demand_supply.py). When it's
+    absent (checkbox off, or there wasn't enough history to anchor a swing),
+    this draws nothing at all — the chart is unchanged from Stage 2.
+
+    Each level gets a full-width horizontal line styled per the documented
+    importance ranking (see ``_FIB_LINE_STYLES`` — the golden ratio 0.618 is
+    solid and slightly thicker; the rest are dashed) plus a left-edge label
+    such as "Fib 61.8%". Purely visual context — no analysis/scoring math
+    lives here (see ``analysis.zone_engine.fibonacci``).
+    """
+    fib_levels = result.get("fib_levels")
+    if not fib_levels or df.empty:
+        return
+
+    x0, x1 = df.index[0], df.index[-1]
+    for ratio, price in fib_levels.items():
+        style = _FIB_LINE_STYLES.get(ratio)
+        if style is None or price is None:
+            continue
+
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=price, y1=price,
+            line={"color": style["color"], "width": style["width"], "dash": style["dash"]},
+            layer="below",
+            row=1, col=1,
+        )
+        # Left-edge label, e.g. "Fib 61.8%" — mirrors the right-edge zone
+        # labels in _add_zone_overlays but anchored to the opposite side so
+        # the two never collide.
+        fig.add_annotation(
+            x=x0, y=price,
+            xref="x", yref="y",
+            xanchor="right", yanchor="bottom",
+            text=f"Fib {ratio * 100:.1f}%",
+            showarrow=False,
+            align="right",
+            font={"color": style["color"], "size": 10},
+            bgcolor="rgba(255,255,255,0.75)",
+            row=1, col=1,
+        )
 
 
 def _add_sma_line(

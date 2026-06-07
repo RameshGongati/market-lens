@@ -100,7 +100,15 @@ def render_dashboard() -> None:
             hist = ds_manager.get_history(symbol, period, interval)
             analyser_cls = _ANALYSIS_MAP[analysis_type]
             analyser = analyser_cls()
-            result = analyser.analyse(symbol, hist)
+            if analysis_type == "Demand/Supply Zones":
+                # Stage 3: thread the opt-in "Enhance with Fibonacci
+                # Confluence" sidebar checkbox through to the orchestrator —
+                # other analysis types don't accept this kwarg.
+                result = analyser.analyse(
+                    symbol, hist, use_fibonacci=st.session_state.get("use_fibonacci", False)
+                )
+            else:
+                result = analyser.analyse(symbol, hist)
             current_price = result.get("current_price") or quote.get("current_price", 0.0)
             change_pct = quote.get("change_pct", 0.0)
             # Approximate absolute change from percentage
