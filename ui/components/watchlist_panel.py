@@ -7,7 +7,7 @@ import streamlit as st
 
 from config.settings import EXCHANGES, MAX_STOCKS_PER_WATCHLIST, MAX_WATCHLISTS
 from data.manager import DataSourceManager
-from ui.components.tradingview_chart import render_tradingview_chart
+from ui.components.tradingview_chart import get_tradingview_url, render_tradingview_chart
 from utils.helpers import format_currency, search_stocks
 from utils.logger import get_logger
 from watchlist.manager import (
@@ -297,6 +297,18 @@ def render_watchlist_panel() -> None:
             # Expandable inline TradingView mini-chart for this stock
             if st.session_state[chart_key]:
                 st.markdown("---")
+
+                # Fallback link in case the embedded widget can't display
+                # this symbol in the viewer's browser (e.g. login issue).
+                link_col, hint_col = st.columns([1, 3])
+                with link_col:
+                    st.link_button(
+                        "🔗 Open in TradingView →",
+                        url=get_tradingview_url(stock.symbol, stock.exchange),
+                    )
+                with hint_col:
+                    st.caption("If chart below is blank, log in to TradingView first.")
+
                 render_tradingview_chart(
                     symbol=stock.symbol,
                     exchange=stock.exchange,

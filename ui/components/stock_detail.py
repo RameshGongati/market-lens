@@ -15,7 +15,7 @@ from storage.database import (
     get_notes,
     save_note,
 )
-from ui.components.tradingview_chart import render_tradingview_chart
+from ui.components.tradingview_chart import get_tradingview_url, render_tradingview_chart
 from utils.helpers import format_timestamp, get_company_name
 from utils.logger import get_logger
 
@@ -132,6 +132,20 @@ def render_stock_detail(
             )
 
     if chart_type == "TradingView":
+        # Fallback link in case the embedded widget can't display this
+        # symbol in the viewer's browser (most commonly a login issue).
+        link_col, hint_col = st.columns([1, 3])
+        with link_col:
+            st.link_button(
+                "🔗 Open in TradingView →",
+                url=get_tradingview_url(symbol, exchange),
+            )
+        with hint_col:
+            st.caption(
+                "If chart below is blank, open in new tab above "
+                "or log in to TradingView first."
+            )
+
         render_tradingview_chart(
             symbol=symbol,
             exchange=exchange,
