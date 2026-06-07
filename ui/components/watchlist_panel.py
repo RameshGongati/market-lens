@@ -298,8 +298,10 @@ def render_watchlist_panel() -> None:
             if st.session_state[chart_key]:
                 st.markdown("---")
 
-                # Fallback link in case the embedded widget can't display
-                # this symbol in the viewer's browser (e.g. login issue).
+                # Primary entry point: open the live, fully-interactive chart
+                # directly on tradingview.com. The compact placeholder box
+                # rendered below explains why — the embedded widget can't
+                # reliably load Indian market data here.
                 link_col, hint_col = st.columns([1, 3])
                 with link_col:
                     st.link_button(
@@ -316,9 +318,6 @@ def render_watchlist_panel() -> None:
                     default_interval="D",
                     compact=True,
                     theme="light",
-                )
-                st.caption(
-                    "💡 Click ⛶ for full screen view. Scroll inside chart to zoom in/out."
                 )
                 st.markdown("---")
     else:

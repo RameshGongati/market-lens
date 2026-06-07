@@ -132,8 +132,10 @@ def render_stock_detail(
             )
 
     if chart_type == "TradingView":
-        # Fallback link in case the embedded widget can't display this
-        # symbol in the viewer's browser (most commonly a login issue).
+        # Primary entry point: open the live, fully-interactive chart (with
+        # all timeframes, indicators and drawing tools) directly on
+        # tradingview.com. The placeholder box rendered below explains why —
+        # the embedded widget can't reliably load Indian market data here.
         link_col, hint_col = st.columns([1, 3])
         with link_col:
             st.link_button(
@@ -142,8 +144,8 @@ def render_stock_detail(
             )
         with hint_col:
             st.caption(
-                "If chart below is blank, open in new tab above "
-                "or log in to TradingView first."
+                "Opens candlestick chart in TradingView. "
+                "Log in to TradingView for full access."
             )
 
         render_tradingview_chart(
@@ -153,10 +155,6 @@ def render_stock_detail(
             default_interval="D",
             compact=False,
             theme="light",
-        )
-        st.caption(
-            "💡 TradingView chart includes live data, all timeframes and drawing tools. "
-            "Use ⛶ button for full screen view."
         )
     elif history_df is not None and not history_df.empty:
         # Slice the 1-year dataset to the selected period without a new fetch
