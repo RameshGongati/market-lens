@@ -24,6 +24,15 @@ class Zone:
       components (``freshness_points``, ``strength_points``,
       ``time_points``), plus the derived ``times_tested``, ``zone_strength``
       label, ``entry_recommendation`` text and ``is_fresh`` flag.
+    * Stage 2 context — additive fields layered on top of the Stage 1
+      detection/scoring above, never folded into ``odd_score``:
+      ``trend_at_zone`` (the overall 50-SMA-clock trend when the zone was
+      evaluated, see ``analysis.zone_engine.trend``), ``ema20_enhancer``
+      (the EMA 20 confluence "high probability" bonus flag, see
+      ``analysis.zone_engine.enhancers``), and ``is_tradeable``/
+      ``trade_warning`` (the trend-alignment safety verdict — a demand
+      zone is only considered tradeable in an uptrend, a supply zone only
+      in a downtrend; sideways markets make every zone untradeable).
     """
 
     zone_type: str                  # "DBR" | "RBR" | "RBD" | "DBD"
@@ -45,6 +54,12 @@ class Zone:
     entry_recommendation: str       # human-readable trade guidance
     created_at_index: int           # row index the zone became active (legout)
     is_fresh: bool                  # True when times_tested == 0
+
+    # --- Stage 2 context (additive — never folded into odd_score) --------
+    trend_at_zone: str = ""         # "UP" | "DOWN" | "SIDEWAYS" at evaluation time
+    ema20_enhancer: bool = False    # True when EMA 20 is in/near the zone (confluence bonus)
+    is_tradeable: bool = True       # per the trend-alignment safety rule
+    trade_warning: str = ""         # explanation when is_tradeable is False
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain-dict representation (for caching/serialising/UI)."""

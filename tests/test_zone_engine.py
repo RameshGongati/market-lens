@@ -11,11 +11,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from analysis.demand_supply import _apply_trend_alignment
 from analysis.zone_engine.candles import classify_candle
+from analysis.zone_engine.enhancers import ema20_confluence
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
 from analysis.zone_engine.scoring import entry_recommendation
+from analysis.zone_engine.trend import detect_trend
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +78,13 @@ def _make_zone(
         created_at_index=2,
         is_fresh=times_tested == 0,
     )
+
+
+def _closes_df(closes: list[float]) -> pd.DataFrame:
+    """Build a minimal OHLCV DataFrame from a list of closing prices, with
+    Open == High == Low == Close — perfectly fine for trend/EMA helpers,
+    which only ever read the ``Close`` column."""
+    return _make_df([(c, c, c, c) for c in closes])
 
 
 # ---------------------------------------------------------------------------
@@ -413,3 +423,154 @@ def test_filter_zones_keeps_only_nearest_three_per_side():
 def test_filter_zones_handles_empty_list():
     """Graceful handling of an empty input list."""
     assert filter_zones([], current_price=100.0) == []
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: trend detection — the 50 SMA "clock method"
+# ---------------------------------------------------------------------------
+
+def test_detect_trend_uptrend():
+    """A steadily rising close series pushes the 50 SMA up over the
+    lookback window by well more than the flat threshold -> "UP"."""
+    closes = [100.0 + i for i in range(80)]
+    df = _closes_df(closes)
+
+    info = detect_trend(df)
+
+    assert info["trend"] == "UP"
+    assert info["sma_now"] is not None and info["sma_past"] is not None
+    assert info["sma_now"] > info["sma_past"]
+    assert info["slope"] is not None and info["slope"] > 0
+    assert info["angle"] is not None and 0 < info["angle"] <= 60
+
+
+def test_detect_trend_downtrend():
+    """A steadily falling close series pulls the 50 SMA down over the
+    lookback window by well more than the flat threshold -> "DOWN"."""
+    closes = [200.0 - i for i in range(80)]
+    df = _closes_df(closes)
+
+    info = detect_trend(df)
+
+    assert info["trend"] == "DOWN"
+    assert info["sma_now"] is not None and info["sma_past"] is not None
+    assert info["sma_now"] < info["sma_past"]
+    assert info["slope"] is not None and info["slope"] < 0
+    assert info["angle"] is not None and -60 <= info["angle"] < 0
+
+
+def test_detect_trend_sideways():
+    """A perfectly flat close series leaves the 50 SMA unchanged over the
+    lookback window (slope == 0, well within the +/- 0.3% flat threshold)
+    -> "SIDEWAYS"."""
+    closes = [100.0] * 80
+    df = _closes_df(closes)
+
+    info = detect_trend(df)
+
+    assert info["trend"] == "SIDEWAYS"
+    assert info["slope"] == pytest.approx(0.0)
+    assert info["angle"] == pytest.approx(0.0)
+
+
+def test_detect_trend_insufficient_data():
+    """Rule: guard against insufficient data — fewer than
+    sma_period + lookback (default 50 + 7 = 57) candles -> SIDEWAYS with
+    every numeric field reported as None (the conservative "can't tell
+    yet" answer)."""
+    closes = [100.0 + i for i in range(30)]
+    df = _closes_df(closes)
+
+    info = detect_trend(df)
+
+    assert info["trend"] == "SIDEWAYS"
+    assert info["sma_now"] is None
+    assert info["sma_past"] is None
+    assert info["slope"] is None
+    assert info["angle"] is None
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: EMA 20 confluence enhancer
+# ---------------------------------------------------------------------------
+
+def test_ema20_confluence_in_zone():
+    """A flat close series converges the EMA 20 to that constant price; a
+    zone straddling it should be flagged in_zone (and therefore an
+    enhancer) — a "high probability" confluence per the MA document."""
+    df = _closes_df([100.0] * 30)
+    zone = _make_zone(category="demand", proximal=102.0, distal=98.0)
+
+    confluence = ema20_confluence(df, zone)
+
+    assert confluence["ema_now"] == pytest.approx(100.0)
+    assert confluence["in_zone"] is True
+    assert confluence["is_enhancer"] is True
+
+
+def test_ema20_confluence_far():
+    """When the EMA sits well outside both the zone and its
+    proximity_pct% tolerance band, neither in_zone nor near_zone fires,
+    so the zone is not an EMA 20 enhancer."""
+    df = _closes_df([100.0] * 30)
+    zone = _make_zone(category="supply", proximal=200.0, distal=210.0)
+
+    confluence = ema20_confluence(df, zone)
+
+    assert confluence["ema_now"] == pytest.approx(100.0)
+    assert confluence["in_zone"] is False
+    assert confluence["near_zone"] is False
+    assert confluence["is_enhancer"] is False
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: trend-alignment safety rule (tradeability)
+# ---------------------------------------------------------------------------
+
+def test_demand_zone_in_downtrend_not_tradeable():
+    """Rule: a DEMAND zone is tradeable ONLY when the trend is "UP" — in a
+    downtrend it must be flagged not tradeable with the documented
+    warning, while every Stage 1 field (e.g. odd_score) stays untouched."""
+    zone = _make_zone(category="demand", odd_score=7.0)
+
+    aligned = _apply_trend_alignment(zone, "DOWN")
+
+    assert aligned.trend_at_zone == "DOWN"
+    assert aligned.is_tradeable is False
+    assert aligned.trade_warning == "Demand zone in downtrend - risky per methodology"
+    assert aligned.odd_score == pytest.approx(7.0)   # Stage 1 score untouched
+
+
+def test_supply_zone_in_uptrend_not_tradeable():
+    """Rule: a SUPPLY zone is tradeable ONLY when the trend is "DOWN" — in
+    an uptrend it must be flagged not tradeable with the documented
+    warning, while every Stage 1 field (e.g. odd_score) stays untouched."""
+    zone = _make_zone(category="supply", odd_score=6.0)
+
+    aligned = _apply_trend_alignment(zone, "UP")
+
+    assert aligned.trend_at_zone == "UP"
+    assert aligned.is_tradeable is False
+    assert aligned.trade_warning == "Supply zone in uptrend - risky per methodology"
+    assert aligned.odd_score == pytest.approx(6.0)   # Stage 1 score untouched
+
+
+def test_trend_alignment_marks_aligned_zones_tradeable():
+    """Sanity check for the "happy path" of the alignment rule: a demand
+    zone in an uptrend and a supply zone in a downtrend are tradeable with
+    no warning, while a sideways market makes everything untradeable."""
+    demand = _make_zone(category="demand")
+    supply = _make_zone(category="supply")
+
+    aligned_demand = _apply_trend_alignment(demand, "UP")
+    assert aligned_demand.is_tradeable is True
+    assert aligned_demand.trade_warning == ""
+
+    aligned_supply = _apply_trend_alignment(supply, "DOWN")
+    assert aligned_supply.is_tradeable is True
+    assert aligned_supply.trade_warning == ""
+
+    for zone, category in ((demand, "demand"), (supply, "supply")):
+        aligned_sideways = _apply_trend_alignment(zone, "SIDEWAYS")
+        assert aligned_sideways.is_tradeable is False
+        assert aligned_sideways.trade_warning == "Sideways trend - avoid"

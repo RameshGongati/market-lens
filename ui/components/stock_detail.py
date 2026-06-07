@@ -93,7 +93,22 @@ def render_stock_detail(
     st.markdown("---")
 
     # ---------- Chart section ----------
-    st.markdown("### Price Chart")
+    # Stage 2: surface the overall trend (50 SMA clock method) as a small
+    # badge next to the chart title — green/red/grey for UP/DOWN/SIDEWAYS —
+    # so the directional context driving zone tradeability is visible at a
+    # glance, without having to read the full summary line.
+    trend = result.get("trend") if analysis_type == "Demand/Supply Zones" else None
+    if trend:
+        t_color = _TREND_BADGE_COLORS.get(trend, "#6c757d")
+        st.markdown(
+            f"### Price Chart "
+            f"<span style='color:{t_color};font-size:0.65em;background:{t_color}22;"
+            f"padding:2px 8px;border-radius:8px;border:1px solid {t_color};'>"
+            f"Trend: {trend}</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown("### Price Chart")
 
     # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
     # user navigated here without running a full analysis), try fetching 1 year
@@ -337,6 +352,7 @@ def _build_chart(
 
     # --- Analysis overlays ---
     if analysis_type == "Demand/Supply Zones":
+        _add_trend_context_lines(fig, df)
         _add_zone_overlays(fig, result, df)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
@@ -416,6 +432,19 @@ _ZONE_FILL_COLORS = {"demand": "rgba(40,167,69,0.15)", "supply": "rgba(220,53,69
 _ZONE_LINE_COLORS = {"demand": "rgba(40,167,69,0.55)", "supply": "rgba(220,53,69,0.55)"}
 _ZONE_TEXT_COLORS = {"demand": "#1e7e34", "supply": "#a71d2a"}  # dark green / dark red
 
+# Stage 2: trend-context moving-average reference lines (thin, muted so
+# they don't compete visually with the candles or zone overlays).
+_SMA50_LINE_COLOR = "#9e9e9e"   # thin grey — the 50 SMA "clock method" input
+_EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
+
+# Stage 2: zone-label flag colors — TRADEABLE/AVOID echo the trend badge's
+# bullish-green / cautionary-orange palette so they read at a glance.
+_TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
+_AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+
+# Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
+_TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
+
 
 def _fmt_zone_score(score: float) -> str:
     """Format an ODD score without a trailing ``.0`` for whole numbers
@@ -462,7 +491,12 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
       * a SOLID line on the proximal edge (the tradeable boundary) and a
         DOTTED line on the distal edge (the invalidation boundary);
       * a label at the right edge of the chart — "{TYPE} | Score {score} |
-        {strength}" — colored dark green/red, with vertical positions
+        {strength}", with the Stage 2 context flags appended: "| EMA20"
+        when ``ema20_enhancer`` is set (a confluence bonus — see
+        analysis.zone_engine.enhancers), and a colored "| TRADEABLE"
+        (green) or "| AVOID" (orange) verdict from the trend-alignment
+        safety rule (see analysis.demand_supply._apply_trend_alignment).
+        The base label is dark green/red; vertical positions are
         staggered so labels for zones close in price don't overlap.
     """
     zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
@@ -513,18 +547,74 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
             layer="below",
             row=1, col=1,
         )
+        # Stage 2 context flags appended to the label: an "| EMA20"
+        # confluence bonus (when present) and a colored TRADEABLE/AVOID
+        # verdict from the trend-alignment safety rule. Plotly annotation
+        # text supports inline <span style="color:..."> for exactly this
+        # kind of "mostly one color, one bit highlighted" label.
+        flags = " | EMA20" if zone.get("ema20_enhancer") else ""
+        if zone.get("is_tradeable"):
+            flags += f" | <span style='color:{_TRADEABLE_FLAG_COLOR}'>TRADEABLE</span>"
+        else:
+            flags += f" | <span style='color:{_AVOID_FLAG_COLOR}'>AVOID</span>"
+
         # Right-edge label, vertically staggered to avoid overlap.
         fig.add_annotation(
             x=x1, y=label_y,
             xref="x", yref="y",
             xanchor="left", yanchor="middle",
-            text=f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} | {zone['zone_strength']}",
+            text=(
+                f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} "
+                f"| {zone['zone_strength']}{flags}"
+            ),
             showarrow=False,
             align="left",
             font={"color": text_color, "size": 11},
             bgcolor="rgba(255,255,255,0.75)",
             row=1, col=1,
         )
+
+
+def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
+    """Draw the Stage 2 trend-context moving averages as thin reference
+    lines on the price chart:
+
+      * 50 SMA (thin grey) — the input to the "50 SMA clock method" trend
+        detector (see ``analysis.zone_engine.trend.detect_trend``);
+      * EMA 20 (thin blue) — the input to the EMA 20 confluence enhancer
+        (see ``analysis.zone_engine.enhancers.ema20_confluence``).
+
+    Purely visual context — these mirror (but recompute, for the visible
+    window) the same rolling/exponential averages the analysis already
+    used; they don't feed back into any score or filter.
+    """
+    if df.empty:
+        return
+    sma_period = min(50, len(df))
+    ema_period = min(20, len(df))
+    sma_series = df["Close"].rolling(window=sma_period).mean()
+    ema_series = df["Close"].ewm(span=ema_period, adjust=False).mean()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_series,
+            name="SMA 50",
+            line={"color": _SMA50_LINE_COLOR, "width": 1},
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=ema_series,
+            name="EMA 20",
+            line={"color": _EMA20_LINE_COLOR, "width": 1},
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
 
 
 def _add_sma_line(
