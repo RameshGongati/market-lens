@@ -93,7 +93,22 @@ def render_stock_detail(
     st.markdown("---")
 
     # ---------- Chart section ----------
-    st.markdown("### Price Chart")
+    # Stage 2: surface the overall trend (50 SMA clock method) as a small
+    # badge next to the chart title — green/red/grey for UP/DOWN/SIDEWAYS —
+    # so the directional context driving zone tradeability is visible at a
+    # glance, without having to read the full summary line.
+    trend = result.get("trend") if analysis_type == "Demand/Supply Zones" else None
+    if trend:
+        t_color = _TREND_BADGE_COLORS.get(trend, "#6c757d")
+        st.markdown(
+            f"### Price Chart "
+            f"<span style='color:{t_color};font-size:0.65em;background:{t_color}22;"
+            f"padding:2px 8px;border-radius:8px;border:1px solid {t_color};'>"
+            f"Trend: {trend}</span>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown("### Price Chart")
 
     # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
     # user navigated here without running a full analysis), try fetching 1 year
@@ -160,6 +175,11 @@ def render_stock_detail(
         # Slice the 1-year dataset to the selected period without a new fetch
         df_view = _filter_by_period(history_df, selected_period)
         fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)
+        if analysis_type == "Demand/Supply Zones":
+            st.caption(
+                "Showing nearest fresh zones (score >= 5). "
+                "Tested/used-up zones hidden."
+            )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning(
@@ -332,7 +352,11 @@ def _build_chart(
 
     # --- Analysis overlays ---
     if analysis_type == "Demand/Supply Zones":
-        _add_zone_overlays(fig, result)
+        _add_trend_context_lines(fig, df)
+        _add_zone_overlays(fig, result, df)
+        # Stage 3 (opt-in) — only draws anything when the Fibonacci
+        # confluence checkbox was on (detected via result["fib_levels"]).
+        _add_fibonacci_lines(fig, result, df)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
     elif analysis_type == "Short Term Investment":
@@ -404,23 +428,274 @@ def _build_chart(
     return fig
 
 
-def _add_zone_overlays(fig: go.Figure, result: dict[str, Any]) -> None:
-    for zone in result.get("demand_zones", []):
-        fig.add_hrect(
-            y0=zone["bottom"], y1=zone["top"],
-            fillcolor="rgba(40,167,69,0.12)",
+# Rule: zone styling — semi-transparent fills (demand=green, supply=red),
+# subtle boundary-line colors that echo the fill, and dark text colors for
+# the right-edge labels so they stay readable over the candlesticks.
+_ZONE_FILL_COLORS = {"demand": "rgba(40,167,69,0.15)", "supply": "rgba(220,53,69,0.15)"}
+_ZONE_LINE_COLORS = {"demand": "rgba(40,167,69,0.55)", "supply": "rgba(220,53,69,0.55)"}
+_ZONE_TEXT_COLORS = {"demand": "#1e7e34", "supply": "#a71d2a"}  # dark green / dark red
+
+# Stage 2: trend-context moving-average reference lines (thin, muted so
+# they don't compete visually with the candles or zone overlays).
+_SMA50_LINE_COLOR = "#9e9e9e"   # thin grey — the 50 SMA "clock method" input
+_EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
+
+# Stage 2: zone-label flag colors — TRADEABLE/AVOID echo the trend badge's
+# bullish-green / cautionary-orange palette so they read at a glance.
+_TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
+_AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+
+# Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
+_TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
+
+# Stage 3 (opt-in): Fibonacci retracement line styling — per the documented
+# importance ranking, the golden ratio (0.618) is drawn solid and slightly
+# thicker than the others (which are dashed) so it stands out as the most
+# important retracement level on the chart.
+_FIB_LINE_STYLES: dict[float, dict[str, Any]] = {
+    0.382: {"color": "#add8e6", "dash": "dash", "width": 1},    # light blue dashed
+    0.5:   {"color": "#ff7f0e", "dash": "dash", "width": 1},    # orange dashed
+    0.618: {"color": "#d4af37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
+    0.786: {"color": "#9b59b6", "dash": "dash", "width": 1},    # purple dashed
+}
+
+
+def _fmt_zone_score(score: float) -> str:
+    """Format an ODD score without a trailing ``.0`` for whole numbers
+    (e.g. ``6`` rather than ``6.0``) — mirrors analysis/demand_supply.py."""
+    return f"{score:g}"
+
+
+def _stagger_label_positions(zones: list[dict[str, Any]], min_gap: float) -> list[float]:
+    """Compute right-edge label y-positions for *zones*, nudging any whose
+    natural (price-aligned) positions sit closer than *min_gap* apart so
+    overlapping zone labels stay readable.
+
+    Walks zones from lowest to highest price, keeping each label at its
+    natural midpoint unless that would place it within *min_gap* of the
+    previous (lower) label — in which case it gets pushed up just far
+    enough to clear it. Returns positions in the same order as *zones*.
+    """
+    if not zones:
+        return []
+
+    order = sorted(range(len(zones)), key=lambda i: zones[i]["mid"])
+    positions = [0.0] * len(zones)
+    prev_pos: float | None = None
+    for i in order:
+        natural = zones[i]["mid"]
+        pos = natural if prev_pos is None else max(natural, prev_pos + min_gap)
+        positions[i] = pos
+        prev_pos = pos
+    return positions
+
+
+def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+    """Draw the filtered demand/supply zones as decluttered chart overlays.
+
+    ``result["demand_zones"]``/``result["supply_zones"]`` are already the
+    filtered, ranked subset produced by ``filter_zones`` (at most 3 + 3 —
+    see analysis/zone_engine/filters.py and analysis/demand_supply.py), so
+    this never has to reason about the raw, noisy full-history zone list —
+    it only has to draw what's already been chosen well.
+
+    Each zone gets:
+      * a semi-transparent rectangle (green=demand, red=supply) spanning
+        the full visible chart width, from its distal to proximal line;
+      * a SOLID line on the proximal edge (the tradeable boundary) and a
+        DOTTED line on the distal edge (the invalidation boundary);
+      * a label at the right edge of the chart — "{TYPE} | Score {score} |
+        {strength}", with the Stage 2 context flags appended: "| EMA20"
+        when ``ema20_enhancer`` is set (a confluence bonus — see
+        analysis.zone_engine.enhancers), Stage 3's "| Fib" / "| Confluence:
+        {label}" (opt-in — only when the Fibonacci checkbox was on, see
+        below), and a colored "| TRADEABLE" (green) or "| AVOID" (orange)
+        verdict from the trend-alignment safety rule (see
+        analysis.demand_supply._apply_trend_alignment). The base label is
+        dark green/red; vertical positions are staggered so labels for
+        zones close in price don't overlap.
+
+    Stage 3 (opt-in): when the Fibonacci confluence checkbox was on for
+    this analysis — detected, like ``_add_fibonacci_lines``, via the
+    presence of ``result["fib_levels"]`` — each zone's label additionally
+    gets "| Fib" (only when ``fib_confluence`` is set on that zone) and
+    "| Confluence: {confluence_label}" (the combined EMA20+Fib rating, see
+    analysis.zone_engine.scoring.confluence_rating). With the checkbox off
+    neither is shown — the label is byte-for-byte identical to Stage 2's.
+    """
+    zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+    if not zones or df.empty:
+        return
+
+    fib_active = bool(result.get("fib_levels"))
+    x0, x1 = df.index[0], df.index[-1]
+
+    # Minimum vertical spacing between labels, scaled to the chart's price
+    # range so it "just works" across very different stocks/price levels.
+    price_span = float(df["High"].max() - df["Low"].min()) or 1.0
+    min_gap = price_span * 0.035
+    label_positions = _stagger_label_positions(zones, min_gap)
+
+    for zone, label_y in zip(zones, label_positions):
+        category = zone.get("category", "demand")
+        fill_color = _ZONE_FILL_COLORS.get(category, _ZONE_FILL_COLORS["demand"])
+        line_color = _ZONE_LINE_COLORS.get(category, _ZONE_LINE_COLORS["demand"])
+        text_color = _ZONE_TEXT_COLORS.get(category, _ZONE_TEXT_COLORS["demand"])
+        proximal, distal = zone["proximal"], zone["distal"]
+        top, bottom = zone["top"], zone["bottom"]
+
+        # Shaded zone rectangle, full chart width, drawn beneath the candles.
+        fig.add_shape(
+            type="rect",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=bottom, y1=top,
+            fillcolor=fill_color,
             line_width=0,
-            annotation_text=f"Demand ({zone.get('touches', 0)} tests)",
-            annotation_position="right",
+            layer="below",
             row=1, col=1,
         )
-    for zone in result.get("supply_zones", []):
-        fig.add_hrect(
-            y0=zone["bottom"], y1=zone["top"],
-            fillcolor="rgba(220,53,69,0.12)",
-            line_width=0,
-            annotation_text=f"Supply ({zone.get('touches', 0)} tests)",
-            annotation_position="right",
+        # Proximal boundary (the tradeable edge nearest price) — SOLID.
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=proximal, y1=proximal,
+            line={"color": line_color, "width": 1.25, "dash": "solid"},
+            layer="below",
+            row=1, col=1,
+        )
+        # Distal boundary (the far/invalidation edge) — DOTTED.
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=distal, y1=distal,
+            line={"color": line_color, "width": 1, "dash": "dot"},
+            layer="below",
+            row=1, col=1,
+        )
+        # Stage 2 context flags appended to the label: an "| EMA20"
+        # confluence bonus (when present) and a colored TRADEABLE/AVOID
+        # verdict from the trend-alignment safety rule. Plotly annotation
+        # text supports inline <span style="color:..."> for exactly this
+        # kind of "mostly one color, one bit highlighted" label.
+        flags = " | EMA20" if zone.get("ema20_enhancer") else ""
+        # Stage 3 (opt-in): only when the Fibonacci checkbox was on for
+        # this analysis — otherwise the label stays byte-for-byte identical
+        # to Stage 2's (see fib_active / module docstring above).
+        if fib_active:
+            if zone.get("fib_confluence"):
+                flags += " | Fib"
+            flags += f" | Confluence: {zone.get('confluence_label', 'None')}"
+        if zone.get("is_tradeable"):
+            flags += f" | <span style='color:{_TRADEABLE_FLAG_COLOR}'>TRADEABLE</span>"
+        else:
+            flags += f" | <span style='color:{_AVOID_FLAG_COLOR}'>AVOID</span>"
+
+        # Right-edge label, vertically staggered to avoid overlap.
+        fig.add_annotation(
+            x=x1, y=label_y,
+            xref="x", yref="y",
+            xanchor="left", yanchor="middle",
+            text=(
+                f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} "
+                f"| {zone['zone_strength']}{flags}"
+            ),
+            showarrow=False,
+            align="left",
+            font={"color": text_color, "size": 11},
+            bgcolor="rgba(255,255,255,0.75)",
+            row=1, col=1,
+        )
+
+
+def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
+    """Draw the Stage 2 trend-context moving averages as thin reference
+    lines on the price chart:
+
+      * 50 SMA (thin grey) — the input to the "50 SMA clock method" trend
+        detector (see ``analysis.zone_engine.trend.detect_trend``);
+      * EMA 20 (thin blue) — the input to the EMA 20 confluence enhancer
+        (see ``analysis.zone_engine.enhancers.ema20_confluence``).
+
+    Purely visual context — these mirror (but recompute, for the visible
+    window) the same rolling/exponential averages the analysis already
+    used; they don't feed back into any score or filter.
+    """
+    if df.empty:
+        return
+    sma_period = min(50, len(df))
+    ema_period = min(20, len(df))
+    sma_series = df["Close"].rolling(window=sma_period).mean()
+    ema_series = df["Close"].ewm(span=ema_period, adjust=False).mean()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_series,
+            name="SMA 50",
+            line={"color": _SMA50_LINE_COLOR, "width": 1},
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=ema_series,
+            name="EMA 20",
+            line={"color": _EMA20_LINE_COLOR, "width": 1},
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+
+
+def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+    """Stage 3 (opt-in): draw the Fibonacci retracement levels as horizontal
+    reference lines on the price chart.
+
+    Detection follows the documented rule — *presence* of ``result["fib_levels"]``
+    is how this module tells whether the "Enhance with Fibonacci Confluence"
+    checkbox was on for this analysis (``analyse`` only ever adds that key
+    when ``use_fibonacci=True`` — see analysis/demand_supply.py). When it's
+    absent (checkbox off, or there wasn't enough history to anchor a swing),
+    this draws nothing at all — the chart is unchanged from Stage 2.
+
+    Each level gets a full-width horizontal line styled per the documented
+    importance ranking (see ``_FIB_LINE_STYLES`` — the golden ratio 0.618 is
+    solid and slightly thicker; the rest are dashed) plus a left-edge label
+    such as "Fib 61.8%". Purely visual context — no analysis/scoring math
+    lives here (see ``analysis.zone_engine.fibonacci``).
+    """
+    fib_levels = result.get("fib_levels")
+    if not fib_levels or df.empty:
+        return
+
+    x0, x1 = df.index[0], df.index[-1]
+    for ratio, price in fib_levels.items():
+        style = _FIB_LINE_STYLES.get(ratio)
+        if style is None or price is None:
+            continue
+
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=x0, x1=x1, y0=price, y1=price,
+            line={"color": style["color"], "width": style["width"], "dash": style["dash"]},
+            layer="below",
+            row=1, col=1,
+        )
+        # Left-edge label, e.g. "Fib 61.8%" — mirrors the right-edge zone
+        # labels in _add_zone_overlays but anchored to the opposite side so
+        # the two never collide.
+        fig.add_annotation(
+            x=x0, y=price,
+            xref="x", yref="y",
+            xanchor="right", yanchor="bottom",
+            text=f"Fib {ratio * 100:.1f}%",
+            showarrow=False,
+            align="right",
+            font={"color": style["color"], "size": 10},
+            bgcolor="rgba(255,255,255,0.75)",
             row=1, col=1,
         )
 
