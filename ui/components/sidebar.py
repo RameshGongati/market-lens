@@ -1,9 +1,27 @@
-"""Sidebar with global controls — market status, data source, watchlist, alerts."""
+"""Sidebar with global controls — market status, data source, watchlist, alerts.
+
+Stage B adds three grouped controls that replace the single "Analysis Type"
+dropdown:
+
+  * Trading Type (radio) — time horizon, drives data fetch in Stage C
+  * Primary Strategy (radio) — the base method; options depend on trading type
+  * ODD Enhancers (checkboxes) — optional layers, multi-select
+
+The old ANALYSIS_TYPES selectbox is removed.  ``st.session_state["use_fibonacci"]``
+is now *derived* from the Enhancers checkboxes so that the existing dashboard
+code (which reads that key) keeps working without modification.
+"""
 
 import streamlit as st
 
 from config.preferences import load_preferences, save_preferences, update_last_analysis_timestamp
-from config.settings import ANALYSIS_TYPES, CREDENTIALS_REQUIRED, SUPPORTED_DATA_SOURCES
+from config.settings import CREDENTIALS_REQUIRED, SUPPORTED_DATA_SOURCES
+from config.trading_config import (
+    ENHANCERS,
+    TRADING_TYPES,
+    get_available_primaries,
+    get_defaults,
+)
 from ui.components.alerts_toggle import render_alerts_toggle
 from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
@@ -12,8 +30,127 @@ from utils.market_hours import get_current_ist_time, get_market_countdown, is_ma
 from watchlist.manager import get_all_watchlists
 
 
+# ---------------------------------------------------------------------------
+# Session-state key helpers for the new two-axis controls
+# ---------------------------------------------------------------------------
+
+def _enhancer_key(enhancer: str) -> str:
+    """Return the sidebar session-state key for an individual enhancer checkbox.
+
+    Uses a stable, slug-style key so that renaming an enhancer in
+    TRADING_TYPES later doesn't silently clash with an old key.
+
+    Example::
+
+        >>> _enhancer_key("Fibonacci Confluence")
+        'sidebar_enhancer_fibonacci_confluence'
+    """
+    return "sidebar_enhancer_" + enhancer.replace(" ", "_").replace("/", "_").lower()
+
+
+def _init_two_axis_state() -> None:
+    """Initialise the two-axis session state keys from saved preferences.
+
+    Called once per session at the top of :func:`render_sidebar` before any
+    widgets are defined.  Uses ``setdefault`` so it never overwrites values
+    that are already in session state (e.g. from a previous rerun).
+
+    Also back-fills individual enhancer checkbox keys from ``enhancers`` so
+    that the ``st.checkbox`` calls below pick up the right initial state even
+    on the very first render.
+    """
+    prefs = load_preferences()
+    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Short-term Trading"))
+    st.session_state.setdefault("primary_strategy", prefs.get("primary_strategy", "Demand/Supply Zones"))
+    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Short-term Trading")["enhancers"]))
+    # Derive use_fibonacci from the persisted enhancers so the dashboard
+    # doesn't see a stale False value before the user changes anything.
+    st.session_state.setdefault(
+        "use_fibonacci", "Fibonacci Confluence" in st.session_state["enhancers"]
+    )
+    # Pre-populate individual checkbox keys so the widgets show the correct
+    # initial state (Streamlit ignores value= if the key already exists).
+    for enhancer in ENHANCERS:
+        st.session_state.setdefault(
+            _enhancer_key(enhancer), enhancer in st.session_state["enhancers"]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Widget callbacks (fire before the script reruns)
+# ---------------------------------------------------------------------------
+
+def _on_trading_type_change() -> None:
+    """Callback: reset primary strategy and enhancers to the new type's defaults.
+
+    When the user picks a different Trading Type, it would be confusing if the
+    Primary Strategy and Enhancers stayed at values they had for the *old* type
+    (e.g. Long-term defaults to Trend Following, but switching to Options should
+    snap back to Demand/Supply Zones + Fibonacci).  After the reset the user can
+    freely override both — this callback only fires on an explicit type change.
+    """
+    new_type: str = st.session_state.get("sidebar_trading_type", "Short-term Trading")
+    defaults = get_defaults(new_type)
+    new_primary: str = defaults["primary"]  # type: ignore[assignment]
+    new_enhancers: list[str] = list(defaults["enhancers"])  # type: ignore[arg-type]
+
+    # Sync canonical session-state keys
+    st.session_state["trading_type"] = new_type
+    st.session_state["primary_strategy"] = new_primary
+    st.session_state["enhancers"] = new_enhancers
+    st.session_state["use_fibonacci"] = "Fibonacci Confluence" in new_enhancers
+
+    # Also sync the individual widget keys so each checkbox reflects the new
+    # defaults on the very next render (Streamlit uses the key value, not
+    # value=, once a key exists in session state).
+    st.session_state["sidebar_primary_strategy"] = new_primary
+    for enhancer in ENHANCERS:
+        st.session_state[_enhancer_key(enhancer)] = enhancer in new_enhancers
+
+    save_preferences({
+        "trading_type": new_type,
+        "primary_strategy": new_primary,
+        "enhancers": new_enhancers,
+    })
+
+
+def _on_primary_strategy_change() -> None:
+    """Callback: persist a user-driven primary-strategy change."""
+    new_primary: str = st.session_state.get("sidebar_primary_strategy", "Demand/Supply Zones")
+    st.session_state["primary_strategy"] = new_primary
+    save_preferences({"primary_strategy": new_primary})
+
+
+def _on_enhancer_change() -> None:
+    """Callback: rebuild the ``enhancers`` list from individual checkbox states
+    and keep ``use_fibonacci`` in sync for backward-compatible callers.
+    """
+    new_enhancers = [e for e in ENHANCERS if st.session_state.get(_enhancer_key(e), False)]
+    st.session_state["enhancers"] = new_enhancers
+    st.session_state["use_fibonacci"] = "Fibonacci Confluence" in new_enhancers
+    save_preferences({"enhancers": new_enhancers})
+
+
 def render_sidebar() -> None:
-    """Render the full sidebar including market status and all controls."""
+    """Render the full sidebar including market status and all controls.
+
+    Initialises the two-axis session state keys from saved preferences on the
+    first call of the session, then renders:
+
+    1. Market status (IST clock + open/closed badge)
+    2. Navigation buttons
+    3. Data source selector
+    4. Watchlist selector
+    5. **Trading Type** radio (new — Stage B)
+    6. **Primary Strategy** radio (new — Stage B)
+    7. **ODD Enhancers** checkboxes (new — Stage B; replaces old Fib checkbox)
+    8. Run Analysis / Re-run Last buttons
+    9. Alerts toggle
+    10. Notifications
+    """
+    # Initialise two-axis state once per session before any widget renders.
+    _init_two_axis_state()
+
     with st.sidebar:
         st.title("📈 Market Lens")
 
@@ -93,46 +230,59 @@ def render_sidebar() -> None:
 
         st.markdown("---")
 
-        # ---------- Analysis Type ----------
-        st.markdown("**Analysis Type**")
-        current_analysis = st.session_state.get("selected_analysis_type", ANALYSIS_TYPES[0])
-        analysis_idx = ANALYSIS_TYPES.index(current_analysis) if current_analysis in ANALYSIS_TYPES else 0
-        selected_analysis = st.selectbox(
-            "Select analysis",
-            ANALYSIS_TYPES,
-            index=analysis_idx,
-            key="sidebar_analysis_select",
+        # ---------- Trading Type (axis 1) ----------
+        st.markdown("**Trading Type**")
+        _tt = st.session_state.get("trading_type", "Short-term Trading")
+        _tt_idx = TRADING_TYPES.index(_tt) if _tt in TRADING_TYPES else 0
+        st.radio(
+            "Trading Type",
+            TRADING_TYPES,
+            index=_tt_idx,
+            key="sidebar_trading_type",
             label_visibility="collapsed",
+            on_change=_on_trading_type_change,
         )
-        if selected_analysis != current_analysis:
-            st.session_state.selected_analysis_type = selected_analysis
-            save_preferences({"selected_analysis_type": selected_analysis})
+        # Keep the canonical key in sync with the widget key on every render.
+        st.session_state["trading_type"] = st.session_state["sidebar_trading_type"]
 
-        # ---------- Stage 3: Fibonacci confluence (opt-in) ----------
-        # Only relevant to Demand/Supply Zones — hidden for every other
-        # analysis type. Mirrors the selectbox pattern above: read the
-        # current app-state value, compare against the widget's return, and
-        # persist + save_preferences() only on a real change.
-        if selected_analysis == "Demand/Supply Zones":
-            current_use_fib = st.session_state.get("use_fibonacci", False)
-            use_fibonacci = st.checkbox(
-                "Enhance with Fibonacci Confluence",
-                value=current_use_fib,
-                key="sidebar_use_fibonacci",
-            )
-            if use_fibonacci != current_use_fib:
-                st.session_state.use_fibonacci = use_fibonacci
-                save_preferences({"use_fibonacci": use_fibonacci})
+        # ---------- Primary Strategy (axis 2) ----------
+        st.markdown("**Primary Strategy**")
+        _selected_tt = st.session_state["trading_type"]
+        _available = get_available_primaries(_selected_tt)
+        _ps = st.session_state.get("primary_strategy", _available[0])
+        # Guard: if the stored primary is no longer available for the current
+        # trading type (e.g. after a type change mid-session), snap to the
+        # first available option so the radio never shows a stale value.
+        if _ps not in _available:
+            _ps = _available[0]
+            st.session_state["primary_strategy"] = _ps
+        _ps_idx = _available.index(_ps)
+        st.radio(
+            "Primary Strategy",
+            _available,
+            index=_ps_idx,
+            key="sidebar_primary_strategy",
+            label_visibility="collapsed",
+            on_change=_on_primary_strategy_change,
+        )
+        st.session_state["primary_strategy"] = st.session_state["sidebar_primary_strategy"]
 
-            # Disabled placeholder for a future feature — no logic, just a
-            # visible "coming soon" marker directly below the Fibonacci
-            # toggle.
+        # ---------- ODD Enhancers (axis 2 — multi-select) ----------
+        st.markdown("**ODD Enhancers**")
+        for _enhancer in ENHANCERS:
             st.checkbox(
-                "Options Trading (coming soon)",
-                value=False,
-                disabled=True,
-                key="sidebar_options_trading_placeholder",
+                _enhancer,
+                key=_enhancer_key(_enhancer),
+                on_change=_on_enhancer_change,
             )
+        # After rendering, rebuild the canonical enhancers list and derive
+        # use_fibonacci for backward-compatible code that reads that key.
+        st.session_state["enhancers"] = [
+            e for e in ENHANCERS if st.session_state.get(_enhancer_key(e), False)
+        ]
+        st.session_state["use_fibonacci"] = (
+            "Fibonacci Confluence" in st.session_state["enhancers"]
+        )
 
         st.markdown("---")
 

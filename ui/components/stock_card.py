@@ -2,6 +2,7 @@
 
 import math
 from datetime import datetime
+from typing import Any
 
 import streamlit as st
 
@@ -15,6 +16,13 @@ _STATUS_CONFIG = {
 }
 _DEFAULT_CONFIG = _STATUS_CONFIG["neutral"]
 
+# Trend Following signal badge colors (BUY/SELL/HOLD)
+_TF_SIGNAL_COLORS = {
+    "BUY":  {"bg": "#28a745", "text": "white"},
+    "SELL": {"bg": "#dc3545", "text": "white"},
+    "HOLD": {"bg": "#6c757d", "text": "white"},
+}
+
 
 def render_stock_card(
     symbol: str,
@@ -27,6 +35,7 @@ def render_stock_card(
     stock_id: int,
     strength: str = "Weak",
     updated_at: datetime | str | None = None,
+    result: dict[str, Any] | None = None,
 ) -> None:
     """Render a colour-coded stock card with full price and strength info.
 
@@ -41,6 +50,11 @@ def render_stock_card(
         stock_id: Database ID used to navigate to detail view.
         strength: "Strong", "Medium", or "Weak".
         updated_at: Timestamp of the last analysis run.
+        result: Full analysis result dict (optional). When present and the
+            result shape is ``strategy == "Trend Following"``, the card
+            shows BUY/SELL/HOLD prominently and surfaces the cross context
+            in the badge row; for Demand/Supply results behaviour is
+            unchanged.
     """
     cfg = _STATUS_CONFIG.get(status, _DEFAULT_CONFIG)
     icon = cfg["icon"]
@@ -66,6 +80,53 @@ def render_stock_card(
         price_html = "<span style='color:#999;font-style:italic;'>Price unavailable</span>"
         change_html = "—"
 
+    # --- Strategy-aware badge row -------------------------------------------
+    # For Trend Following results: show BUY/SELL/HOLD prominently instead of
+    # BULLISH/BEARISH/NEUTRAL, and surface the cross type if recent.
+    # For Demand/Supply (or any other shape): fall back to status badge.
+    # All result access is defensive via .get() so neither shape breaks the card.
+    _is_tf = (result or {}).get("strategy") == "Trend Following"
+    if _is_tf:
+        _signal = (result or {}).get("signal", "HOLD")
+        _sig_cfg = _TF_SIGNAL_COLORS.get(_signal, _TF_SIGNAL_COLORS["HOLD"])
+        _last_cross = (result or {}).get("last_cross") or {}
+        _cross_type = _last_cross.get("type")
+        _candles_ago = _last_cross.get("candles_ago")
+        # Show cross badge only if recent (within 30 candles)
+        _show_cross = (
+            _cross_type is not None
+            and isinstance(_candles_ago, int)
+            and _candles_ago <= 30
+        )
+        _cross_label = (
+            f"{'Golden' if _cross_type == 'golden' else 'Death'} Cross ({_candles_ago}c)"
+            if _show_cross else ""
+        )
+        _cross_badge_html = (
+            f"&nbsp;<span style='font-size:0.72rem;"
+            f"background:{'#28a745' if _cross_type == 'golden' else '#dc3545'};"
+            f"color:white;padding:2px 7px;border-radius:10px;font-weight:600;'>"
+            f"{_cross_label}</span>"
+        ) if _show_cross else ""
+        primary_badge_html = (
+            f"<span style='font-size:0.72rem;background:{_sig_cfg['bg']};"
+            f"color:{_sig_cfg['text']};padding:2px 7px;border-radius:10px;"
+            f"font-weight:600;'>{_signal}</span>"
+            f"{_cross_badge_html}"
+        )
+    else:
+        primary_badge_html = (
+            f"<span style='font-size:0.72rem;background:{cfg['border']};color:white;"
+            f"padding:2px 7px;border-radius:10px;font-weight:600;'>"
+            f"{status.upper()}</span>"
+        )
+    # Strength badge — shared by both strategies
+    strength_badge_html = (
+        f"<span style='font-size:0.72rem;background:{strength_bg};color:{strength_color};"
+        f"padding:2px 7px;border-radius:10px;font-weight:600;"
+        f"border:1px solid {strength_color};'>{strength}</span>"
+    )
+
     card_html = f"""
     <div style="
         background:{cfg['bg']};
@@ -83,15 +144,9 @@ def render_stock_card(
                 <div style="font-size:0.75rem;color:#666;margin-top:1px;">{company_name}</div>
             </div>
             <div style="text-align:right;">
-                <span style="font-size:0.72rem;background:{cfg['border']};color:white;
-                    padding:2px 7px;border-radius:10px;font-weight:600;">
-                    {status.upper()}
-                </span>
+                {primary_badge_html}
                 &nbsp;
-                <span style="font-size:0.72rem;background:{strength_bg};color:{strength_color};
-                    padding:2px 7px;border-radius:10px;font-weight:600;border:1px solid {strength_color};">
-                    {strength}
-                </span>
+                {strength_badge_html}
             </div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">

@@ -1,5 +1,6 @@
 """Full detailed stock analysis view with chart toggle, history, and notes."""
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +10,16 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
+from analysis.demand_supply import DemandSupplyAnalysis
+from analysis.trend_following import TrendFollowingAnalysis
+from config.trading_config import get_timeframe
+from data.manager import (
+    INTERVAL_OPTIONS,
+    default_interval_label,
+    fetch_by_interval,
+    fetch_for_trading_type,
+    interval_display_label,
+)
 from storage.database import (
     compare_analysis_results,
     delete_note,
@@ -25,6 +36,26 @@ _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107
 
 # Lookback windows (calendar days) for the period selector buttons
 _PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+
+# Interval-selector labels list — stable order for the radio widget.
+_INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
+
+
+def _make_analyser_for_chart(primary_strategy: str):
+    """Instantiate the correct analyser for a chart re-analysis.
+
+    Local copy of the dashboard routing logic — avoids a circular import
+    (dashboard imports stock_detail; stock_detail must not import dashboard).
+
+    Args:
+        primary_strategy: One of ``config.trading_config.PRIMARY_STRATEGIES``.
+
+    Returns:
+        A fresh :class:`~analysis.base.BaseAnalysis` instance.
+    """
+    if primary_strategy == "Trend Following (SMA50/EMA20)":
+        return TrendFollowingAnalysis()
+    return DemandSupplyAnalysis()
 
 
 def render_stock_detail(
@@ -68,7 +99,17 @@ def render_stock_detail(
         f"padding:2px 8px;border-radius:8px;border:1px solid {s_color};'>{strength}</span>",
         unsafe_allow_html=True,
     )
-    st.caption(f"{company_name} · {exchange} · {analysis_type} · ₹{current_price:,.2f}")
+    # Stage C: show the effective timeframe alongside analysis type.
+    # Prefer the session-state label (which reflects any intraday fallback)
+    # over the configured label from get_timeframe().
+    _trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    _tf_label = st.session_state.get("_used_tf_label") or interval_display_label(
+        get_timeframe(_trading_type)["interval"]
+    )
+    st.caption(
+        f"{company_name} · {exchange} · {analysis_type} · "
+        f"Timeframe: {_tf_label} · ₹{current_price:,.2f}"
+    )
 
     if "error" in result:
         st.error(result["error"])
@@ -85,6 +126,11 @@ def render_stock_detail(
                     watchlist_name="single",
                     analysis_type=analysis_type,
                     symbol_filter=symbol,
+                    trading_type=st.session_state.get("trading_type", ""),
+                    primary_strategy=st.session_state.get(
+                        "primary_strategy", analysis_type
+                    ),
+                    enhancers=st.session_state.get("enhancers", []),
                 )
                 st.success(f"Exported to: `{path}`")
             except Exception as exc:
@@ -93,40 +139,29 @@ def render_stock_detail(
     st.markdown("---")
 
     # ---------- Chart section ----------
-    # Stage 2: surface the overall trend (50 SMA clock method) as a small
-    # badge next to the chart title — green/red/grey for UP/DOWN/SIDEWAYS —
-    # so the directional context driving zone tradeability is visible at a
-    # glance, without having to read the full summary line.
-    trend = result.get("trend") if analysis_type == "Demand/Supply Zones" else None
-    if trend:
-        t_color = _TREND_BADGE_COLORS.get(trend, "#6c757d")
-        st.markdown(
-            f"### Price Chart "
-            f"<span style='color:{t_color};font-size:0.65em;background:{t_color}22;"
-            f"padding:2px 8px;border-radius:8px;border:1px solid {t_color};'>"
-            f"Trend: {trend}</span>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown("### Price Chart")
+    # -----------------------------------------------------------------------
+    # Interval selector — lets the user pick candle size independently of
+    # the trading-type default.  Changing it re-fetches data AND re-runs
+    # analysis at the new interval so chart overlays stay consistent.
+    # -----------------------------------------------------------------------
+    _trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    _default_label = default_interval_label(_trading_type)
+    _iv_key = f"detail_interval_radio_{symbol}"
+    # Initialise to the trading-type default on first open for this stock.
+    st.session_state.setdefault(_iv_key, _default_label)
 
-    # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
-    # user navigated here without running a full analysis), try fetching 1 year
-    # of daily data directly from Yahoo Finance before giving up.
-    if history_df is None or history_df.empty:
-        try:
-            import yfinance as yf
-            suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            fetched = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
-            history_df = fetched if not fetched.empty else None
-        except Exception as exc:
-            logger.warning("Fallback chart fetch failed for %s: %s", symbol, exc)
-            history_df = None
+    # Prime the per-interval cache with the dashboard's already-computed result
+    # for the default interval so the first render is instant (no extra fetch).
+    _default_cache_key = f"detail_cache_{symbol}_{_default_label}"
+    if (
+        st.session_state.get(_default_cache_key) is None
+        and history_df is not None
+        and not history_df.empty
+    ):
+        st.session_state[_default_cache_key] = (history_df, result, "")
 
-    # Chart controls row: type toggle on the left, period selector on the right.
-    # The period selector only applies to the Plotly-rendered chart types —
-    # the TradingView widget has its own built-in timeframe controls.
-    ct_col, pd_col = st.columns([2, 5])
+    # Chart controls: Chart Type | Candle Interval
+    ct_col, iv_col = st.columns([2, 5])
     with ct_col:
         chart_type = st.radio(
             "Chart Type",
@@ -134,23 +169,117 @@ def render_stock_detail(
             horizontal=True,
             key="chart_type_radio",
         )
+
+    # Interval selector — hidden for TradingView (TV has its own controls)
+    if chart_type != "TradingView":
+        with iv_col:
+            _cur_label = st.session_state.get(_iv_key, _default_label)
+            _cur_idx = (
+                _INTERVAL_LABELS.index(_cur_label)
+                if _cur_label in _INTERVAL_LABELS else 0
+            )
+            interval_label: str = st.radio(
+                "Candle Interval",
+                _INTERVAL_LABELS,
+                index=_cur_idx,
+                horizontal=True,
+                key=_iv_key,
+            )
+    else:
+        interval_label = st.session_state.get(_iv_key, _default_label)
+
+    # Period range — zoom/window on the fetched data (does not re-fetch)
     selected_period = "1Y"
     if chart_type != "TradingView":
-        with pd_col:
-            selected_period = st.radio(
-                "Period",
-                list(_PERIOD_DAYS.keys()),
-                index=4,           # default: 1Y (show all fetched data)
-                horizontal=True,
-                key="chart_period_radio",
-                label_visibility="collapsed",
-            )
+        selected_period = st.radio(
+            "Period",
+            list(_PERIOD_DAYS.keys()),
+            index=4,
+            horizontal=True,
+            key="chart_period_radio",
+            label_visibility="collapsed",
+        )
 
+    # -----------------------------------------------------------------------
+    # Fetch + re-analyse for the selected interval (with per-stock caching).
+    # Cache key: f"detail_cache_{symbol}_{interval_label}" — switching back
+    # to a previously viewed interval reuses the cached (df, result) pair
+    # without an additional network call.
+    # -----------------------------------------------------------------------
+    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}"
+    if st.session_state.get(_chart_cache_key) is None:
+        # Need a fresh fetch at this interval.
+        suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
+        full_symbol = f"{symbol}{suffix}"
+        with st.spinner(f"Fetching {interval_label} data for {symbol}…"):
+            _chart_df, _fetch_meta = fetch_by_interval(full_symbol, interval_label)
+
+        if _chart_df is not None and not _chart_df.empty:
+            # Re-run the same primary strategy on the interval-specific data.
+            _primary = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+            _analyser = _make_analyser_for_chart(_primary)
+            _use_fib = st.session_state.get("use_fibonacci", False)
+            try:
+                if isinstance(_analyser, DemandSupplyAnalysis):
+                    _chart_result = _analyser.analyse(
+                        symbol, _chart_df, use_fibonacci=_use_fib
+                    )
+                else:
+                    _chart_result = _analyser.analyse(symbol, _chart_df)
+            except Exception as exc:
+                logger.warning(
+                    "Interval re-analysis failed for %s at %s: %s",
+                    symbol, interval_label, exc,
+                )
+                _chart_result = result  # safe fallback — use dashboard result
+            # Preserve the live price from the dashboard quote so the header
+            # caption stays accurate regardless of what the resampled close is.
+            _live_price = result.get("current_price", 0.0)
+            if _live_price and _live_price > 0:
+                _chart_result["current_price"] = _live_price
+            for _k in ("change_pct", "change", "exchange", "stock_id"):
+                if _k in result:
+                    _chart_result[_k] = result[_k]
+        else:
+            _chart_df = None
+            _chart_result = result  # safe fallback
+
+        _cache_msg = _fetch_meta.get("message", "")
+        st.session_state[_chart_cache_key] = (_chart_df, _chart_result, _cache_msg)
+
+    chart_df, chart_result, chart_meta_msg = st.session_state[_chart_cache_key]
+
+    # Caption: shows which interval the chart uses and any fallback note.
+    _interval_caption = f"Candles: **{interval_label}** | Analysis recomputed at this interval"
+    if chart_meta_msg:
+        _interval_caption += f" | ⚠️ {chart_meta_msg}"
+    st.caption(_interval_caption)
+
+    # Rebuild trend/signal badges from the chart_result (reflects the chosen interval)
+    _chart_trend = chart_result.get("trend")
+    _chart_is_tf = chart_result.get("strategy") == "Trend Following"
+    chart_header = "### Price Chart"
+    if _chart_trend:
+        _tc = _TREND_BADGE_COLORS.get(_chart_trend, "#6c757d")
+        chart_header += (
+            f" <span style='color:{_tc};font-size:0.65em;background:{_tc}22;"
+            f"padding:2px 8px;border-radius:8px;border:1px solid {_tc};'>"
+            f"Trend: {_chart_trend}</span>"
+        )
+    if _chart_is_tf:
+        _chart_signal = chart_result.get("signal", "HOLD")
+        _sc = {"BUY": "#28a745", "SELL": "#dc3545"}.get(_chart_signal, "#6c757d")
+        chart_header += (
+            f" <span style='color:{_sc};font-size:0.65em;background:{_sc}22;"
+            f"padding:2px 8px;border-radius:8px;border:1px solid {_sc};'>"
+            f"Signal: {_chart_signal}</span>"
+        )
+    st.markdown(chart_header, unsafe_allow_html=True)
+
+    # -----------------------------------------------------------------------
+    # Render the chart
+    # -----------------------------------------------------------------------
     if chart_type == "TradingView":
-        # Primary entry point: open the live, fully-interactive chart (with
-        # all timeframes, indicators and drawing tools) directly on
-        # tradingview.com. The placeholder box rendered below explains why —
-        # the embedded widget can't reliably load Indian market data here.
         link_col, hint_col = st.columns([1, 3])
         with link_col:
             st.link_button(
@@ -162,7 +291,6 @@ def render_stock_detail(
                 "Opens candlestick chart in TradingView. "
                 "Log in to TradingView for full access."
             )
-
         render_tradingview_chart(
             symbol=symbol,
             exchange=exchange,
@@ -171,31 +299,39 @@ def render_stock_detail(
             compact=False,
             theme="light",
         )
-    elif history_df is not None and not history_df.empty:
-        # Slice the 1-year dataset to the selected period without a new fetch
-        df_view = _filter_by_period(history_df, selected_period)
-        fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)
+    elif chart_df is not None and not chart_df.empty:
+        # _filter_by_period slices the fetched data for the Period range zoom.
+        # Guard: if the slice would be empty (e.g. 1W window on Monthly candles),
+        # _filter_by_period already falls back to the full dataset — no extra
+        # handling needed here.
+        df_view = _filter_by_period(chart_df, selected_period)
+        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
                 "Tested/used-up zones hidden."
             )
+        elif analysis_type == "Trend Following (SMA50/EMA20)":
+            st.caption(
+                "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
+                "if within the displayed window."
+            )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning(
-            "Unable to load chart data. "
-            "Please check your internet connection and try again."
+            "Unable to load chart data for the selected interval. "
+            "Try a different interval or check your internet connection."
         )
 
     st.markdown("---")
 
-    # ---------- Key metrics ----------
-    _render_metrics(result, analysis_type)
+    # ---------- Key metrics (from the interval-specific re-analysis) ----------
+    _render_metrics(chart_result, analysis_type)
 
     st.markdown("---")
 
-    # ---------- Recommendation ----------
-    recommendation = result.get("recommendation") or result.get("summary", "")
+    # ---------- Recommendation (from the interval-specific re-analysis) ----------
+    recommendation = chart_result.get("recommendation") or chart_result.get("summary", "")
     if recommendation:
         st.markdown("### Recommendation")
         for line in recommendation.split("\n"):
@@ -230,6 +366,23 @@ def _render_metrics(result: dict[str, Any], analysis_type: str) -> None:
             ("Nearest Demand", f"₹{nd['mid']:,.2f}" if nd else "—"),
             ("Nearest Supply", f"₹{ns['mid']:,.2f}" if ns else "—"),
             ("Strength", result.get("strength", "—")),
+        ]
+    elif analysis_type == "Trend Following (SMA50/EMA20)":
+        _last_cross = result.get("last_cross") or {}
+        _cross_t = _last_cross.get("type")
+        _cross_ago = _last_cross.get("candles_ago")
+        _cross_str = (
+            f"{_cross_t.capitalize()} ({_cross_ago}c ago)"
+            if _cross_t and _cross_ago is not None
+            else ("—" if not _cross_t else _cross_t.capitalize())
+        )
+        _sma_fast = result.get("sma_fast_now")
+        _sma_slow = result.get("sma_slow_now")
+        metrics = [
+            ("Current Price", f"₹{result.get('current_price', 0):,.2f}"),
+            ("Signal", result.get("signal", "—")),
+            ("SMA 50", f"₹{_sma_fast:,.2f}" if _sma_fast is not None else "—"),
+            ("Last Cross", _cross_str),
         ]
     elif analysis_type == "Long Term Investment":
         metrics = [
@@ -357,6 +510,11 @@ def _build_chart(
         # Stage 3 (opt-in) — only draws anything when the Fibonacci
         # confluence checkbox was on (detected via result["fib_levels"]).
         _add_fibonacci_lines(fig, result, df)
+    elif analysis_type == "Trend Following (SMA50/EMA20)":
+        # Prominent 50 SMA + 200 SMA lines plus a cross marker — no zone
+        # rectangles (there are none in a Trend Following result).
+        _add_tf_sma_lines(fig, df)
+        _add_tf_cross_marker(fig, df, result)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
     elif analysis_type == "Short Term Investment":
@@ -649,6 +807,124 @@ def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
     )
 
 
+def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
+    """Draw the 50 SMA (orange, prominent) and 200 SMA (navy, prominent) for
+    a Trend Following chart.
+
+    Both are computed fresh on the visible ``df`` window.  They are drawn
+    more prominently (width 2.0) than the thin reference lines used on
+    Demand/Supply charts (width 1.0) because they are the primary signal
+    inputs for the Trend Following strategy, not just context decoration.
+    """
+    if df.empty:
+        return
+
+    from analysis.trend_following import SMA_FAST, SMA_SLOW
+
+    sma_fast_series = df["Close"].rolling(window=min(SMA_FAST, len(df))).mean()
+    sma_slow_series = df["Close"].rolling(window=min(SMA_SLOW, len(df))).mean()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_fast_series,
+            name=f"SMA {SMA_FAST}",
+            line={"color": "#ff7f0e", "width": 2.0},   # orange — the fast SMA
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_slow_series,
+            name=f"SMA {SMA_SLOW}",
+            line={"color": "#1a237e", "width": 2.0},   # navy blue — the slow SMA
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+
+
+def _add_tf_cross_marker(
+    fig: go.Figure, df: pd.DataFrame, result: dict[str, Any]
+) -> None:
+    """Mark the most recent golden/death cross on the chart, if visible.
+
+    Reads ``result["last_cross"]`` (set by ``TrendFollowingAnalysis``).
+    The cross is only annotated when it falls within the displayed ``df``
+    window (``candles_ago`` < ``len(df)``); stale crosses that predate
+    the visible range are silently skipped — they would be off the x-axis.
+
+    Marker style:
+    * Golden cross — green upward triangle + "Golden Cross" annotation above.
+    * Death cross  — red downward triangle + "Death Cross" annotation below.
+    """
+    if df.empty:
+        return
+
+    last_cross = result.get("last_cross") or {}
+    cross_type = last_cross.get("type")
+    candles_ago = last_cross.get("candles_ago")
+
+    if cross_type is None or candles_ago is None:
+        return
+    if not isinstance(candles_ago, int) or candles_ago >= len(df):
+        return   # cross is older than the visible window
+
+    cross_bar_pos = len(df) - 1 - candles_ago
+    cross_x = df.index[cross_bar_pos]
+    try:
+        cross_y = float(df["Close"].iloc[cross_bar_pos])
+    except Exception:
+        return
+
+    is_golden = cross_type == "golden"
+    marker_color = "#28a745" if is_golden else "#dc3545"
+    marker_symbol = "triangle-up" if is_golden else "triangle-down"
+    label = "Golden Cross" if is_golden else "Death Cross"
+    text_pos = "top center" if is_golden else "bottom center"
+    ay = -40 if is_golden else 40
+
+    # Scatter marker at the cross candle
+    fig.add_trace(
+        go.Scatter(
+            x=[cross_x],
+            y=[cross_y],
+            mode="markers",
+            marker={
+                "symbol": marker_symbol,
+                "color": marker_color,
+                "size": 14,
+                "line": {"color": "white", "width": 1},
+            },
+            name=label,
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    # Text annotation pointing to the cross
+    fig.add_annotation(
+        x=cross_x,
+        y=cross_y,
+        xref="x",
+        yref="y",
+        text=label,
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor=marker_color,
+        arrowsize=1,
+        arrowwidth=1.5,
+        ay=ay,
+        ax=0,
+        font={"color": marker_color, "size": 11, "family": "Arial Bold"},
+        bgcolor="rgba(255,255,255,0.85)",
+        bordercolor=marker_color,
+        borderwidth=1,
+        row=1, col=1,
+    )
+
+
 def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
     """Stage 3 (opt-in): draw the Fibonacci retracement levels as horizontal
     reference lines on the price chart.
@@ -672,14 +948,32 @@ def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFram
 
     x0, x1 = df.index[0], df.index[-1]
     for ratio, price in fib_levels.items():
-        style = _FIB_LINE_STYLES.get(ratio)
-        if style is None or price is None:
+        # Coerce the ratio key to float so a JSON round-tripped result (whose
+        # dict keys become strings, e.g. "0.618") still matches _FIB_LINE_STYLES
+        # and labels correctly instead of being silently dropped.
+        try:
+            ratio_f = float(ratio)
+        except (TypeError, ValueError):
+            continue
+        style = _FIB_LINE_STYLES.get(ratio_f)
+        if style is None:
+            continue
+
+        # Guard: only ever draw a real, finite, positive price. A 0/NaN/None
+        # level (e.g. from a degenerate swing anchored on a partial candle)
+        # must never be plotted — it would drag the y-axis toward 0 and
+        # collapse every Fib line to the bottom of the chart.
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(price_f) or price_f <= 0:
             continue
 
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=price, y1=price,
+            x0=x0, x1=x1, y0=price_f, y1=price_f,
             line={"color": style["color"], "width": style["width"], "dash": style["dash"]},
             layer="below",
             row=1, col=1,
@@ -688,10 +982,10 @@ def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFram
         # labels in _add_zone_overlays but anchored to the opposite side so
         # the two never collide.
         fig.add_annotation(
-            x=x0, y=price,
+            x=x0, y=price_f,
             xref="x", yref="y",
             xanchor="right", yanchor="bottom",
-            text=f"Fib {ratio * 100:.1f}%",
+            text=f"Fib {ratio_f * 100:.1f}%",
             showarrow=False,
             align="right",
             font={"color": style["color"], "size": 10},

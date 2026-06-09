@@ -16,12 +16,9 @@ SUPPORTED_DATA_SOURCES: list[str] = [
     "TradingView",
 ]
 
-ANALYSIS_TYPES: list[str] = [
-    "Demand/Supply Zones",
-    "Long Term Investment",
-    "Short Term Investment",
-    "Intraday Trading",
-]
+# NOTE: the legacy ANALYSIS_TYPES constant was removed in the Stage F
+# migration. The analysis model is now the two-axis Trading Type + Primary
+# Strategy + Enhancers system defined in ``config.trading_config``.
 
 EXCHANGES: list[str] = ["NSE", "BSE"]
 

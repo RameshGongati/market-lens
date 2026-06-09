@@ -2,15 +2,16 @@
 
 import math
 
+import pandas as pd
 import yfinance as yf
 import streamlit as st
 
 from alerts.manager import check_and_trigger_alerts
+from analysis.base import BaseAnalysis
 from analysis.demand_supply import DemandSupplyAnalysis
-from analysis.intraday import IntradayAnalysis
-from analysis.long_term import LongTermAnalysis
-from analysis.short_term import ShortTermAnalysis
-from data.manager import DataSourceManager
+from analysis.trend_following import TrendFollowingAnalysis
+from config.trading_config import get_timeframe
+from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
 from storage.database import get_all_alerts, save_analysis_result
 from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
@@ -20,22 +21,33 @@ from watchlist.manager import get_all_watchlists, get_stocks
 
 logger = get_logger(__name__)
 
-_ANALYSIS_MAP = {
-    "Demand/Supply Zones": DemandSupplyAnalysis,
-    "Long Term Investment": LongTermAnalysis,
-    "Short Term Investment": ShortTermAnalysis,
-    "Intraday Trading": IntradayAnalysis,
-}
-
-_PERIOD_MAP = {
-    "Demand/Supply Zones": ("1y", "1d"),
-    "Long Term Investment": ("2y", "1d"),
-    "Short Term Investment": ("6mo", "1d"),
-    "Intraday Trading": ("5d", "15m"),
-}
-
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
+
+
+def get_analyzer_for_primary(primary_strategy: str) -> BaseAnalysis:
+    """Return the correct :class:`BaseAnalysis` instance for *primary_strategy*.
+
+    Stage D real routing — instantiates the correct analyzer class rather than
+    mapping to a legacy string key as the now-removed Stage B bridge did.
+
+    Args:
+        primary_strategy: One of ``config.trading_config.PRIMARY_STRATEGIES``.
+
+    Returns:
+        A fresh analyzer instance. Falls back to :class:`DemandSupplyAnalysis`
+        for any unknown value so the app always produces a result.
+
+    Example::
+
+        >>> get_analyzer_for_primary("Trend Following (SMA50/EMA20)")
+        TrendFollowingAnalysis()
+        >>> get_analyzer_for_primary("Demand/Supply Zones")
+        DemandSupplyAnalysis()
+    """
+    if primary_strategy == "Trend Following (SMA50/EMA20)":
+        return TrendFollowingAnalysis()
+    return DemandSupplyAnalysis()
 
 
 def _valid_price(raw: object) -> float | None:
@@ -61,8 +73,19 @@ def render_dashboard() -> None:
         return
 
     watchlist_id = st.session_state.get("selected_watchlist_id")
-    analysis_type = st.session_state.get("selected_analysis_type", "Demand/Supply Zones")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+
+    # Stage D — read the two-axis selections; analysis_type IS primary_strategy
+    # now that the Stage B temporary bridge is removed and real routing is live.
+    # Stage C keeps driving timeframe via get_timeframe(trading_type).
+    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+    enhancers: list[str] = st.session_state.get("enhancers", [])
+    analysis_type = primary_strategy  # "Demand/Supply Zones" or "Trend Following (SMA50/EMA20)"
+    # Stage C: effective timeframe label for display (requests the configured
+    # interval; updated to show "unavailable" after analysis if fallback fired).
+    _tf = get_timeframe(trading_type)
+    _tf_label = interval_display_label(_tf["interval"])
 
     st.title("📈 Market Lens — Dashboard")
 
@@ -77,7 +100,13 @@ def render_dashboard() -> None:
     except Exception:
         wl_name = "Unknown"
 
-    st.subheader(f"{wl_name} — {analysis_type}")
+    # Show the two-axis selection and effective timeframe in the header.
+    _enhancer_label = ", ".join(enhancers) if enhancers else "None"
+    st.subheader(f"{wl_name} | {trading_type} | {primary_strategy} | Enhancers: {_enhancer_label}")
+    # Timeframe caption — read from session state so it persists across reruns
+    # (e.g. the user filters/sorts without re-running analysis).
+    _used_tf_label = st.session_state.get("_used_tf_label", _tf_label)
+    st.caption(f"Timeframe: {_used_tf_label}")
 
     if not st.session_state.get("analysing"):
         cached = st.session_state.get("analysis_results", {})
@@ -105,8 +134,10 @@ def render_dashboard() -> None:
         st.error(f"Could not connect to {source_name}: {exc}")
         return
 
-    period, interval = _PERIOD_MAP.get(analysis_type, ("1y", "1d"))
+    # Fetch timeframe is driven entirely by the trading type via
+    # get_timeframe(trading_type) / fetch_for_trading_type (see the loop below).
     results: dict[str, dict] = {}
+    fallback_symbols: list[str] = []   # tracks stocks where intraday fell back
     progress = st.progress(0, text="Analysing stocks…")
     alerts_on = st.session_state.get("alerts_on", False)
 
@@ -115,15 +146,24 @@ def render_dashboard() -> None:
         symbol = _make_symbol(stock.symbol, stock.exchange, source_name)
         try:
             quote = ds_manager.get_quote(symbol)
-            hist = ds_manager.get_history(symbol, period, interval)
-            analyser_cls = _ANALYSIS_MAP[analysis_type]
-            analyser = analyser_cls()
-            if analysis_type == "Demand/Supply Zones":
-                # Stage 3: thread the opt-in "Enhance with Fibonacci
-                # Confluence" sidebar checkbox through to the orchestrator —
-                # other analysis types don't accept this kwarg.
+            # Stage C: fetch with trading-type-aware timeframe + intraday fallback.
+            hist, fetch_meta = fetch_for_trading_type(
+                symbol, trading_type, fetch_fn=ds_manager.get_history
+            )
+            if fetch_meta["fell_back"]:
+                fallback_symbols.append(stock.symbol)
+            # If no data at all, give analyse() an empty df — it will return a
+            # graceful "insufficient data" error dict via its own guard.
+            if hist is None:
+                hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+            # Stage D: real routing — get_analyzer_for_primary() instantiates
+            # the correct engine class; DemandSupplyAnalysis accepts the opt-in
+            # use_fibonacci kwarg, TrendFollowingAnalysis takes only symbol+data.
+            analyser = get_analyzer_for_primary(primary_strategy)
+            if isinstance(analyser, DemandSupplyAnalysis):
                 result = analyser.analyse(
-                    symbol, hist, use_fibonacci=st.session_state.get("use_fibonacci", False)
+                    symbol, hist,
+                    use_fibonacci=st.session_state.get("use_fibonacci", False),
                 )
             else:
                 result = analyser.analyse(symbol, hist)
@@ -163,6 +203,15 @@ def render_dashboard() -> None:
 
     progress.empty()
     st.session_state.analysis_results = results
+
+    # Stage C: persist the effective timeframe label so the header caption
+    # stays accurate on subsequent reruns (filter/sort interactions).
+    any_fallback = bool(fallback_symbols)
+    st.session_state["_fetch_fallback_symbols"] = fallback_symbols
+    st.session_state["_used_tf_label"] = interval_display_label(
+        _tf["interval"], fell_back=any_fallback
+    )
+
     _render_filter_sort_bar(results, analysis_type, wl_name)
 
 
@@ -171,6 +220,17 @@ def _render_filter_sort_bar(
 ) -> None:
     """Render filter/sort controls, export buttons, and the results grid."""
     total = len(results)
+
+    # Stage C: show a non-intrusive note when any stock fell back from
+    # intraday to daily data.  Stored in session state so it persists across
+    # filter/sort reruns without re-running the analysis.
+    _fallback = st.session_state.get("_fetch_fallback_symbols", [])
+    if _fallback:
+        st.info(
+            "ℹ️ Intraday data unavailable for some stocks — Daily data used instead."
+            f"  Affected: {', '.join(_fallback[:5])}"
+            + (" …" if len(_fallback) > 5 else "")
+        )
 
     # Initialise filter/sort state with defaults
     st.session_state.setdefault("dash_status_filter", [])
@@ -248,7 +308,16 @@ def _do_export_excel(
     """Generate an Excel export and render a download button."""
     try:
         alerts = get_all_alerts()
-        path = export_to_excel(list(results.values()), wl_name, analysis_type, alerts)
+        path = export_to_excel(
+            results,
+            wl_name,
+            analysis_type,
+            alerts,
+            trading_type=st.session_state.get("trading_type", ""),
+            primary_strategy=st.session_state.get("primary_strategy", analysis_type),
+            enhancers=st.session_state.get("enhancers", []),
+        )
+        st.success(f"Exported to: `{path}`")
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download Excel",
@@ -265,7 +334,15 @@ def _do_export_pdf(
 ) -> None:
     """Generate a PDF export and render a download button."""
     try:
-        path = export_to_pdf(list(results.values()), wl_name, analysis_type)
+        path = export_to_pdf(
+            results,
+            wl_name,
+            analysis_type,
+            trading_type=st.session_state.get("trading_type", ""),
+            primary_strategy=st.session_state.get("primary_strategy", analysis_type),
+            enhancers=st.session_state.get("enhancers", []),
+        )
+        st.success(f"Exported to: `{path}`")
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download PDF",
@@ -296,6 +373,7 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
                 stock_id=result.get("stock_id", idx),
                 strength=result.get("strength", "Weak"),
                 updated_at=result.get("updated_at"),
+                result=result,
             )
 
 
@@ -309,22 +387,29 @@ def _render_detail_view() -> None:
 
     results = st.session_state.get("analysis_results", {})
     result = results.get(symbol, {})
-    analysis_type = st.session_state.get("selected_analysis_type", "Demand/Supply Zones")
+    # Stage D: analysis_type IS primary_strategy (bridge removed)
+    primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+    analysis_type = primary_strategy
     exchange = result.get("exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
-    # Fetch 1-year daily OHLCV data for the chart.
-    # Cached per symbol so reruns (radio buttons, notes, etc.) skip the fetch.
-    cache_key = f"detail_hist_{symbol}"
+    # Stage C: the chart data must match the analysis timeframe so that zone
+    # overlays and Fibonacci lines land on the same bars as the analysis.
+    # Cache key includes trading_type so switching type invalidates old cache.
+    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
     history_df = st.session_state.get(cache_key)
 
     if history_df is None or getattr(history_df, "empty", True):
         try:
             suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            hist = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
-            if not hist.empty:
-                st.session_state[cache_key] = hist
-                history_df = hist
+            full_symbol = f"{symbol}{suffix}"
+            # Use fetch_for_trading_type so the chart matches analysis bars;
+            # _default_fetch_fn (yfinance) is used since this is outside the
+            # DataSourceManager's scope and yf is already imported in this file.
+            history_df, _det_meta = fetch_for_trading_type(full_symbol, trading_type)
+            if history_df is not None and not history_df.empty:
+                st.session_state[cache_key] = history_df
             else:
                 history_df = None
         except Exception as exc:

@@ -18,7 +18,12 @@ def init_session_state() -> None:
     defaults: dict = {
         "active_page": "dashboard",
         "selected_watchlist_id": None,
-        "selected_analysis_type": "Demand/Supply Zones",
+        # Two-axis analysis model (Trading Type + Primary Strategy + Enhancers).
+        # The sidebar seeds these from saved preferences via _init_two_axis_state;
+        # they are listed here so the keys always exist before any page reads them.
+        "trading_type": "Short-term Trading",
+        "primary_strategy": "Demand/Supply Zones",
+        "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
         "selected_data_source": "Yahoo Finance",
         "alerts_on": False,
         "credentials": {},
