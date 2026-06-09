@@ -1,5 +1,6 @@
 """Full detailed stock analysis view with chart toggle, history, and notes."""
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -947,14 +948,32 @@ def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFram
 
     x0, x1 = df.index[0], df.index[-1]
     for ratio, price in fib_levels.items():
-        style = _FIB_LINE_STYLES.get(ratio)
-        if style is None or price is None:
+        # Coerce the ratio key to float so a JSON round-tripped result (whose
+        # dict keys become strings, e.g. "0.618") still matches _FIB_LINE_STYLES
+        # and labels correctly instead of being silently dropped.
+        try:
+            ratio_f = float(ratio)
+        except (TypeError, ValueError):
+            continue
+        style = _FIB_LINE_STYLES.get(ratio_f)
+        if style is None:
+            continue
+
+        # Guard: only ever draw a real, finite, positive price. A 0/NaN/None
+        # level (e.g. from a degenerate swing anchored on a partial candle)
+        # must never be plotted — it would drag the y-axis toward 0 and
+        # collapse every Fib line to the bottom of the chart.
+        try:
+            price_f = float(price)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(price_f) or price_f <= 0:
             continue
 
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=price, y1=price,
+            x0=x0, x1=x1, y0=price_f, y1=price_f,
             line={"color": style["color"], "width": style["width"], "dash": style["dash"]},
             layer="below",
             row=1, col=1,
@@ -963,10 +982,10 @@ def _add_fibonacci_lines(fig: go.Figure, result: dict[str, Any], df: pd.DataFram
         # labels in _add_zone_overlays but anchored to the opposite side so
         # the two never collide.
         fig.add_annotation(
-            x=x0, y=price,
+            x=x0, y=price_f,
             xref="x", yref="y",
             xanchor="right", yanchor="bottom",
-            text=f"Fib {ratio * 100:.1f}%",
+            text=f"Fib {ratio_f * 100:.1f}%",
             showarrow=False,
             align="right",
             font={"color": style["color"], "size": 10},

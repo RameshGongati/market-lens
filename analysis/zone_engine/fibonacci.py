@@ -26,8 +26,10 @@ opt-in (``use_fibonacci``) and, when switched off, every Stage 3 field on a
 ``Zone`` stays at its conservative default (see ``analysis.zone_engine.models``).
 """
 
+import math
 from typing import TypedDict
 
+import numpy as np
 import pandas as pd
 
 from analysis.zone_engine.models import Zone
@@ -135,16 +137,31 @@ def find_recent_swing(df: pd.DataFrame, lookback: int = _DEFAULT_LOOKBACK) -> Sw
         return _no_swing()
 
     start = max(0, len(df) - lookback)
-    window_high = df["High"].iloc[start:]
-    window_low = df["Low"].iloc[start:]
+    high = df["High"].iloc[start:].to_numpy(dtype=float)
+    low = df["Low"].iloc[start:].to_numpy(dtype=float)
 
-    high_pos = int(window_high.to_numpy().argmax())
-    low_pos = int(window_low.to_numpy().argmin())
+    # Guard: ignore partial/empty candles whose High/Low are non-finite or
+    # non-positive. Intraday/resampled feeds (and fallback fetches) can carry
+    # a 0.0 or NaN bar; without this filter ``Low.min()`` would anchor
+    # ``swing_low`` at 0, and ``calculate_fib_levels`` would then place every
+    # retracement near the bottom of the chart instead of in the real price
+    # range. Invalid bars are masked to -inf (for the max) / +inf (for the
+    # min) so ``argmax``/``argmin`` skip them while positional indices —
+    # which the direction check below depends on — stay intact.
+    high_valid = np.isfinite(high) & (high > 0)
+    low_valid = np.isfinite(low) & (low > 0)
+    if not high_valid.any() or not low_valid.any():
+        return _no_swing()
+
+    high_masked = np.where(high_valid, high, -np.inf)
+    low_masked = np.where(low_valid, low, np.inf)
+    high_pos = int(high_masked.argmax())
+    low_pos = int(low_masked.argmin())
 
     swing_high_idx = start + high_pos
     swing_low_idx = start + low_pos
-    swing_high = float(window_high.iloc[high_pos])
-    swing_low = float(window_low.iloc[low_pos])
+    swing_high = float(high[high_pos])
+    swing_low = float(low[low_pos])
 
     direction = "up" if swing_low_idx < swing_high_idx else "down"
 
@@ -184,13 +201,27 @@ def calculate_fib_levels(swing: SwingInfo) -> dict[float, float]:
     if swing_high is None or swing_low is None or direction is None:
         return {}
 
+    # Guard: refuse to build levels from a degenerate swing — a non-finite
+    # (NaN/inf) or non-positive anchor would otherwise yield NaN or ~0 prices
+    # that collapse the Fibonacci lines to the bottom of the chart. Returning
+    # ``{}`` makes the drawing code (and confluence checks) draw nothing,
+    # exactly as when no swing could be found.
+    if not (math.isfinite(swing_high) and math.isfinite(swing_low)):
+        return {}
+    if swing_high <= 0 or swing_low <= 0:
+        return {}
+
     swing_range = swing_high - swing_low
     levels: dict[float, float] = {}
     for ratio in FIB_LEVELS:
         if direction == "up":
-            levels[ratio] = swing_high - (swing_range * ratio)
+            price = swing_high - (swing_range * ratio)
         else:
-            levels[ratio] = swing_low + (swing_range * ratio)
+            price = swing_low + (swing_range * ratio)
+        # Final defensive check — never emit a non-finite or non-positive
+        # level price.
+        if math.isfinite(price) and price > 0:
+            levels[ratio] = price
     return levels
 
 
