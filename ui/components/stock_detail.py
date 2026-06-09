@@ -9,6 +9,8 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
+from config.trading_config import get_timeframe
+from data.manager import fetch_for_trading_type, interval_display_label
 from storage.database import (
     compare_analysis_results,
     delete_note,
@@ -68,7 +70,17 @@ def render_stock_detail(
         f"padding:2px 8px;border-radius:8px;border:1px solid {s_color};'>{strength}</span>",
         unsafe_allow_html=True,
     )
-    st.caption(f"{company_name} · {exchange} · {analysis_type} · ₹{current_price:,.2f}")
+    # Stage C: show the effective timeframe alongside analysis type.
+    # Prefer the session-state label (which reflects any intraday fallback)
+    # over the configured label from get_timeframe().
+    _trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    _tf_label = st.session_state.get("_used_tf_label") or interval_display_label(
+        get_timeframe(_trading_type)["interval"]
+    )
+    st.caption(
+        f"{company_name} · {exchange} · {analysis_type} · "
+        f"Timeframe: {_tf_label} · ₹{current_price:,.2f}"
+    )
 
     if "error" in result:
         st.error(result["error"])
@@ -111,14 +123,18 @@ def render_stock_detail(
         st.markdown("### Price Chart")
 
     # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
-    # user navigated here without running a full analysis), try fetching 1 year
-    # of daily data directly from Yahoo Finance before giving up.
+    # user navigated here without running a full analysis), fetch with the
+    # currently selected trading type so the chart bars match the analysis.
+    # Stage C: uses fetch_for_trading_type (with intraday fallback) rather
+    # than a hardcoded 1y/1d yfinance call.
     if history_df is None or history_df.empty:
         try:
-            import yfinance as yf
             suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            fetched = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
-            history_df = fetched if not fetched.empty else None
+            fetched, _ = fetch_for_trading_type(
+                f"{symbol}{suffix}",
+                st.session_state.get("trading_type", "Short-term Trading"),
+            )
+            history_df = fetched if fetched is not None and not fetched.empty else None
         except Exception as exc:
             logger.warning("Fallback chart fetch failed for %s: %s", symbol, exc)
             history_df = None

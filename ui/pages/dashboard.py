@@ -10,7 +10,8 @@ from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.intraday import IntradayAnalysis
 from analysis.long_term import LongTermAnalysis
 from analysis.short_term import ShortTermAnalysis
-from data.manager import DataSourceManager
+from config.trading_config import get_timeframe
+from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
 from storage.database import get_all_alerts, save_analysis_result
 from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
@@ -98,17 +99,19 @@ def render_dashboard() -> None:
     watchlist_id = st.session_state.get("selected_watchlist_id")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
 
-    # Stage B — read from the new two-axis session state keys set by the
-    # sidebar.  ``analysis_type`` is derived via the temporary Stage B bridge
-    # (map_primary_to_legacy) so the rest of this function can still use the
-    # legacy _ANALYSIS_MAP / _PERIOD_MAP lookups unchanged.
-    # TODO Stage C: use get_timeframe(trading_type) for period/interval instead
-    #              of _PERIOD_MAP so the data fetch matches the trading horizon.
+    # Stage B/C — read the two-axis selections and derive the legacy engine key.
+    # Strategy routing is still the Stage B temporary bridge (real routing in
+    # Stage D).  Stage C wires the timeframe: get_timeframe(trading_type)
+    # drives period/interval for every data fetch instead of the old _PERIOD_MAP.
     trading_type = st.session_state.get("trading_type", "Short-term Trading")
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
     enhancers: list[str] = st.session_state.get("enhancers", [])
     # TEMPORARY Stage B bridge — real engine routing in Stage D.
     analysis_type = map_primary_to_legacy(primary_strategy)
+    # Stage C: effective timeframe label for display (requests the configured
+    # interval; updated to show "unavailable" after analysis if fallback fired).
+    _tf = get_timeframe(trading_type)
+    _tf_label = interval_display_label(_tf["interval"])
 
     st.title("📈 Market Lens — Dashboard")
 
@@ -123,10 +126,13 @@ def render_dashboard() -> None:
     except Exception:
         wl_name = "Unknown"
 
-    # Show the new two-axis selection in the subheader so the user always
-    # knows which combination is active.
+    # Show the two-axis selection and effective timeframe in the header.
     _enhancer_label = ", ".join(enhancers) if enhancers else "None"
     st.subheader(f"{wl_name} | {trading_type} | {primary_strategy} | Enhancers: {_enhancer_label}")
+    # Timeframe caption — read from session state so it persists across reruns
+    # (e.g. the user filters/sorts without re-running analysis).
+    _used_tf_label = st.session_state.get("_used_tf_label", _tf_label)
+    st.caption(f"Timeframe: {_used_tf_label}")
 
     if not st.session_state.get("analysing"):
         cached = st.session_state.get("analysis_results", {})
@@ -154,8 +160,10 @@ def render_dashboard() -> None:
         st.error(f"Could not connect to {source_name}: {exc}")
         return
 
-    period, interval = _PERIOD_MAP.get(analysis_type, ("1y", "1d"))
+    # Stage C: _PERIOD_MAP is kept for reference but is no longer used for
+    # fetching — get_timeframe(trading_type) drives period/interval instead.
     results: dict[str, dict] = {}
+    fallback_symbols: list[str] = []   # tracks stocks where intraday fell back
     progress = st.progress(0, text="Analysing stocks…")
     alerts_on = st.session_state.get("alerts_on", False)
 
@@ -164,7 +172,16 @@ def render_dashboard() -> None:
         symbol = _make_symbol(stock.symbol, stock.exchange, source_name)
         try:
             quote = ds_manager.get_quote(symbol)
-            hist = ds_manager.get_history(symbol, period, interval)
+            # Stage C: fetch with trading-type-aware timeframe + intraday fallback.
+            hist, fetch_meta = fetch_for_trading_type(
+                symbol, trading_type, fetch_fn=ds_manager.get_history
+            )
+            if fetch_meta["fell_back"]:
+                fallback_symbols.append(stock.symbol)
+            # If no data at all, give analyse() an empty df — it will return a
+            # graceful "insufficient data" error dict via its own guard.
+            if hist is None:
+                hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
             analyser_cls = _ANALYSIS_MAP[analysis_type]
             analyser = analyser_cls()
             if analysis_type == "Demand/Supply Zones":
@@ -212,6 +229,15 @@ def render_dashboard() -> None:
 
     progress.empty()
     st.session_state.analysis_results = results
+
+    # Stage C: persist the effective timeframe label so the header caption
+    # stays accurate on subsequent reruns (filter/sort interactions).
+    any_fallback = bool(fallback_symbols)
+    st.session_state["_fetch_fallback_symbols"] = fallback_symbols
+    st.session_state["_used_tf_label"] = interval_display_label(
+        _tf["interval"], fell_back=any_fallback
+    )
+
     _render_filter_sort_bar(results, analysis_type, wl_name)
 
 
@@ -220,6 +246,17 @@ def _render_filter_sort_bar(
 ) -> None:
     """Render filter/sort controls, export buttons, and the results grid."""
     total = len(results)
+
+    # Stage C: show a non-intrusive note when any stock fell back from
+    # intraday to daily data.  Stored in session state so it persists across
+    # filter/sort reruns without re-running the analysis.
+    _fallback = st.session_state.get("_fetch_fallback_symbols", [])
+    if _fallback:
+        st.info(
+            "ℹ️ Intraday data unavailable for some stocks — Daily data used instead."
+            f"  Affected: {', '.join(_fallback[:5])}"
+            + (" …" if len(_fallback) > 5 else "")
+        )
 
     # Initialise filter/sort state with defaults
     st.session_state.setdefault("dash_status_filter", [])
@@ -358,22 +395,29 @@ def _render_detail_view() -> None:
 
     results = st.session_state.get("analysis_results", {})
     result = results.get(symbol, {})
-    analysis_type = st.session_state.get("selected_analysis_type", "Demand/Supply Zones")
+    # Stage B bridge: analysis_type derived from primary_strategy
+    primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+    analysis_type = map_primary_to_legacy(primary_strategy)
     exchange = result.get("exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
-    # Fetch 1-year daily OHLCV data for the chart.
-    # Cached per symbol so reruns (radio buttons, notes, etc.) skip the fetch.
-    cache_key = f"detail_hist_{symbol}"
+    # Stage C: the chart data must match the analysis timeframe so that zone
+    # overlays and Fibonacci lines land on the same bars as the analysis.
+    # Cache key includes trading_type so switching type invalidates old cache.
+    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
     history_df = st.session_state.get(cache_key)
 
     if history_df is None or getattr(history_df, "empty", True):
         try:
             suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            hist = yf.Ticker(f"{symbol}{suffix}").history(period="1y", interval="1d")
-            if not hist.empty:
-                st.session_state[cache_key] = hist
-                history_df = hist
+            full_symbol = f"{symbol}{suffix}"
+            # Use fetch_for_trading_type so the chart matches analysis bars;
+            # _default_fetch_fn (yfinance) is used since this is outside the
+            # DataSourceManager's scope and yf is already imported in this file.
+            history_df, _det_meta = fetch_for_trading_type(full_symbol, trading_type)
+            if history_df is not None and not history_df.empty:
+                st.session_state[cache_key] = history_df
             else:
                 history_df = None
         except Exception as exc:
