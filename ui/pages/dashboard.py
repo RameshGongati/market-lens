@@ -1,5 +1,7 @@
 """Main dashboard page — watchlist analysis grid."""
 
+import math
+
 import yfinance as yf
 import streamlit as st
 
@@ -34,6 +36,22 @@ _PERIOD_MAP = {
 
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
+
+
+def _valid_price(raw: object) -> float | None:
+    """Return *raw* as a positive finite float, or ``None`` if it is invalid,
+    zero, NaN, or infinite.
+
+    Used to guard the price-selection step so that a NaN from the last OHLCV
+    row (a partial/empty intraday candle) can never propagate to the card —
+    note that ``NaN`` is *truthy* in Python, so the plain ``x or fallback``
+    idiom silently keeps the NaN instead of falling back.
+    """
+    try:
+        v = float(raw)  # type: ignore[arg-type]
+        return v if math.isfinite(v) and v > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def render_dashboard() -> None:
@@ -109,8 +127,14 @@ def render_dashboard() -> None:
                 )
             else:
                 result = analyser.analyse(symbol, hist)
-            current_price = result.get("current_price") or quote.get("current_price", 0.0)
-            change_pct = quote.get("change_pct", 0.0)
+            # Rule: prefer a live, finite quote price; fall back to the last
+            # valid close that analyse() stored (which itself guards against
+            # NaN — see demand_supply.py). Do NOT use plain `or` — NaN is
+            # truthy in Python and would silently bypass the fallback.
+            _quote_p = _valid_price(quote.get("current_price"))
+            _result_p = _valid_price(result.get("current_price"))
+            current_price = _quote_p if _quote_p is not None else (_result_p or 0.0)
+            change_pct = float(quote.get("change_pct") or 0.0)
             # Approximate absolute change from percentage
             change = round(current_price * change_pct / 100, 2)
             result.update({

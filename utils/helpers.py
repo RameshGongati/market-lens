@@ -1,6 +1,7 @@
 """Common helper functions used across the application."""
 
 import json
+import math
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -12,17 +13,29 @@ _IST = pytz.timezone("Asia/Kolkata")
 _STOCK_LIST_PATH = Path(__file__).parent.parent / "data" / "stock_list.json"
 
 
-def format_currency(amount: float, currency: str = "₹") -> str:
+def format_currency(amount: float | None, currency: str = "₹") -> str:
     """Format a number as Indian currency with comma separators.
 
+    Returns ``"—"`` instead of raising or returning ``"₹nan"`` when *amount*
+    is ``None``, ``NaN``, or infinite — all three are treated as "no valid
+    price available".
+
     Args:
-        amount: Numeric value.
+        amount: Numeric value (``None`` / ``NaN`` / ``inf`` are safe to pass).
         currency: Currency symbol prefix.
 
     Returns:
-        Formatted string, e.g. "₹2,456.75".
+        Formatted string, e.g. "₹2,456.75", or "—" for invalid input.
     """
-    return f"{currency}{amount:,.2f}"
+    if amount is None:
+        return "—"
+    try:
+        f = float(amount)
+    except (TypeError, ValueError):
+        return "—"
+    if not math.isfinite(f):
+        return "—"
+    return f"{currency}{f:,.2f}"
 
 
 def format_price(price: float, currency: str = "₹") -> str:

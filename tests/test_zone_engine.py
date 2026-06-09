@@ -8,10 +8,13 @@ methodology (see analysis/zone_engine/*).
 
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 import pytest
 
 from analysis.demand_supply import DemandSupplyAnalysis, _apply_trend_alignment
+from utils.helpers import format_currency
 from analysis.zone_engine.candles import classify_candle
 from analysis.zone_engine.enhancers import ema20_confluence
 from analysis.zone_engine.fibonacci import (
@@ -810,3 +813,56 @@ def test_odd_score_unchanged_when_fibonacci_enabled():
         assert z_with["entry_recommendation"] == z_without["entry_recommendation"]
         assert z_with["proximal"] == pytest.approx(z_without["proximal"])
         assert z_with["distal"] == pytest.approx(z_without["distal"])
+
+
+# ---------------------------------------------------------------------------
+# Price NaN-safety — format_currency() and demand_supply current_price guard
+# ---------------------------------------------------------------------------
+
+def test_format_currency_normal():
+    """Smoke-test the happy path — a valid positive float is formatted with
+    the currency symbol and exactly two decimal places."""
+    assert format_currency(1234.5) == "₹1,234.50"
+    assert format_currency(0.99) == "₹0.99"
+    assert format_currency(100.0, "$") == "$100.00"
+
+
+def test_format_currency_nan_returns_dash():
+    """Rule: ``NaN`` must never produce "₹nan" — format_currency must return
+    "—" (or any safe sentinel) instead so the UI can't accidentally render
+    the raw floating-point token as a currency string."""
+    assert format_currency(float("nan")) == "—"
+
+
+def test_format_currency_none_returns_dash():
+    """Rule: ``None`` (price not yet known) must be handled gracefully —
+    return "—" rather than raising a TypeError."""
+    assert format_currency(None) == "—"  # type: ignore[arg-type]
+
+
+def test_format_currency_inf_returns_dash():
+    """Rule: infinite values are also invalid prices — both +inf and -inf
+    should produce "—", not "₹inf"."""
+    assert format_currency(float("inf")) == "—"
+    assert format_currency(float("-inf")) == "—"
+
+
+def test_analyse_nan_close_never_returns_nan_price():
+    """Rule: if the very last Close candle is NaN (e.g. a partial intraday
+    row emitted by some data sources), analyse() must fall back to the last
+    *valid* close and never store NaN in result["current_price"].
+
+    NaN is truthy in Python, so a naive ``float(df['Close'].iloc[-1])`` would
+    propagate NaN all the way to the dashboard card ("₹nan") if the fallback
+    relied on an ``or`` guard — this test catches that regression."""
+    df = _make_df(_FIB_ANALYSE_ROWS)
+    # Inject a NaN close into the final row, simulating a partial candle.
+    df.loc[df.index[-1], "Close"] = float("nan")
+
+    result = DemandSupplyAnalysis().analyse("TEST", df)
+
+    assert "error" not in result
+    price = result.get("current_price")
+    assert price is not None, "current_price must be present in result"
+    assert math.isfinite(price), f"current_price must be finite, got {price}"
+    assert price > 0, f"current_price must be positive, got {price}"

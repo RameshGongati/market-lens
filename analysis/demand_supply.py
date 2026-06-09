@@ -186,7 +186,12 @@ class DemandSupplyAnalysis(BaseAnalysis):
             return self._result
 
         try:
-            current_price = float(data["Close"].iloc[-1])
+            # Rule: never return NaN as current_price — if the most recent
+            # candle has a NaN close (e.g. a partial/empty intraday row from
+            # the data source), fall back to the last *valid* close so that
+            # the price displayed on the card is always a real number.
+            _close_valid = data["Close"].dropna()
+            current_price = float(_close_valid.iloc[-1]) if not _close_valid.empty else 0.0
 
             # --- Rule: scan all 4 patterns (DBR/RBR/RBD/DBD) -----------------
             # detect_zones() reports every structure across the full history —
