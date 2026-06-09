@@ -261,6 +261,181 @@ def fetch_for_trading_type(
 
     return df, meta
 
+
+# ---------------------------------------------------------------------------
+# Interval selector helpers (detail-view candle interval chooser)
+# ---------------------------------------------------------------------------
+
+# User-facing interval labels → (display interval, yfinance fetch interval,
+# fetch period, and whether to resample 15m→75m after fetching).
+# "75m" is special: yfinance has no native 75-minute interval, so we fetch
+# 15m bars and aggregate them into 75-minute candles via pandas resample.
+INTERVAL_OPTIONS: dict[str, dict[str, str | bool]] = {
+    "Daily":   {"interval": "1d",  "period": "1y",  "fetch_interval": "1d",  "resample": False},
+    "Weekly":  {"interval": "1wk", "period": "5y",  "fetch_interval": "1wk", "resample": False},
+    "Monthly": {"interval": "1mo", "period": "10y", "fetch_interval": "1mo", "resample": False},
+    "75m":     {"interval": "75m", "period": "60d", "fetch_interval": "15m", "resample": True},
+    "15m":     {"interval": "15m", "period": "60d", "fetch_interval": "15m", "resample": False},
+}
+
+# Reverse map: yfinance interval string → interval-selector label.
+# Used by default_interval_label() to derive the default UI selection from the
+# trading type's configured interval (via config.trading_config.get_timeframe).
+_INTERVAL_TO_LABEL: dict[str, str] = {
+    "1d":  "Daily",
+    "1wk": "Weekly",
+    "1mo": "Monthly",
+    "15m": "15m",
+    "75m": "75m",
+}
+
+
+def default_interval_label(trading_type: str) -> str:
+    """Return the interval-selector label that matches *trading_type*'s default.
+
+    Reads ``config.trading_config.get_timeframe`` so the default interval
+    shown in the detail view is always consistent with the trading type the
+    user selected in the sidebar.
+
+    Args:
+        trading_type: One of ``config.trading_config.TRADING_TYPES``.
+
+    Returns:
+        One of the keys in :data:`INTERVAL_OPTIONS`; defaults to ``"Daily"``
+        for any unrecognised interval string.
+
+    Example::
+
+        >>> default_interval_label("Long-term Investment")
+        'Weekly'
+        >>> default_interval_label("Intraday Trading")
+        '15m'
+    """
+    tf = get_timeframe(trading_type)
+    return _INTERVAL_TO_LABEL.get(tf["interval"], "Daily")
+
+
+def resample_to_75m(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample a 15-minute OHLCV DataFrame into 75-minute bars.
+
+    yfinance does not natively support a 75-minute interval (it is not a
+    standard bar size).  As a workaround we fetch 15m bars and aggregate every
+    five consecutive 15-minute candles into one 75-minute candle using the
+    standard OHLCV aggregation rules:
+
+    * Open   = first bar's open  (the price at which the period began)
+    * High   = highest high      (the peak during the 75-minute window)
+    * Low    = lowest low        (the trough)
+    * Close  = last bar's close  (the price at which the period ended)
+    * Volume = sum of all bars   (total shares/contracts traded)
+
+    Args:
+        df: OHLCV DataFrame with a DatetimeIndex at 15-minute frequency.
+            Columns not in {"Open","High","Low","Close","Volume"} are dropped.
+
+    Returns:
+        Resampled DataFrame with 75-minute bars, NaN-close rows dropped.
+        Returns *df* unchanged if it is empty.
+    """
+    if df.empty:
+        return df
+
+    _AGG: dict[str, str] = {
+        "Open": "first", "High": "max", "Low": "min",
+        "Close": "last", "Volume": "sum",
+    }
+    present_cols = {c: _AGG[c] for c in _AGG if c in df.columns}
+    resampled = df.resample("75min").agg(present_cols)
+    return resampled.dropna(subset=["Close"])
+
+
+def fetch_by_interval(
+    symbol: str,
+    label: str,
+    *,
+    fetch_fn: Callable[[str, str, str], pd.DataFrame] | None = None,
+) -> tuple[pd.DataFrame | None, FetchMeta]:
+    """Fetch OHLCV data for the given interval-selector *label*.
+
+    This is the detail-view sibling of :func:`fetch_for_trading_type`.  It
+    maps a user-facing label ("Daily", "Weekly", "75m", …) to the appropriate
+    yfinance period/interval pair, applies 75-minute resampling when needed,
+    and falls back to daily data for intraday labels when the broker restricts
+    historical intraday depth — exactly as the dashboard does.
+
+    Args:
+        symbol: Fully-qualified ticker (e.g. ``"RELIANCE.NS"``).
+        label: One of the keys in :data:`INTERVAL_OPTIONS`.
+            Unknown labels are treated as ``"Daily"``.
+        fetch_fn: ``(symbol, period, interval) -> pd.DataFrame`` injectable
+            callable.  Defaults to the yfinance backend when ``None`` so
+            unit tests stay fully offline.
+
+    Returns:
+        ``(dataframe, meta)`` — same semantics as
+        :func:`fetch_for_trading_type`.
+
+    Fallback behaviour:
+        For intraday labels (``"15m"`` and ``"75m"``): if the primary fetch
+        returns fewer than :data:`_MIN_SUFFICIENT_ROWS` rows, the function
+        retries with ``period="1y", interval="1d"`` and sets
+        ``meta["fell_back"] = True``.  For daily/weekly/monthly labels the
+        result is returned as-is (a short result there is a genuine data gap).
+    """
+    if fetch_fn is None:
+        fetch_fn = _default_fetch_fn
+
+    spec = INTERVAL_OPTIONS.get(label, INTERVAL_OPTIONS["Daily"])
+    period: str = str(spec["period"])
+    fetch_interval: str = str(spec["fetch_interval"])
+    display_interval: str = str(spec["interval"])
+    do_resample: bool = bool(spec.get("resample", False))
+
+    meta: FetchMeta = {
+        "requested_interval": display_interval,
+        "used_interval": display_interval,
+        "used_period": period,
+        "fell_back": False,
+        "message": "",
+    }
+
+    df = _safe_fetch(symbol, period, fetch_interval, fetch_fn)
+
+    # 75m special case: aggregate five consecutive 15m bars → one 75m bar.
+    # This is done BEFORE the insufficiency check so that we test the resampled
+    # row count, not the raw 15m count (which would always pass the 20-row
+    # threshold even when the resampled result would be tiny).
+    if do_resample and not _is_insufficient(df):
+        df = resample_to_75m(df)
+
+    # Intraday fallback — same logic as fetch_for_trading_type: only for
+    # intervals that brokers commonly restrict (the intraday set).  Daily /
+    # weekly / monthly shortfalls are genuine data gaps and are not retried.
+    if _is_intraday(fetch_interval) and _is_insufficient(df):
+        logger.info(
+            "Interval-selector intraday fallback for %s: %s/%s returned %d rows"
+            " — retrying 1y/1d",
+            symbol, period, fetch_interval,
+            0 if df is None or df.empty else len(df),
+        )
+        df = _safe_fetch(symbol, "1y", "1d", fetch_fn)
+        meta["fell_back"] = True
+        meta["used_interval"] = "1d"
+        meta["used_period"] = "1y"
+        meta["message"] = (
+            f"Intraday data unavailable for {symbol}; showing Daily instead."
+        )
+
+    if _is_insufficient(df):
+        logger.warning(
+            "fetch_by_interval: no usable data for %s (label=%s)", symbol, label
+        )
+        meta["message"] = meta["message"] or f"No data available for {symbol}."
+        return None, meta
+
+    return df, meta
+
+
 _SOURCE_REGISTRY: dict[str, type[DataSource]] = {
     "Yahoo Finance": YahooFinanceSource,
     "NSE India": NSEIndiaSource,
