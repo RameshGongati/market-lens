@@ -37,6 +37,41 @@ _PERIOD_MAP = {
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
 
+# TEMPORARY Stage B bridge — maps the new two-axis PRIMARY_STRATEGIES values to
+# the legacy analysis-type keys that _ANALYSIS_MAP understands.  Real engine
+# routing (and the removal of LongTermAnalysis as a Trend Following proxy) happens
+# in Stage D.
+_PRIMARY_TO_LEGACY: dict[str, str] = {
+    "Demand/Supply Zones":          "Demand/Supply Zones",
+    "Trend Following (SMA50/EMA20)": "Long Term Investment",
+}
+
+
+def map_primary_to_legacy(primary_strategy: str) -> str:
+    """TEMPORARY Stage B bridge — map a Primary Strategy selection to the
+    legacy ``_ANALYSIS_MAP`` key that the current engine understands.
+
+    This indirection keeps the engine untouched while the sidebar already
+    speaks the new two-axis vocabulary.  Stage D will replace this with real
+    routing once the Trend Following engine exists.
+
+    Args:
+        primary_strategy: One of ``config.trading_config.PRIMARY_STRATEGIES``.
+
+    Returns:
+        A legacy analysis-type string — one of the keys in ``_ANALYSIS_MAP``.
+        Falls back to ``"Demand/Supply Zones"`` for any unknown value so the
+        app always produces a result rather than crashing with a KeyError.
+
+    Example::
+
+        >>> map_primary_to_legacy("Trend Following (SMA50/EMA20)")
+        'Long Term Investment'
+        >>> map_primary_to_legacy("Demand/Supply Zones")
+        'Demand/Supply Zones'
+    """
+    return _PRIMARY_TO_LEGACY.get(primary_strategy, "Demand/Supply Zones")
+
 
 def _valid_price(raw: object) -> float | None:
     """Return *raw* as a positive finite float, or ``None`` if it is invalid,
@@ -61,8 +96,19 @@ def render_dashboard() -> None:
         return
 
     watchlist_id = st.session_state.get("selected_watchlist_id")
-    analysis_type = st.session_state.get("selected_analysis_type", "Demand/Supply Zones")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+
+    # Stage B — read from the new two-axis session state keys set by the
+    # sidebar.  ``analysis_type`` is derived via the temporary Stage B bridge
+    # (map_primary_to_legacy) so the rest of this function can still use the
+    # legacy _ANALYSIS_MAP / _PERIOD_MAP lookups unchanged.
+    # TODO Stage C: use get_timeframe(trading_type) for period/interval instead
+    #              of _PERIOD_MAP so the data fetch matches the trading horizon.
+    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+    enhancers: list[str] = st.session_state.get("enhancers", [])
+    # TEMPORARY Stage B bridge — real engine routing in Stage D.
+    analysis_type = map_primary_to_legacy(primary_strategy)
 
     st.title("📈 Market Lens — Dashboard")
 
@@ -77,7 +123,10 @@ def render_dashboard() -> None:
     except Exception:
         wl_name = "Unknown"
 
-    st.subheader(f"{wl_name} — {analysis_type}")
+    # Show the new two-axis selection in the subheader so the user always
+    # knows which combination is active.
+    _enhancer_label = ", ".join(enhancers) if enhancers else "None"
+    st.subheader(f"{wl_name} | {trading_type} | {primary_strategy} | Enhancers: {_enhancer_label}")
 
     if not st.session_state.get("analysing"):
         cached = st.session_state.get("analysis_results", {})

@@ -10,11 +10,20 @@ _APP_DIR = Path.home() / ".market-lens"
 _PREFS_FILE = _APP_DIR / "user_preferences.json"
 
 _DEFAULTS: dict[str, Any] = {
-    "selected_watchlist_id": None,
+    # Legacy key — kept until Stage F completes the migration; coexists
+    # alongside the new two-axis keys below.
     "selected_analysis_type": "Demand/Supply Zones",
+    "selected_watchlist_id": None,
     "selected_data_source": "Yahoo Finance",
     "alerts_on": False,
     "last_analysis_timestamp": None,
+    # Stage B — two-axis trading-type model (new keys).
+    # Falls back gracefully when loading an older preferences file that
+    # predates Stage B (missing keys are filled from these defaults via the
+    # {**_DEFAULTS, **saved} merge in load_preferences()).
+    "trading_type": "Short-term Trading",
+    "primary_strategy": "Demand/Supply Zones",
+    "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
 }
 
 
