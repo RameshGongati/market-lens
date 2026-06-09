@@ -1,5 +1,6 @@
 """Individual stock status card component."""
 
+import math
 from datetime import datetime
 
 import streamlit as st
@@ -50,6 +51,21 @@ def render_stock_card(
     strength_bg = STRENGTH_BG.get(strength, "#f8d7da")
     ts = format_timestamp(updated_at) if updated_at else ""
 
+    # Guard: treat None, NaN, or non-positive prices as "unavailable" so the
+    # card never renders "₹nan". NaN is truthy in Python so a plain truthiness
+    # check would incorrectly pass — we need an explicit isfinite test.
+    _price_ok = (
+        current_price is not None
+        and math.isfinite(current_price)
+        and current_price > 0
+    )
+    if _price_ok:
+        price_html = f"₹{current_price:,.2f}"
+        change_html = f"{change_sign}₹{abs(change):.2f} ({change_sign}{change_pct:.2f}%)"
+    else:
+        price_html = "<span style='color:#999;font-style:italic;'>Price unavailable</span>"
+        change_html = "—"
+
     card_html = f"""
     <div style="
         background:{cfg['bg']};
@@ -79,9 +95,9 @@ def render_stock_card(
             </div>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-            <span style="font-size:1.1rem;font-weight:700;">₹{current_price:,.2f}</span>
+            <span style="font-size:1.1rem;font-weight:700;">{price_html}</span>
             <span style="color:{change_color};font-weight:600;font-size:0.88rem;">
-                {change_sign}₹{abs(change):.2f} ({change_sign}{change_pct:.2f}%)
+                {change_html}
             </span>
         </div>
         <div style="font-size:0.76rem;color:#555;margin-top:6px;line-height:1.4;">
