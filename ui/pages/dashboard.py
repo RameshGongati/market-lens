@@ -325,7 +325,15 @@ def _do_export_excel(
     """Generate an Excel export and render a download button."""
     try:
         alerts = get_all_alerts()
-        path = export_to_excel(list(results.values()), wl_name, analysis_type, alerts)
+        path = export_to_excel(
+            results,
+            wl_name,
+            analysis_type,
+            alerts,
+            trading_type=st.session_state.get("trading_type", ""),
+            primary_strategy=st.session_state.get("primary_strategy", analysis_type),
+            enhancers=st.session_state.get("enhancers", []),
+        )
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download Excel",
@@ -342,7 +350,14 @@ def _do_export_pdf(
 ) -> None:
     """Generate a PDF export and render a download button."""
     try:
-        path = export_to_pdf(list(results.values()), wl_name, analysis_type)
+        path = export_to_pdf(
+            results,
+            wl_name,
+            analysis_type,
+            trading_type=st.session_state.get("trading_type", ""),
+            primary_strategy=st.session_state.get("primary_strategy", analysis_type),
+            enhancers=st.session_state.get("enhancers", []),
+        )
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download PDF",

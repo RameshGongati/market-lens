@@ -125,6 +125,11 @@ def render_stock_detail(
                     watchlist_name="single",
                     analysis_type=analysis_type,
                     symbol_filter=symbol,
+                    trading_type=st.session_state.get("trading_type", ""),
+                    primary_strategy=st.session_state.get(
+                        "primary_strategy", analysis_type
+                    ),
+                    enhancers=st.session_state.get("enhancers", []),
                 )
                 st.success(f"Exported to: `{path}`")
             except Exception as exc:

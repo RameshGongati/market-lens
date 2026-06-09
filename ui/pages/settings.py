@@ -35,8 +35,26 @@ def render_settings() -> None:
     st.caption("Preferences are saved automatically when you change selections in the sidebar.")
     try:
         prefs = load_preferences()
-        st.json(prefs, expanded=True)
     except Exception:
+        prefs = {}
+
+    if prefs:
+        # Structured display of the two-axis selections — every read is
+        # defensive (.get with a default) so a missing key never crashes
+        # the page, even on a preferences file written by an older version.
+        p1, p2 = st.columns(2)
+        with p1:
+            st.markdown(f"**Data Source:** {prefs.get('selected_data_source', 'Yahoo Finance')}")
+            st.markdown(f"**Trading Type:** {prefs.get('trading_type', 'Short-term Trading')}")
+            st.markdown(f"**Primary Strategy:** {prefs.get('primary_strategy', 'Demand/Supply Zones')}")
+        with p2:
+            _enh = prefs.get("enhancers") or []
+            st.markdown(f"**Enhancers:** {', '.join(_enh) if _enh else 'None'}")
+            st.markdown(f"**Alerts:** {'On' if prefs.get('alerts_on') else 'Off'}")
+            st.markdown(f"**Theme:** {prefs.get('theme', 'Light (default)')}")
+        with st.expander("Raw preferences (JSON)"):
+            st.json(prefs, expanded=True)
+    else:
         st.caption("No saved preferences found.")
 
     if st.button("Reset Preferences to Defaults", type="secondary", use_container_width=False):
@@ -121,14 +139,14 @@ def render_settings() -> None:
         "Docker containerisation for one-command setup",
         "TradingView full data integration (pending stable library)",
         "Increase watchlist limit beyond 10",
-        "Run multiple analysis types simultaneously",
+        "Run multiple primary strategies side-by-side",
         "Real-time auto-refresh every 5 minutes during market hours",
         "Zerodha Kite Connect order placement integration",
         "Upstox API instrument key mapping",
         "Portfolio P&L tracking",
         "Custom alert conditions (price triggers, RSI thresholds)",
-        "Multi-timeframe analysis overlay",
-        "Chart drawing tools (trend lines, Fibonacci retracements)",
+        "RSI enhancer implementation (selectable today, not yet wired)",
+        "Chart drawing tools (manual trend lines)",
         "Sector-wise heatmap view",
     ]
     for item in roadmap:
