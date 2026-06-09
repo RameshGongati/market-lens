@@ -9,9 +9,6 @@ import streamlit as st
 from alerts.manager import check_and_trigger_alerts
 from analysis.base import BaseAnalysis
 from analysis.demand_supply import DemandSupplyAnalysis
-from analysis.intraday import IntradayAnalysis
-from analysis.long_term import LongTermAnalysis
-from analysis.short_term import ShortTermAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
 from config.trading_config import get_timeframe
 from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
@@ -23,20 +20,6 @@ from utils.logger import get_logger
 from watchlist.manager import get_all_watchlists, get_stocks
 
 logger = get_logger(__name__)
-
-_ANALYSIS_MAP = {
-    "Demand/Supply Zones": DemandSupplyAnalysis,
-    "Long Term Investment": LongTermAnalysis,
-    "Short Term Investment": ShortTermAnalysis,
-    "Intraday Trading": IntradayAnalysis,
-}
-
-_PERIOD_MAP = {
-    "Demand/Supply Zones": ("1y", "1d"),
-    "Long Term Investment": ("2y", "1d"),
-    "Short Term Investment": ("6mo", "1d"),
-    "Intraday Trading": ("5d", "15m"),
-}
 
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
@@ -151,8 +134,8 @@ def render_dashboard() -> None:
         st.error(f"Could not connect to {source_name}: {exc}")
         return
 
-    # Stage C: _PERIOD_MAP is kept for reference but is no longer used for
-    # fetching — get_timeframe(trading_type) drives period/interval instead.
+    # Fetch timeframe is driven entirely by the trading type via
+    # get_timeframe(trading_type) / fetch_for_trading_type (see the loop below).
     results: dict[str, dict] = {}
     fallback_symbols: list[str] = []   # tracks stocks where intraday fell back
     progress = st.progress(0, text="Analysing stocks…")

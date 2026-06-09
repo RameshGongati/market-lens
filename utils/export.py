@@ -308,7 +308,7 @@ def export_to_excel(
 
     # --- Sheet 3: Alerts ---
     ws_alerts = wb.create_sheet("Alerts")
-    _style_header_row(ws_alerts, ["ID", "Stock ID", "Analysis Type", "Message", "Created At"])
+    _style_header_row(ws_alerts, ["ID", "Stock ID", "Strategy", "Message", "Created At"])
     for alert in (alerts or []):
         if not isinstance(alert, dict):
             continue

@@ -1,6 +1,6 @@
 # 📈 Market Lens
 
-A local stock market analysis application built with Python and Streamlit. Market Lens lets you build custom watchlists and run demand/supply zone detection, long-term, short-term, and intraday trading analysis — all powered by real-time data from multiple configurable sources.
+A local stock market analysis application built with Python and Streamlit. Market Lens lets you build custom watchlists and analyse stocks with a **two-axis model** — pick a **Trading Type** (time horizon) and a **Primary Strategy** (Demand/Supply Zones or Trend Following), then layer optional **ODD Enhancers** on top — all powered by real-time data from multiple configurable sources.
 
 ---
 
@@ -9,22 +9,24 @@ A local stock market analysis application built with Python and Streamlit. Marke
 - **Stock Search with Autocomplete** — Search from 600+ NSE/BSE stocks by symbol or company name; exchange is auto-filled on selection
 - **Custom Watchlists** — Create up to 10 watchlists, each holding up to 10 stocks (NSE / BSE)
 - **Multiple Data Sources** — Yahoo Finance (default, no auth), NSE India scraping, Zerodha Kite Connect, Upstox API, TradingView
-- **Four Analysis Modes**
-  - **Demand/Supply Zones** — Pivot-based zone detection with touch-count strength scoring
-  - **Long Term Investment** — 200-day SMA, 52-week range positioning
-  - **Short Term Investment** — 50-day SMA, RSI, MACD signals
-  - **Intraday Trading** — VWAP, RSI, volume ratio analysis
-- **Confidence / Strength Rating** — Strong / Medium / Weak badge on every stock card and detail view, derived from signal alignment across all four analysis types
+- **Two-Axis Analysis Model** — choose independently along two axes from the sidebar:
+  - **Trading Type** (time horizon, sets the default candle timeframe): Options Trading, Intraday Trading, Short-term Trading, Long-term Investment
+  - **Primary Strategy** (the base method):
+    - **Demand/Supply Zones** — institutional legin/base/legout zone detection with the 7-point ODD trade score and a 50-SMA "clock method" trend filter
+    - **Trend Following (SMA50/EMA20)** — 50/200-SMA golden-cross / death-cross signals (BUY / SELL / HOLD) with trend context
+  - **ODD Enhancers** (optional, multi-select): Fibonacci Confluence, EMA 20 Confluence, RSI _(RSI is selectable but not yet wired into scoring)_
+- **Confidence / Strength Rating** — Strong / Medium / Weak badge on every stock card and detail view, derived from the active strategy's signal conviction
+- **Candle-Interval Selector** — On the detail chart, switch the candle interval (Daily / Weekly / Monthly / 75m / 15m) independently of the trading type; changing it re-fetches data **and** re-runs the analysis at that interval so the overlays stay consistent (75m is resampled from 15m; intraday falls back to Daily when unavailable)
 - **Candlestick & Line Chart Toggle** — Switch between candlestick and line chart; volume and RSI subplots included
 - **Colour-coded Stock Cards** — Company name, current price, absolute + percentage change, strength badge, and last-updated timestamp
 - **Market Status Indicator** — Live IST clock, green/red open/closed banner, and countdown to next open or close in the sidebar
 - **Analysis History** — Every run is preserved in the local database; a timeline table on the detail view shows the last 7 results with trend direction (improving / deteriorating / stable)
 - **Personal Notes per Stock** — Add, view, and delete timestamped notes on the stock detail page
 - **Filter & Sort Dashboard** — Filter results by status (Bullish / Bearish / Neutral) and strength (Strong / Medium / Weak); sort by status, strength, price change %, or alphabetically
-- **Export Analysis Results** — Download a three-sheet Excel workbook (Summary, Details, Alerts) or a formatted PDF report from the dashboard toolbar
+- **Export Analysis Results** — Download a three-sheet Excel workbook (Summary, Details, Alerts) or a formatted PDF report from the dashboard toolbar. Exports adapt to the active strategy (zone rows for Demand/Supply, signal/cross rows for Trend Following) and save to your **Windows Downloads** folder (`Downloads/market-lens`) when running under WSL, falling back to `~/market-lens-exports`
 - **Smart Defaults & Re-run** — Sidebar selections persist across sessions via `~/.market-lens/user_preferences.json`; one-click "Re-run Last" button with timestamp
 - **Interactive Charts** — Plotly charts with zone overlays, SMA/VWAP series, and RSI subplot
-- **In-app Alerts** — Toggle on/off; alerts saved to local SQLite database with toast notifications
+- **In-app Alerts** — Icon/toggle only for now; when on, alerts are saved to the local SQLite database and surfaced as in-app toast notifications (no Telegram/email yet)
 - **Encrypted Credential Storage** — API keys encrypted with Fernet and stored at `~/.market-lens/`
 - **Light Theme UI** — Clean Streamlit interface with wide layout
 
@@ -111,8 +113,9 @@ market-lens/
 ├── .gitignore
 ├── config/
 │   ├── settings.py            # Global constants
+│   ├── trading_config.py      # Two-axis model: trading types, strategies, enhancers, timeframes
 │   ├── credentials.py         # Encrypted credential store
-│   └── preferences.py         # User preference persistence
+│   └── preferences.py         # User preference persistence (+ old-schema migration)
 ├── data/
 │   ├── stock_list.json        # 600+ NSE/BSE stocks for autocomplete
 │   ├── sources/
@@ -125,10 +128,12 @@ market-lens/
 │   └── manager.py             # Source switcher
 ├── analysis/
 │   ├── base.py                # Abstract BaseAnalysis + Strength type
-│   ├── demand_supply.py       # Pivot-based zone detection
-│   ├── long_term.py           # 200 SMA + 52-week analysis
-│   ├── short_term.py          # RSI + MACD + SMA50
-│   └── intraday.py            # VWAP + RSI + volume
+│   ├── demand_supply.py       # Legin/base/legout zone engine + ODD score
+│   ├── trend_following.py     # 50/200 SMA golden-cross / death-cross strategy
+│   ├── zone_engine/           # Zone detection, scoring, trend, EMA20 + Fibonacci enhancers
+│   ├── long_term.py           # (legacy single-axis helper)
+│   ├── short_term.py          # (legacy single-axis helper)
+│   └── intraday.py            # (legacy single-axis helper)
 ├── watchlist/
 │   ├── models.py              # Watchlist & Stock dataclasses
 │   └── manager.py             # CRUD with limits enforced
@@ -173,25 +178,32 @@ Credentials are entered via the sidebar form and stored encrypted at `~/.market-
 
 ---
 
-## Pending Features Roadmap
+## Known Limitations & Roadmap
 
+**Current limitations (honest status):**
+
+- **RSI enhancer** is selectable in the sidebar but **not yet wired** into scoring — selecting it currently has no effect on the analysis
+- **Options Trading** trading type is available as a time horizon, but a dedicated options-specific strategy/spec is still **pending** (it currently uses the chosen primary strategy on daily data)
+- **Intraday data** (15m / 75m) is **limited by data providers** for Indian stocks — when unavailable the app falls back to Daily candles with a notice
+- **Alerts** are **in-app only** (toggle + toast); there is no Telegram or email delivery yet
+- **TradingView** full data integration is pending a stable library; the app links out to tradingview.com in the meantime
+
+**Planned features:**
+
+- Wire up the RSI enhancer into the confluence scoring
+- Dedicated Options Trading strategy (greeks / expiry-aware)
 - Dark theme toggle
-- Telegram alert notifications
-- Email alert notifications
+- Telegram / email alert notifications
 - Live market news feed
 - Multi-exchange global support (NYSE, NASDAQ, LSE)
 - Backtesting engine with historical signal replay
 - Docker containerisation for one-command setup
-- TradingView full data integration (pending stable library)
 - Increase watchlist limit beyond 10
-- Run multiple analysis types simultaneously
+- Run multiple primary strategies side-by-side
 - Real-time auto-refresh every 5 minutes during market hours
 - Zerodha Kite Connect order placement integration
-- Upstox API instrument key mapping
 - Portfolio P&L tracking
 - Custom alert conditions (price triggers, RSI thresholds)
-- Multi-timeframe analysis overlay
-- Chart drawing tools (trend lines, Fibonacci retracements)
 - Sector-wise heatmap view
 
 ---

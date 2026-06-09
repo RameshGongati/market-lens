@@ -13,11 +13,10 @@ This module defines the *vocabulary* for the new two-axis analysis model:
       * ENHANCERS — optional layers on top (multi-select):
           Fibonacci Confluence | EMA 20 Confluence | RSI
 
-Stage A (this module) is FOUNDATION ONLY — constants and helper
-functions with no side-effects. Nothing in the rest of the application
-imports or calls this module yet; it coexists alongside the legacy
-``config.settings.ANALYSIS_TYPES`` constant which stays in place until
-Stage F completes the migration.
+This module defines the constants and helper functions for the two-axis
+model, which (as of the Stage F migration) is the application's only
+analysis model — the legacy ``config.settings.ANALYSIS_TYPES`` constant and
+its single "Analysis Type" dropdown have been removed.
 """
 
 from __future__ import annotations
