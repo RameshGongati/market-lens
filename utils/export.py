@@ -26,13 +26,56 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_EXPORTS_DIR = Path.home() / "market-lens-exports"
+# Primary export target: the user's Windows Downloads folder, reachable from
+# WSL via the mounted Windows drive — so exported files land somewhere the
+# user can open from Windows Explorer.  Change these two constants to retarget.
+_WINDOWS_DOWNLOADS = Path("/mnt/c/Users/rames/Downloads")
+_WINDOWS_EXPORT_DIR = _WINDOWS_DOWNLOADS / "market-lens"
+
+# Fallback when the Windows mount isn't present (running outside WSL, a
+# different machine, or the drive isn't mounted) — keeps exports working.
+_FALLBACK_EXPORT_DIR = Path.home() / "market-lens-exports"
 
 
-def _ensure_exports_dir() -> Path:
-    """Create the exports directory if it does not exist."""
-    _EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    return _EXPORTS_DIR
+def get_export_dir() -> Path:
+    """Resolve (and create) the directory export files are written to.
+
+    Resolution order:
+      1. ``/mnt/c/Users/rames/Downloads/market-lens`` — but only when the
+         Windows Downloads folder actually exists (i.e. the Windows drive is
+         mounted under WSL).  The ``market-lens`` subfolder is created if
+         needed.
+      2. ``~/market-lens-exports`` — the historical location, used as a
+         graceful fallback whenever the Windows path is unavailable or can't
+         be created.
+
+    Every filesystem touch is wrapped in ``try/except`` so a permissions or
+    mount hiccup downgrades to the fallback (logged) instead of crashing the
+    export.
+
+    Returns:
+        The ``Path`` of the directory to write into — guaranteed to exist on
+        return unless even the fallback ``mkdir`` failed (in which case the
+        caller's ``save``/``open`` surfaces the real OS error).
+    """
+    try:
+        if _WINDOWS_DOWNLOADS.exists():
+            _WINDOWS_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+            return _WINDOWS_EXPORT_DIR
+    except Exception as exc:  # noqa: BLE001 — any FS error downgrades to fallback
+        logger.warning(
+            "Could not use Windows Downloads export dir %s: %s — falling back to %s",
+            _WINDOWS_EXPORT_DIR, exc, _FALLBACK_EXPORT_DIR,
+        )
+
+    try:
+        _FALLBACK_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Failed to create fallback export dir %s: %s",
+            _FALLBACK_EXPORT_DIR, exc,
+        )
+    return _FALLBACK_EXPORT_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +211,9 @@ def export_to_excel(
     results_map = _normalise_results(results)
     primary = primary_strategy or analysis_type
 
-    _ensure_exports_dir()
+    export_dir = get_export_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = _EXPORTS_DIR / f"market_lens_{watchlist_name}_{ts}.xlsx"
+    filename = export_dir / f"market_lens_{watchlist_name}_{ts}.xlsx"
 
     wb = openpyxl.Workbook()
 
@@ -337,10 +380,10 @@ def export_to_pdf(
     results_map = _normalise_results(results)
     primary = primary_strategy or analysis_type
 
-    _ensure_exports_dir()
+    export_dir = get_export_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = f"_{symbol_filter}" if symbol_filter else ""
-    filename = _EXPORTS_DIR / f"market_lens_{watchlist_name}{suffix}_{ts}.pdf"
+    filename = export_dir / f"market_lens_{watchlist_name}{suffix}_{ts}.pdf"
 
     doc = SimpleDocTemplate(str(filename), pagesize=A4)
     styles = getSampleStyleSheet()
@@ -482,8 +525,10 @@ def export_to_pdf(
 
 
 def exports_dir() -> Path:
-    """Return the exports directory path."""
-    return _EXPORTS_DIR
+    """Return the resolved exports directory path (Windows Downloads when
+    available, else the home-folder fallback).  Thin alias for
+    :func:`get_export_dir` kept for existing call sites (e.g. settings page)."""
+    return get_export_dir()
 
 
 def _style_header_row(ws, headers: list[str]) -> None:

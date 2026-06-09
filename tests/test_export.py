@@ -22,6 +22,7 @@ from utils.export import (
     _normalise_results,
     export_to_excel,
     export_to_pdf,
+    get_export_dir,
     is_trend_following_result,
 )
 
@@ -32,8 +33,9 @@ from utils.export import (
 
 @pytest.fixture(autouse=True)
 def _redirect_exports_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Write export files into a per-test temp dir, not the user's home."""
-    monkeypatch.setattr(export_mod, "_EXPORTS_DIR", tmp_path)
+    """Write export files into a per-test temp dir, not Windows Downloads or
+    the user's home.  Patches the resolver so every export lands in tmp."""
+    monkeypatch.setattr(export_mod, "get_export_dir", lambda: tmp_path)
     yield
 
 
@@ -307,3 +309,90 @@ def test_pdf_nan_price_does_not_crash(tf_result: dict) -> None:
     tf_result["sma_fast_now"] = None
     path = export_to_pdf({"INFY": tf_result}, "TestWL", "TF")
     assert path.exists()
+
+
+# ---------------------------------------------------------------------------
+# get_export_dir — Windows Downloads with home-folder fallback
+# ---------------------------------------------------------------------------
+# NOTE: these call the top-level-imported get_export_dir (the real function),
+# NOT export_mod.get_export_dir which the autouse fixture stubs out. They patch
+# the module path constants so resolution is exercised against temp dirs only.
+
+def test_get_export_dir_uses_windows_when_downloads_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the Windows Downloads folder exists, the market-lens subfolder
+    under it is returned and created."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    win_export = downloads / "market-lens"
+    monkeypatch.setattr(export_mod, "_WINDOWS_DOWNLOADS", downloads)
+    monkeypatch.setattr(export_mod, "_WINDOWS_EXPORT_DIR", win_export)
+
+    result = get_export_dir()
+
+    assert result == win_export
+    assert win_export.is_dir()
+
+
+def test_get_export_dir_patched_exists_returns_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Literal 'patch Path.exists -> True' variant: forcing the Downloads
+    check to pass routes to the Windows export dir."""
+    downloads = tmp_path / "Downloads"        # does not physically exist
+    win_export = tmp_path / "win" / "market-lens"
+    monkeypatch.setattr(export_mod, "_WINDOWS_DOWNLOADS", downloads)
+    monkeypatch.setattr(export_mod, "_WINDOWS_EXPORT_DIR", win_export)
+    monkeypatch.setattr(export_mod.Path, "exists", lambda self: True)
+
+    result = get_export_dir()
+
+    assert result == win_export
+    assert win_export.is_dir()
+
+
+def test_get_export_dir_falls_back_when_downloads_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the Windows Downloads folder is absent, fall back to the home
+    folder location (and create it)."""
+    missing = tmp_path / "no_such_mount" / "Downloads"
+    fallback = tmp_path / "home-exports"
+    monkeypatch.setattr(export_mod, "_WINDOWS_DOWNLOADS", missing)
+    monkeypatch.setattr(export_mod, "_FALLBACK_EXPORT_DIR", fallback)
+
+    result = get_export_dir()
+
+    assert result == fallback
+    assert fallback.is_dir()
+
+
+def test_get_export_dir_falls_back_when_windows_mkdir_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the Downloads folder exists but the market-lens subfolder can't be
+    created (e.g. a file already sits at that path), fall back gracefully."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    clash = downloads / "market-lens"
+    clash.write_text("I am a file, not a directory")   # mkdir(exist_ok) will raise
+    fallback = tmp_path / "home-exports"
+    monkeypatch.setattr(export_mod, "_WINDOWS_DOWNLOADS", downloads)
+    monkeypatch.setattr(export_mod, "_WINDOWS_EXPORT_DIR", clash)
+    monkeypatch.setattr(export_mod, "_FALLBACK_EXPORT_DIR", fallback)
+
+    result = get_export_dir()
+
+    assert result == fallback
+    assert fallback.is_dir()
+
+
+def test_exports_dir_delegates_to_get_export_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """exports_dir() (used by the settings page) must reflect the resolved
+    location, not a stale constant."""
+    sentinel = tmp_path / "resolved"
+    monkeypatch.setattr(export_mod, "get_export_dir", lambda: sentinel)
+    assert export_mod.exports_dir() == sentinel

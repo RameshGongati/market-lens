@@ -334,6 +334,7 @@ def _do_export_excel(
             primary_strategy=st.session_state.get("primary_strategy", analysis_type),
             enhancers=st.session_state.get("enhancers", []),
         )
+        st.success(f"Exported to: `{path}`")
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download Excel",
@@ -358,6 +359,7 @@ def _do_export_pdf(
             primary_strategy=st.session_state.get("primary_strategy", analysis_type),
             enhancers=st.session_state.get("enhancers", []),
         )
+        st.success(f"Exported to: `{path}`")
         with open(path, "rb") as fh:
             st.download_button(
                 label="📥 Download PDF",
