@@ -26,27 +26,91 @@ _PRICE_CACHE_TTL = 300
 
 
 # ---------------------------------------------------------------------------
+# Pure helpers for the autocomplete option <-> {symbol, exchange} mapping
+# (module-level and Streamlit-free so they can be unit tested directly)
+# ---------------------------------------------------------------------------
+
+def format_stock_option(match: dict) -> str:
+    """Format a single search-result dict as its dropdown display string.
+
+    The em-dash separator is kept in one place so the option string and the
+    lookup map can never drift apart (the previous bug parsed this string by
+    hand, which is fragile).
+
+    Args:
+        match: A search result with ``symbol``, ``name`` and ``exchange``.
+
+    Returns:
+        ``"SYMBOL — Company Name (EXCHANGE)"``.
+    """
+    return f"{match['symbol']} — {match['name']} ({match['exchange']})"
+
+
+def build_option_map(matches: list[dict]) -> dict[str, dict[str, str]]:
+    """Build a mapping from each dropdown option string to its
+    ``{"symbol": ..., "exchange": ...}``.
+
+    Selection then becomes an exact dict lookup — no re-parsing of the
+    display string (which broke on the em-dash) is ever required.
+
+    Args:
+        matches: Search results, each with ``symbol``/``name``/``exchange``.
+
+    Returns:
+        ``{option_string: {"symbol": str, "exchange": str}}``.
+    """
+    return {
+        format_stock_option(m): {"symbol": m["symbol"], "exchange": m["exchange"]}
+        for m in matches
+    }
+
+
+def lookup_selected_stock(
+    option: str | None, option_map: dict[str, dict[str, str]]
+) -> dict[str, str] | None:
+    """Resolve a selected dropdown option to its ``{symbol, exchange}``.
+
+    Args:
+        option: The selected option string, or ``None`` when nothing (or the
+            placeholder) is selected.
+        option_map: The map produced by :func:`build_option_map`.
+
+    Returns:
+        The ``{"symbol", "exchange"}`` dict for *option*, or ``None`` when
+        *option* is empty/None or not a known option — so the Add Stock
+        validation still triggers for an empty selection.
+    """
+    if not option:
+        return None
+    return option_map.get(option)
+
+
+# ---------------------------------------------------------------------------
 # Search callback (module-level so Streamlit can identify it across reruns)
 # ---------------------------------------------------------------------------
 
 def _on_stock_selected() -> None:
     """on_change callback for the search results selectbox.
 
-    Parses the selected option string (``"SYMBOL — Name (EXCHANGE)"``),
-    pre-fills the symbol and exchange session-state keys so the input
-    widgets below reflect the selection immediately, then clears the
-    search query so the results dropdown closes.
+    Looks the selected option up in the option map stored in session state
+    (built by :func:`build_option_map`), pre-fills the symbol and exchange
+    session-state keys so the input widgets below reflect the selection
+    immediately, then clears the search query so the results dropdown closes.
+
+    The results selectbox is rendered with ``index=None`` and a placeholder
+    so that picking *any* real result — including the first/only one — is a
+    genuine value change that actually fires this callback. (The previous
+    version defaulted to index 0, so selecting the top result changed
+    nothing and the callback never ran — the field stayed empty.)
     """
-    chosen: str = st.session_state.get("wl_search_result", "") or ""
-    if not chosen:
+    chosen = st.session_state.get("wl_search_result")
+    option_map: dict[str, dict[str, str]] = st.session_state.get("wl_option_map", {})
+    info = lookup_selected_stock(chosen, option_map)
+    if info is None:
         return
 
-    # Parse "SYMBOL — Company Name (NSE)" → symbol and exchange
-    sym_part = chosen.split(" — ", 1)[0].strip()
-    exchange_part = "BSE" if chosen.strip().endswith("(BSE)") else "NSE"
-
-    st.session_state.wl_symbol_field = sym_part
-    st.session_state.wl_exchange_field = exchange_part
+    st.session_state.wl_symbol_field = info["symbol"]
+    st.session_state.wl_exchange_field = info["exchange"]
     # Delete the search key (not assign) so Streamlit doesn't raise
     # StreamlitAPIException for a key bound to an active widget.
     if "wl_search_query" in st.session_state:
@@ -362,17 +426,25 @@ def _render_add_stock_section(watchlist_id: int) -> None:
             st.caption(
                 f"Found **{count}** stock{'s' if count != 1 else ''} matching '{search_query}'"
             )
-            options = [
-                f"{s['symbol']} — {s['name']} ({s['exchange']})" for s in matches
-            ]
+            option_map = build_option_map(matches)
+            options = list(option_map)
+            # Stash the map so the on_change callback can resolve the exact
+            # {symbol, exchange} for the picked option without re-parsing.
+            st.session_state["wl_option_map"] = option_map
             # If the stored selection is no longer valid for the current
             # options (query changed), drop it so the box resets cleanly.
             if st.session_state.get("wl_search_result") not in options:
                 st.session_state.pop("wl_search_result", None)
 
+            # index=None + placeholder: the box starts with NO selection, so
+            # picking any result (even the first/only one) is a real change
+            # that fires _on_stock_selected. Defaulting to index 0 was the
+            # bug — selecting the already-selected top result changed nothing.
             st.selectbox(
                 "Select stock from results",
                 options,
+                index=None,
+                placeholder="Select a stock to fill the fields below…",
                 key="wl_search_result",
                 on_change=_on_stock_selected,
                 label_visibility="collapsed",
