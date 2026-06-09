@@ -105,22 +105,28 @@ def render_stock_detail(
     st.markdown("---")
 
     # ---------- Chart section ----------
-    # Stage 2: surface the overall trend (50 SMA clock method) as a small
-    # badge next to the chart title — green/red/grey for UP/DOWN/SIDEWAYS —
-    # so the directional context driving zone tradeability is visible at a
-    # glance, without having to read the full summary line.
-    trend = result.get("trend") if analysis_type == "Demand/Supply Zones" else None
+    # Show trend badge for both D/S (50 SMA clock) and Trend Following results.
+    # For Trend Following, also show a signal badge (BUY/SELL/HOLD).
+    trend = result.get("trend")
+    _is_tf = result.get("strategy") == "Trend Following"
+
+    chart_header = "### Price Chart"
     if trend:
         t_color = _TREND_BADGE_COLORS.get(trend, "#6c757d")
-        st.markdown(
-            f"### Price Chart "
-            f"<span style='color:{t_color};font-size:0.65em;background:{t_color}22;"
+        chart_header += (
+            f" <span style='color:{t_color};font-size:0.65em;background:{t_color}22;"
             f"padding:2px 8px;border-radius:8px;border:1px solid {t_color};'>"
-            f"Trend: {trend}</span>",
-            unsafe_allow_html=True,
+            f"Trend: {trend}</span>"
         )
-    else:
-        st.markdown("### Price Chart")
+    if _is_tf:
+        _signal = result.get("signal", "HOLD")
+        _sig_color = {"BUY": "#28a745", "SELL": "#dc3545"}.get(_signal, "#6c757d")
+        chart_header += (
+            f" <span style='color:{_sig_color};font-size:0.65em;background:{_sig_color}22;"
+            f"padding:2px 8px;border-radius:8px;border:1px solid {_sig_color};'>"
+            f"Signal: {_signal}</span>"
+        )
+    st.markdown(chart_header, unsafe_allow_html=True)
 
     # Self-healing fallback: if the caller didn't pass OHLCV data (e.g. the
     # user navigated here without running a full analysis), fetch with the
@@ -188,13 +194,18 @@ def render_stock_detail(
             theme="light",
         )
     elif history_df is not None and not history_df.empty:
-        # Slice the 1-year dataset to the selected period without a new fetch
+        # Slice the dataset to the selected period without a new fetch
         df_view = _filter_by_period(history_df, selected_period)
         fig = _build_chart(symbol, df_view, result, analysis_type, chart_type)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
                 "Tested/used-up zones hidden."
+            )
+        elif analysis_type == "Trend Following (SMA50/EMA20)":
+            st.caption(
+                "50 SMA (orange) and 200 SMA (blue) — cross marker shown "
+                "if within the displayed window."
             )
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -246,6 +257,23 @@ def _render_metrics(result: dict[str, Any], analysis_type: str) -> None:
             ("Nearest Demand", f"₹{nd['mid']:,.2f}" if nd else "—"),
             ("Nearest Supply", f"₹{ns['mid']:,.2f}" if ns else "—"),
             ("Strength", result.get("strength", "—")),
+        ]
+    elif analysis_type == "Trend Following (SMA50/EMA20)":
+        _last_cross = result.get("last_cross") or {}
+        _cross_t = _last_cross.get("type")
+        _cross_ago = _last_cross.get("candles_ago")
+        _cross_str = (
+            f"{_cross_t.capitalize()} ({_cross_ago}c ago)"
+            if _cross_t and _cross_ago is not None
+            else ("—" if not _cross_t else _cross_t.capitalize())
+        )
+        _sma_fast = result.get("sma_fast_now")
+        _sma_slow = result.get("sma_slow_now")
+        metrics = [
+            ("Current Price", f"₹{result.get('current_price', 0):,.2f}"),
+            ("Signal", result.get("signal", "—")),
+            ("SMA 50", f"₹{_sma_fast:,.2f}" if _sma_fast is not None else "—"),
+            ("Last Cross", _cross_str),
         ]
     elif analysis_type == "Long Term Investment":
         metrics = [
@@ -373,6 +401,11 @@ def _build_chart(
         # Stage 3 (opt-in) — only draws anything when the Fibonacci
         # confluence checkbox was on (detected via result["fib_levels"]).
         _add_fibonacci_lines(fig, result, df)
+    elif analysis_type == "Trend Following (SMA50/EMA20)":
+        # Prominent 50 SMA + 200 SMA lines plus a cross marker — no zone
+        # rectangles (there are none in a Trend Following result).
+        _add_tf_sma_lines(fig, df)
+        _add_tf_cross_marker(fig, df, result)
     elif analysis_type == "Long Term Investment":
         _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
     elif analysis_type == "Short Term Investment":
@@ -661,6 +694,124 @@ def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
             line={"color": _EMA20_LINE_COLOR, "width": 1},
             showlegend=True,
         ),
+        row=1, col=1,
+    )
+
+
+def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
+    """Draw the 50 SMA (orange, prominent) and 200 SMA (navy, prominent) for
+    a Trend Following chart.
+
+    Both are computed fresh on the visible ``df`` window.  They are drawn
+    more prominently (width 2.0) than the thin reference lines used on
+    Demand/Supply charts (width 1.0) because they are the primary signal
+    inputs for the Trend Following strategy, not just context decoration.
+    """
+    if df.empty:
+        return
+
+    from analysis.trend_following import SMA_FAST, SMA_SLOW
+
+    sma_fast_series = df["Close"].rolling(window=min(SMA_FAST, len(df))).mean()
+    sma_slow_series = df["Close"].rolling(window=min(SMA_SLOW, len(df))).mean()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_fast_series,
+            name=f"SMA {SMA_FAST}",
+            line={"color": "#ff7f0e", "width": 2.0},   # orange — the fast SMA
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df.index,
+            y=sma_slow_series,
+            name=f"SMA {SMA_SLOW}",
+            line={"color": "#1a237e", "width": 2.0},   # navy blue — the slow SMA
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+
+
+def _add_tf_cross_marker(
+    fig: go.Figure, df: pd.DataFrame, result: dict[str, Any]
+) -> None:
+    """Mark the most recent golden/death cross on the chart, if visible.
+
+    Reads ``result["last_cross"]`` (set by ``TrendFollowingAnalysis``).
+    The cross is only annotated when it falls within the displayed ``df``
+    window (``candles_ago`` < ``len(df)``); stale crosses that predate
+    the visible range are silently skipped — they would be off the x-axis.
+
+    Marker style:
+    * Golden cross — green upward triangle + "Golden Cross" annotation above.
+    * Death cross  — red downward triangle + "Death Cross" annotation below.
+    """
+    if df.empty:
+        return
+
+    last_cross = result.get("last_cross") or {}
+    cross_type = last_cross.get("type")
+    candles_ago = last_cross.get("candles_ago")
+
+    if cross_type is None or candles_ago is None:
+        return
+    if not isinstance(candles_ago, int) or candles_ago >= len(df):
+        return   # cross is older than the visible window
+
+    cross_bar_pos = len(df) - 1 - candles_ago
+    cross_x = df.index[cross_bar_pos]
+    try:
+        cross_y = float(df["Close"].iloc[cross_bar_pos])
+    except Exception:
+        return
+
+    is_golden = cross_type == "golden"
+    marker_color = "#28a745" if is_golden else "#dc3545"
+    marker_symbol = "triangle-up" if is_golden else "triangle-down"
+    label = "Golden Cross" if is_golden else "Death Cross"
+    text_pos = "top center" if is_golden else "bottom center"
+    ay = -40 if is_golden else 40
+
+    # Scatter marker at the cross candle
+    fig.add_trace(
+        go.Scatter(
+            x=[cross_x],
+            y=[cross_y],
+            mode="markers",
+            marker={
+                "symbol": marker_symbol,
+                "color": marker_color,
+                "size": 14,
+                "line": {"color": "white", "width": 1},
+            },
+            name=label,
+            showlegend=True,
+        ),
+        row=1, col=1,
+    )
+    # Text annotation pointing to the cross
+    fig.add_annotation(
+        x=cross_x,
+        y=cross_y,
+        xref="x",
+        yref="y",
+        text=label,
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor=marker_color,
+        arrowsize=1,
+        arrowwidth=1.5,
+        ay=ay,
+        ax=0,
+        font={"color": marker_color, "size": 11, "family": "Arial Bold"},
+        bgcolor="rgba(255,255,255,0.85)",
+        bordercolor=marker_color,
+        borderwidth=1,
         row=1, col=1,
     )
 

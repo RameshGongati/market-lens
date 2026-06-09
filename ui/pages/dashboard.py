@@ -2,14 +2,17 @@
 
 import math
 
+import pandas as pd
 import yfinance as yf
 import streamlit as st
 
 from alerts.manager import check_and_trigger_alerts
+from analysis.base import BaseAnalysis
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.intraday import IntradayAnalysis
 from analysis.long_term import LongTermAnalysis
 from analysis.short_term import ShortTermAnalysis
+from analysis.trend_following import TrendFollowingAnalysis
 from config.trading_config import get_timeframe
 from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
 from storage.database import get_all_alerts, save_analysis_result
@@ -38,40 +41,30 @@ _PERIOD_MAP = {
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
 
-# TEMPORARY Stage B bridge — maps the new two-axis PRIMARY_STRATEGIES values to
-# the legacy analysis-type keys that _ANALYSIS_MAP understands.  Real engine
-# routing (and the removal of LongTermAnalysis as a Trend Following proxy) happens
-# in Stage D.
-_PRIMARY_TO_LEGACY: dict[str, str] = {
-    "Demand/Supply Zones":          "Demand/Supply Zones",
-    "Trend Following (SMA50/EMA20)": "Long Term Investment",
-}
 
+def get_analyzer_for_primary(primary_strategy: str) -> BaseAnalysis:
+    """Return the correct :class:`BaseAnalysis` instance for *primary_strategy*.
 
-def map_primary_to_legacy(primary_strategy: str) -> str:
-    """TEMPORARY Stage B bridge — map a Primary Strategy selection to the
-    legacy ``_ANALYSIS_MAP`` key that the current engine understands.
-
-    This indirection keeps the engine untouched while the sidebar already
-    speaks the new two-axis vocabulary.  Stage D will replace this with real
-    routing once the Trend Following engine exists.
+    Stage D real routing — instantiates the correct analyzer class rather than
+    mapping to a legacy string key as the now-removed Stage B bridge did.
 
     Args:
         primary_strategy: One of ``config.trading_config.PRIMARY_STRATEGIES``.
 
     Returns:
-        A legacy analysis-type string — one of the keys in ``_ANALYSIS_MAP``.
-        Falls back to ``"Demand/Supply Zones"`` for any unknown value so the
-        app always produces a result rather than crashing with a KeyError.
+        A fresh analyzer instance. Falls back to :class:`DemandSupplyAnalysis`
+        for any unknown value so the app always produces a result.
 
     Example::
 
-        >>> map_primary_to_legacy("Trend Following (SMA50/EMA20)")
-        'Long Term Investment'
-        >>> map_primary_to_legacy("Demand/Supply Zones")
-        'Demand/Supply Zones'
+        >>> get_analyzer_for_primary("Trend Following (SMA50/EMA20)")
+        TrendFollowingAnalysis()
+        >>> get_analyzer_for_primary("Demand/Supply Zones")
+        DemandSupplyAnalysis()
     """
-    return _PRIMARY_TO_LEGACY.get(primary_strategy, "Demand/Supply Zones")
+    if primary_strategy == "Trend Following (SMA50/EMA20)":
+        return TrendFollowingAnalysis()
+    return DemandSupplyAnalysis()
 
 
 def _valid_price(raw: object) -> float | None:
@@ -99,15 +92,13 @@ def render_dashboard() -> None:
     watchlist_id = st.session_state.get("selected_watchlist_id")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
 
-    # Stage B/C — read the two-axis selections and derive the legacy engine key.
-    # Strategy routing is still the Stage B temporary bridge (real routing in
-    # Stage D).  Stage C wires the timeframe: get_timeframe(trading_type)
-    # drives period/interval for every data fetch instead of the old _PERIOD_MAP.
+    # Stage D — read the two-axis selections; analysis_type IS primary_strategy
+    # now that the Stage B temporary bridge is removed and real routing is live.
+    # Stage C keeps driving timeframe via get_timeframe(trading_type).
     trading_type = st.session_state.get("trading_type", "Short-term Trading")
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
     enhancers: list[str] = st.session_state.get("enhancers", [])
-    # TEMPORARY Stage B bridge — real engine routing in Stage D.
-    analysis_type = map_primary_to_legacy(primary_strategy)
+    analysis_type = primary_strategy  # "Demand/Supply Zones" or "Trend Following (SMA50/EMA20)"
     # Stage C: effective timeframe label for display (requests the configured
     # interval; updated to show "unavailable" after analysis if fallback fired).
     _tf = get_timeframe(trading_type)
@@ -182,14 +173,14 @@ def render_dashboard() -> None:
             # graceful "insufficient data" error dict via its own guard.
             if hist is None:
                 hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-            analyser_cls = _ANALYSIS_MAP[analysis_type]
-            analyser = analyser_cls()
-            if analysis_type == "Demand/Supply Zones":
-                # Stage 3: thread the opt-in "Enhance with Fibonacci
-                # Confluence" sidebar checkbox through to the orchestrator —
-                # other analysis types don't accept this kwarg.
+            # Stage D: real routing — get_analyzer_for_primary() instantiates
+            # the correct engine class; DemandSupplyAnalysis accepts the opt-in
+            # use_fibonacci kwarg, TrendFollowingAnalysis takes only symbol+data.
+            analyser = get_analyzer_for_primary(primary_strategy)
+            if isinstance(analyser, DemandSupplyAnalysis):
                 result = analyser.analyse(
-                    symbol, hist, use_fibonacci=st.session_state.get("use_fibonacci", False)
+                    symbol, hist,
+                    use_fibonacci=st.session_state.get("use_fibonacci", False),
                 )
             else:
                 result = analyser.analyse(symbol, hist)
@@ -382,6 +373,7 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
                 stock_id=result.get("stock_id", idx),
                 strength=result.get("strength", "Weak"),
                 updated_at=result.get("updated_at"),
+                result=result,
             )
 
 
@@ -395,9 +387,9 @@ def _render_detail_view() -> None:
 
     results = st.session_state.get("analysis_results", {})
     result = results.get(symbol, {})
-    # Stage B bridge: analysis_type derived from primary_strategy
+    # Stage D: analysis_type IS primary_strategy (bridge removed)
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
-    analysis_type = map_primary_to_legacy(primary_strategy)
+    analysis_type = primary_strategy
     exchange = result.get("exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 

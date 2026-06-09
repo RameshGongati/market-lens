@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import pytest
 
-from config.trading_config import ENHANCERS, TRADING_TYPES, get_defaults
-from ui.pages.dashboard import map_primary_to_legacy
+from analysis.demand_supply import DemandSupplyAnalysis
+from analysis.trend_following import TrendFollowingAnalysis
+from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES, get_defaults
+from ui.pages.dashboard import get_analyzer_for_primary
 
 
 # ---------------------------------------------------------------------------
@@ -127,35 +129,37 @@ def test_use_fibonacci_true_when_fibonacci_is_only_enhancer():
 
 
 # ---------------------------------------------------------------------------
-# map_primary_to_legacy — TEMPORARY Stage B bridge
+# get_analyzer_for_primary — Stage D real routing (replaces Stage B bridge)
 # ---------------------------------------------------------------------------
 
-def test_map_demand_supply_stays_demand_supply():
-    """Demand/Supply Zones maps to itself — the existing DemandSupplyAnalysis
-    engine is used without any indirection."""
-    assert map_primary_to_legacy("Demand/Supply Zones") == "Demand/Supply Zones"
+def test_get_analyzer_demand_supply_returns_correct_class():
+    """Demand/Supply Zones must route to DemandSupplyAnalysis — not a proxy."""
+    analyser = get_analyzer_for_primary("Demand/Supply Zones")
+    assert isinstance(analyser, DemandSupplyAnalysis)
 
 
-def test_map_trend_following_maps_to_long_term_investment():
-    """TEMPORARY Stage B rule: Trend Following (SMA50/EMA20) maps to Long Term
-    Investment so the existing LongTermAnalysis class is used as a proxy until
-    a dedicated Trend Following engine is built in Stage D."""
-    assert map_primary_to_legacy("Trend Following (SMA50/EMA20)") == "Long Term Investment"
+def test_get_analyzer_trend_following_returns_tf_class():
+    """Trend Following must route to TrendFollowingAnalysis — the real Stage D
+    engine, not the LongTermAnalysis proxy that the old bridge used."""
+    analyser = get_analyzer_for_primary("Trend Following (SMA50/EMA20)")
+    assert isinstance(analyser, TrendFollowingAnalysis)
 
 
-def test_map_unknown_primary_falls_back_to_demand_supply():
+def test_get_analyzer_unknown_falls_back_to_demand_supply():
     """Graceful fallback: an unrecognised primary strategy string must not
-    raise KeyError — it falls back to Demand/Supply Zones so the app always
+    raise KeyError — it falls back to DemandSupplyAnalysis so the app always
     produces a result."""
-    assert map_primary_to_legacy("Some Future Strategy") == "Demand/Supply Zones"
+    from analysis.base import BaseAnalysis
+    analyser = get_analyzer_for_primary("Some Future Strategy")
+    assert isinstance(analyser, DemandSupplyAnalysis)
+    assert isinstance(analyser, BaseAnalysis)
 
 
-def test_map_primary_to_legacy_returns_string_for_all_known_primaries():
-    """Every value in PRIMARY_STRATEGIES must map to a non-empty string."""
-    from config.trading_config import PRIMARY_STRATEGIES
-
+def test_get_analyzer_returns_base_analysis_for_all_known_primaries():
+    """Every value in PRIMARY_STRATEGIES must produce a BaseAnalysis subclass."""
+    from analysis.base import BaseAnalysis
     for ps in PRIMARY_STRATEGIES:
-        result = map_primary_to_legacy(ps)
-        assert isinstance(result, str) and result, (
-            f"map_primary_to_legacy({ps!r}) returned an empty or non-string value"
+        analyser = get_analyzer_for_primary(ps)
+        assert isinstance(analyser, BaseAnalysis), (
+            f"get_analyzer_for_primary({ps!r}) did not return a BaseAnalysis subclass"
         )
