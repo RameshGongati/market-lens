@@ -25,8 +25,8 @@ _WEAK_LEGOUT_POINTS = 1.0    # exactly one exciting candle and no gap
 
 # Rule: Time-at-base points — fewer base candles means a fresher imbalance.
 _SHORT_BASE_POINTS = 2.0     # 1-3 base candles
-_MEDIUM_BASE_POINTS = 1.0    # 4-6 base candles
-_LONG_BASE_POINTS = 0.0      # > 6 base candles
+_MEDIUM_BASE_POINTS = 1.0    # 4-5 base candles
+_LONG_BASE_POINTS = 0.0      # > 5 base candles
 
 # Rule: Entry recommendation thresholds (score is freshness+strength+time).
 _AGGRESSIVE_ENTRY_SCORE = 7.0
@@ -84,11 +84,11 @@ def strength_points(has_gap: bool, num_legout_candles: int) -> float:
 
 
 def time_at_base_points(num_base_candles: int) -> float:
-    """Rule: Time at base — 1-3 candles = 2, 4-6 candles = 1,
-    more than 6 candles = 0."""
+    """Rule: Time at base — 1-3 candles = 2, 4-5 candles = 1,
+    more than 5 candles = 0 (GTF Episode 8 / M28)."""
     if 1 <= num_base_candles <= 3:
         return _SHORT_BASE_POINTS
-    if 4 <= num_base_candles <= 6:
+    if 4 <= num_base_candles <= 5:
         return _MEDIUM_BASE_POINTS
     return _LONG_BASE_POINTS
 

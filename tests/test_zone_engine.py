@@ -26,7 +26,7 @@ from analysis.zone_engine.fibonacci import (
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import confluence_rating, entry_recommendation
+from analysis.zone_engine.scoring import confluence_rating, entry_recommendation, time_at_base_points
 from analysis.zone_engine.trend import detect_trend
 
 
@@ -356,6 +356,37 @@ def test_no_trade_recommendation_when_score_below_five():
 )
 def test_entry_recommendation_thresholds(score, expected):
     assert entry_recommendation(score) == expected
+
+
+# ---------------------------------------------------------------------------
+# Time-at-base scoring (GTF M28 — Episode 8 rule)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("num_candles, expected", [
+    (1, 2.0),
+    (2, 2.0),
+    (3, 2.0),
+])
+def test_time_at_base_short_base_scores_two(num_candles, expected):
+    assert time_at_base_points(num_candles) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("num_candles, expected", [
+    (4, 1.0),
+    (5, 1.0),
+])
+def test_time_at_base_medium_base_scores_one(num_candles, expected):
+    assert time_at_base_points(num_candles) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("num_candles, expected", [
+    (6, 0.0),
+    (7, 0.0),
+    (10, 0.0),
+])
+def test_time_at_base_long_base_scores_zero(num_candles, expected):
+    """M28: 6+ base candles score 0 (Episode 8 rule — was 4-6=1, >6=0)."""
+    assert time_at_base_points(num_candles) == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
