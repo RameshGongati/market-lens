@@ -111,13 +111,23 @@ def test_classify_candle_boring():
 
 
 def test_classify_candle_exciting_not_strong():
-    """body_pct = 9/15 = 0.60 -> exciting (>= 0.60) but not strong (< 0.80)."""
+    """body_pct = 9/15 = 0.60 -> exciting (>= 0.50) but not strong (< 0.80)."""
     info = classify_candle(open_=100, high=110, low=95, close=109)
     assert info["body_pct"] == pytest.approx(0.60)
     assert info["is_exciting"] is True
     assert info["is_strong"] is False
     assert info["is_boring"] is False
     assert info["direction"] == "bullish"
+
+
+def test_classify_candle_exactly_at_threshold_is_exciting():
+    """body_pct exactly 0.50 is the boundary and must classify as exciting (>=)."""
+    # range = 10, body = 5 -> body_pct = 0.50
+    info = classify_candle(open_=100, high=105, low=95, close=105)
+    assert info["body_pct"] == pytest.approx(0.50)
+    assert info["is_exciting"] is True
+    assert info["is_strong"] is False
+    assert info["is_boring"] is False
 
 
 def test_classify_candle_strong():
@@ -130,12 +140,11 @@ def test_classify_candle_strong():
     assert info["direction"] == "bullish"
 
 
-def test_classify_candle_indecisive_band_treated_as_boring():
-    """0.50 < body_pct < 0.60 is the documented 'indecisive' band, which the
-    spec says to treat as boring for base purposes."""
-    # range = 5.5, body = 3 -> body_pct = 3/5.5 ≈ 0.545 (within the 0.50-0.60 band)
-    info = classify_candle(open_=100, high=105.5, low=100, close=103)
-    assert 0.50 < info["body_pct"] < 0.60
+def test_classify_candle_just_below_threshold_is_boring():
+    """body_pct just under 0.50 must be boring (no separate indecisive band)."""
+    # range = 6.5, body = 3 -> body_pct = 3/6.5 ≈ 0.4615 (< 0.50)
+    info = classify_candle(open_=100, high=106.5, low=100, close=103)
+    assert info["body_pct"] < 0.50
     assert info["is_boring"] is True
     assert info["is_exciting"] is False
 
