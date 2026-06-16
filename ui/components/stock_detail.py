@@ -13,6 +13,7 @@ import streamlit.components.v1 as st_components
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from config.preferences import load_preferences
 from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
@@ -361,6 +362,8 @@ def render_stock_detail(
                 "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
                 "if within the displayed window."
             )
+        if not load_preferences().get("show_candle_tooltip", True):
+            fig.update_traces(hoverinfo="skip")
         st.plotly_chart(fig, use_container_width=True)
         st_components.html(_CROSSHAIR_PRICE_JS, height=0)
     else:

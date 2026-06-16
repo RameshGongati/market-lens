@@ -3,7 +3,7 @@
 import streamlit as st
 
 from config.credentials import clear_credentials
-from config.preferences import load_preferences, reset_preferences
+from config.preferences import load_preferences, reset_preferences, save_preferences
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
 from storage.database import clear_all_analysis_history, clear_all_notes, db_path
 from utils.export import exports_dir
@@ -64,6 +64,20 @@ def render_settings() -> None:
             st.rerun()
         except Exception as exc:
             st.error(f"Failed to reset preferences: {exc}")
+
+    st.markdown("---")
+
+    # ---------- Chart Settings ----------
+    st.markdown("### Chart Settings")
+    show_tooltip = st.toggle(
+        "Show candle details tooltip",
+        value=prefs.get("show_candle_tooltip", True),
+        help="When ON, hovering over the chart shows a box with OHLC candle details. "
+        "Turn OFF to hide the box and keep only the crosshair lines and price label.",
+    )
+    if show_tooltip != prefs.get("show_candle_tooltip", True):
+        save_preferences({"show_candle_tooltip": show_tooltip})
+        st.rerun()
 
     st.markdown("---")
 
