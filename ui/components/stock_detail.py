@@ -36,49 +36,80 @@ logger = get_logger(__name__)
 
 _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
 
-_CROSSHAIR_PRICE_JS = """
-<script>
-(function() {
-    var doc = window.parent.document;
-    doc.querySelectorAll('.y-price-label').forEach(function(el) { el.remove(); });
-
-    function init(n) {
-        if (n > 15) return;
-        var plots = doc.querySelectorAll('.js-plotly-plot');
-        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }
-        var plot = plots[plots.length - 1];
-        var drags = plot.querySelectorAll('.nsewdrag');
-        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }
-
-        var label = doc.createElement('div');
-        label.className = 'y-price-label';
-        label.style.cssText =
-            'position:absolute;left:0;background:#787b86;color:#fff;' +
-            'font-size:11px;padding:1px 5px;pointer-events:none;display:none;' +
-            'z-index:1000;font-family:monospace;border-radius:2px;' +
-            'white-space:nowrap;transform:translateY(-50%)';
-        plot.style.position = 'relative';
-        plot.appendChild(label);
-
-        drags[0].addEventListener('mousemove', function(e) {
-            var ya = plot._fullLayout.yaxis;
-            if (!ya || !ya.range) return;
-            var r = drags[0].getBoundingClientRect();
-            var pr = plot.getBoundingClientRect();
-            var frac = (e.clientY - r.top) / r.height;
-            var price = ya.range[1] - frac * (ya.range[1] - ya.range[0]);
-            label.textContent = price.toFixed(2);
-            label.style.top = (e.clientY - pr.top) + 'px';
-            label.style.display = 'block';
-        });
-        drags[0].addEventListener('mouseleave', function() {
-            label.style.display = 'none';
-        });
-    }
-    init(0);
-})();
-</script>
-"""
+def _crosshair_js(show_date: bool) -> str:
+    """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off."""
+    show_date_flag = "true" if show_date else "false"
+    return (
+        "<script>\n"
+        "(function() {\n"
+        "    var doc = window.parent.document;\n"
+        "    var showDate = " + show_date_flag + ";\n"
+        "    doc.querySelectorAll('.y-price-label,.x-date-label,.crosshair-hide-tooltip')\n"
+        "       .forEach(function(el) { el.remove(); });\n"
+        "\n"
+        "    function init(n) {\n"
+        "        if (n > 15) return;\n"
+        "        var plots = doc.querySelectorAll('.js-plotly-plot');\n"
+        "        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "        var plot = plots[plots.length - 1];\n"
+        "        var drags = plot.querySelectorAll('.nsewdrag');\n"
+        "        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "\n"
+        "        plot.style.position = 'relative';\n"
+        "        var badge = 'background:#787b86;color:#fff;font-size:11px;padding:1px 5px;'\n"
+        "                  + 'pointer-events:none;display:none;z-index:1000;font-family:monospace;'\n"
+        "                  + 'border-radius:2px;white-space:nowrap;position:absolute;';\n"
+        "\n"
+        "        var priceLabel = doc.createElement('div');\n"
+        "        priceLabel.className = 'y-price-label';\n"
+        "        priceLabel.style.cssText = badge + 'left:0;transform:translateY(-50%)';\n"
+        "        plot.appendChild(priceLabel);\n"
+        "\n"
+        "        var dateLabel = null;\n"
+        "        if (showDate) {\n"
+        "            var s = doc.createElement('style');\n"
+        "            s.className = 'crosshair-hide-tooltip';\n"
+        "            s.textContent = '.hoverlayer .hovertext{opacity:0!important}';\n"
+        "            doc.head.appendChild(s);\n"
+        "            dateLabel = doc.createElement('div');\n"
+        "            dateLabel.className = 'x-date-label';\n"
+        "            dateLabel.style.cssText = badge + 'top:5px;transform:translateX(-50%)';\n"
+        "            plot.appendChild(dateLabel);\n"
+        "        }\n"
+        "\n"
+        "        drags[0].addEventListener('mousemove', function(e) {\n"
+        "            var ya = plot._fullLayout.yaxis;\n"
+        "            if (!ya || !ya.range) return;\n"
+        "            var r = drags[0].getBoundingClientRect();\n"
+        "            var pr = plot.getBoundingClientRect();\n"
+        "            var frac = (e.clientY - r.top) / r.height;\n"
+        "            var price = ya.range[1] - frac * (ya.range[1] - ya.range[0]);\n"
+        "            priceLabel.textContent = price.toFixed(2);\n"
+        "            priceLabel.style.top = (e.clientY - pr.top) + 'px';\n"
+        "            priceLabel.style.display = 'block';\n"
+        "\n"
+        "            if (dateLabel) {\n"
+        "                var xa = plot._fullLayout.xaxis;\n"
+        "                if (!xa || !xa.range) return;\n"
+        "                var xf = (e.clientX - r.left) / r.width;\n"
+        "                var r0 = typeof xa.range[0]==='number' ? xa.range[0] : new Date(xa.range[0]).getTime();\n"
+        "                var r1 = typeof xa.range[1]==='number' ? xa.range[1] : new Date(xa.range[1]).getTime();\n"
+        "                var d = new Date(r0 + xf * (r1 - r0));\n"
+        "                var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
+        "                dateLabel.textContent = d.getDate() + ' ' + M[d.getMonth()] + ' ' + d.getFullYear();\n"
+        "                dateLabel.style.left = (e.clientX - pr.left) + 'px';\n"
+        "                dateLabel.style.display = 'block';\n"
+        "            }\n"
+        "        });\n"
+        "        drags[0].addEventListener('mouseleave', function() {\n"
+        "            priceLabel.style.display = 'none';\n"
+        "            if (dateLabel) dateLabel.style.display = 'none';\n"
+        "        });\n"
+        "    }\n"
+        "    init(0);\n"
+        "})();\n"
+        "</script>\n"
+    )
 
 # Lookback windows (calendar days) for the period selector buttons
 _PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
@@ -362,10 +393,9 @@ def render_stock_detail(
                 "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
                 "if within the displayed window."
             )
-        if not load_preferences().get("show_candle_tooltip", True):
-            fig.update_traces(hoverinfo="skip")
+        show_tooltip = load_preferences().get("show_candle_tooltip", True)
         st.plotly_chart(fig, use_container_width=True)
-        st_components.html(_CROSSHAIR_PRICE_JS, height=0)
+        st_components.html(_crosshair_js(show_date=not show_tooltip), height=0)
     else:
         st.warning(
             "Unable to load chart data for the selected interval. "
@@ -618,9 +648,17 @@ def _build_chart(
     fig.update_layout(
         height=500 + (120 if show_rsi else 0),
         template="plotly_white",
-        xaxis_rangeslider_visible=False,   # hide default rangeslider on price row
         margin={"t": 40, "b": 20, "l": 60, "r": 20},
         hovermode="x unified",
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor="grey",
+            spikedash="dash",
+            spikesnap="cursor",
+        ),
         yaxis=dict(
             showspikes=True,
             spikemode="across",
