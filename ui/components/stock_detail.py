@@ -572,6 +572,15 @@ def _build_chart(
         xaxis_rangeslider_visible=False,   # hide default rangeslider on price row
         margin={"t": 40, "b": 20, "l": 60, "r": 20},
         hovermode="x unified",
+        yaxis=dict(
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor="grey",
+            spikedash="dash",
+            spikesnap="cursor",
+            side="left",
+        ),
     )
     # Place the rangeslider at the very bottom of the chart (below the last subplot)
     bottom_xaxis = f"xaxis{rows}"   # "xaxis2" for 2-row, "xaxis3" for 3-row
