@@ -25,7 +25,7 @@ from analysis.zone_engine.fibonacci import (
 )
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
-from analysis.zone_engine.patterns import _classify_all, detect_zones
+from analysis.zone_engine.patterns import detect_zones
 from analysis.zone_engine.scoring import confluence_rating, entry_recommendation, time_at_base_points
 from analysis.zone_engine.trend import detect_trend
 
@@ -163,77 +163,6 @@ def test_classify_candle_zero_range_guard():
     info = classify_candle(open_=100, high=100, low=100, close=100)
     assert info["body_pct"] == 0.0
     assert info["is_boring"] is True
-
-
-# ---------------------------------------------------------------------------
-# Relative-size gate — small exciting candles downgraded to boring
-# ---------------------------------------------------------------------------
-
-def test_relative_size_gate_downgrades_small_exciting_candle():
-    """A candle with high body_pct but small range relative to neighbours
-    should be downgraded to boring by the rolling-median gate."""
-    rows = (
-        # 20 "normal" candles with range ~200 to establish the local median
-        [(1000, 1200, 1000, 1100)] * 10
-        + [(1100, 1300, 1100, 1200)] * 10
-        # Then a small candle: range=40 but body_pct=0.75 (exciting by ratio)
-        + [(1100, 1120, 1080, 1130)]
-    )
-    df = _make_df(rows)
-    candles = _classify_all(df)
-    small = candles[20]
-    assert small["body_pct"] >= 0.50, "body_pct should qualify as exciting"
-    assert small["is_boring"] is True, "should be downgraded to boring by size gate"
-    assert small["is_exciting"] is False
-
-
-def test_relative_size_gate_keeps_normal_exciting_candle():
-    """A candle with high body_pct AND normal range should stay exciting."""
-    rows = (
-        [(1000, 1200, 1000, 1100)] * 10
-        + [(1100, 1300, 1100, 1200)] * 10
-        # Normal-sized exciting candle: range=200, body_pct=0.75
-        + [(1000, 1200, 1000, 1150)]
-    )
-    df = _make_df(rows)
-    candles = _classify_all(df)
-    normal = candles[20]
-    assert normal["is_exciting"] is True, "normal-sized candle should stay exciting"
-
-
-def test_relative_size_gate_preserves_direction_and_body_pct():
-    """Downgraded candles keep their original direction and body_pct."""
-    rows = (
-        [(1000, 1200, 1000, 1100)] * 20
-        + [(1100, 1120, 1080, 1085)]  # small bearish, body_pct=0.375 — already boring
-    )
-    # Make the small candle have high body_pct: range=30, body=22.5 -> 0.75
-    rows[20] = (1100, 1115, 1085, 1085)  # range=30, body=15, pct=0.50
-    df = _make_df(rows)
-    candles = _classify_all(df)
-    c = candles[20]
-    assert c["is_boring"] is True
-    assert c["direction"] == "bearish"
-    assert c["body_pct"] == pytest.approx(0.50)
-
-
-def test_relative_size_gate_dbr_forms_when_small_candle_becomes_base():
-    """A small exciting candle between base and legout should be absorbed
-    into the base, allowing the real legout to form the zone."""
-    # 18 boring candles with range=200 to establish the local median,
-    # then legin + base + small-exciting + real legout.
-    big_rows = [(1000, 1200, 1000, 1050)] * 18  # 0-17: boring (pct=0.25, range=200)
-    big_rows.append((1400, 1410, 1200, 1210))   # 18: legin (bearish, pct=0.90, range=210)
-    big_rows.append((1210, 1220, 1200, 1215))   # 19: base (boring, pct=0.25, range=20)
-    big_rows.append((1210, 1225, 1205, 1222))   # 20: small exciting (pct=0.60, range=20)
-    big_rows.append((1220, 1420, 1215, 1400))   # 21: real legout (bullish, pct=0.88, range=205)
-    df = _make_df(big_rows)
-    candles = _classify_all(df)
-    assert candles[20]["is_boring"] is True, "small candle should be downgraded"
-    zones = detect_zones(df)
-    dbr_zones = [z for z in zones if z.zone_type == "DBR"]
-    assert len(dbr_zones) >= 1, "DBR zone should form with extended base"
-    assert dbr_zones[0].num_base_candles == 2
 
 
 # ---------------------------------------------------------------------------

@@ -34,13 +34,6 @@ _MAX_SCAN_BASE_CANDLES = 10
 # legin/legout run, so the scan stays bounded on strongly trending data.
 _MAX_LEG_RUN = 6
 
-# Rule: Relative-size gate — an exciting candle whose range (high-low) is
-# less than this fraction of the local rolling-median range is downgraded to
-# boring. Prevents tiny-range candles with a full body from acting as
-# legin/legout when they are clearly consolidation relative to their neighbours.
-_RELATIVE_SIZE_THRESHOLD = 0.75
-_RELATIVE_SIZE_WINDOW = 20
-
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("bearish", "bullish"): ("DBR", "demand"),   # Drop-Base-Rally
@@ -51,44 +44,11 @@ _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
 
 
 def _classify_all(df: pd.DataFrame) -> list[CandleInfo]:
-    """Classify every candle in the dataframe.
-
-    Two-pass approach:
-      1. Classify each candle individually by body_pct.
-      2. Downgrade exciting candles whose range is too small relative to their
-         neighbours (rolling-median gate), so tiny-bodied consolidation candles
-         don't act as legin/legout.
-    """
-    candles = [
+    """Classify every candle in the dataframe in a single pass."""
+    return [
         classify_candle(float(o), float(h), float(l), float(c))
         for o, h, l, c in zip(df["Open"], df["High"], df["Low"], df["Close"])
     ]
-
-    ranges = (df["High"].to_numpy(dtype=float) - df["Low"].to_numpy(dtype=float))
-    n = len(ranges)
-    if n == 0:
-        return candles
-
-    half_w = _RELATIVE_SIZE_WINDOW // 2
-    for i, c in enumerate(candles):
-        if not c["is_exciting"]:
-            continue
-        r = ranges[i]
-        window = ranges[max(0, i - half_w): min(n, i + half_w)]
-        positive = window[window > 0]
-        if len(positive) == 0:
-            continue
-        local_median = float(np.median(positive))
-        if local_median > 0 and r / local_median < _RELATIVE_SIZE_THRESHOLD:
-            candles[i] = CandleInfo(
-                is_boring=True,
-                is_exciting=False,
-                is_strong=False,
-                direction=c["direction"],
-                body_pct=c["body_pct"],
-            )
-
-    return candles
 
 
 def _extend_run(candles: Sequence[CandleInfo], anchor: int, step: int, limit: int, bound: int) -> int:
