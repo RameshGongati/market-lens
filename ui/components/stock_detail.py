@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
@@ -33,6 +34,50 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
+
+_CROSSHAIR_PRICE_JS = """
+<script>
+(function() {
+    var doc = window.parent.document;
+    doc.querySelectorAll('.y-price-label').forEach(function(el) { el.remove(); });
+
+    function init(n) {
+        if (n > 15) return;
+        var plots = doc.querySelectorAll('.js-plotly-plot');
+        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }
+        var plot = plots[plots.length - 1];
+        var drags = plot.querySelectorAll('.nsewdrag');
+        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }
+
+        var label = doc.createElement('div');
+        label.className = 'y-price-label';
+        label.style.cssText =
+            'position:absolute;left:0;background:#787b86;color:#fff;' +
+            'font-size:11px;padding:1px 5px;pointer-events:none;display:none;' +
+            'z-index:1000;font-family:monospace;border-radius:2px;' +
+            'white-space:nowrap;transform:translateY(-50%)';
+        plot.style.position = 'relative';
+        plot.appendChild(label);
+
+        drags[0].addEventListener('mousemove', function(e) {
+            var ya = plot._fullLayout.yaxis;
+            if (!ya || !ya.range) return;
+            var r = drags[0].getBoundingClientRect();
+            var pr = plot.getBoundingClientRect();
+            var frac = (e.clientY - r.top) / r.height;
+            var price = ya.range[1] - frac * (ya.range[1] - ya.range[0]);
+            label.textContent = price.toFixed(2);
+            label.style.top = (e.clientY - pr.top) + 'px';
+            label.style.display = 'block';
+        });
+        drags[0].addEventListener('mouseleave', function() {
+            label.style.display = 'none';
+        });
+    }
+    init(0);
+})();
+</script>
+"""
 
 # Lookback windows (calendar days) for the period selector buttons
 _PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
@@ -317,6 +362,7 @@ def render_stock_detail(
                 "if within the displayed window."
             )
         st.plotly_chart(fig, use_container_width=True)
+        st_components.html(_CROSSHAIR_PRICE_JS, height=0)
     else:
         st.warning(
             "Unable to load chart data for the selected interval. "
