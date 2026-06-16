@@ -44,7 +44,7 @@ def _crosshair_js(show_date: bool) -> str:
         "(function() {\n"
         "    var doc = window.parent.document;\n"
         "    var showDate = " + show_date_flag + ";\n"
-        "    doc.querySelectorAll('.y-price-label,.x-date-label,.crosshair-hide-tooltip')\n"
+        "    doc.querySelectorAll('.y-price-label,.x-date-label')\n"
         "       .forEach(function(el) { el.remove(); });\n"
         "\n"
         "    function init(n) {\n"
@@ -67,10 +67,6 @@ def _crosshair_js(show_date: bool) -> str:
         "\n"
         "        var dateLabel = null;\n"
         "        if (showDate) {\n"
-        "            var s = doc.createElement('style');\n"
-        "            s.className = 'crosshair-hide-tooltip';\n"
-        "            s.textContent = '.hoverlayer .hovertext{opacity:0!important}';\n"
-        "            doc.head.appendChild(s);\n"
         "            dateLabel = doc.createElement('div');\n"
         "            dateLabel.className = 'x-date-label';\n"
         "            dateLabel.style.cssText = badge + 'top:5px;transform:translateX(-50%)';\n"
@@ -394,6 +390,9 @@ def render_stock_detail(
                 "if within the displayed window."
             )
         show_tooltip = load_preferences().get("show_candle_tooltip", True)
+        if not show_tooltip:
+            fig.update_layout(hovermode="closest")
+            fig.update_traces(hoverinfo="none")
         st.plotly_chart(fig, use_container_width=True)
         st_components.html(_crosshair_js(show_date=not show_tooltip), height=0)
     else:
