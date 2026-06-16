@@ -271,35 +271,37 @@ def test_odd_score_fresh_zone_two_base_candles_gap_legout_scores_seven():
 
 
 # ---------------------------------------------------------------------------
-# ODD score: zone tested exactly once -> freshness points = 1.5
+# ODD score: one return = activation touch (M3), NOT a test -> still fresh
 # ---------------------------------------------------------------------------
 
 # Same clean DBR structure (proximal = 113) followed by candles engineered
 # so price re-enters the zone (low <= 113) in exactly one contiguous visit.
-_DBR_TESTED_ONCE_ROWS = [
+# GTF M3: the first return is the activation touch, not a test.
+_DBR_ONE_RETURN_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
     (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap, single candle
     (124, 128, 120, 126),   # 4: away from zone   (low=120 > 113 -> no touch)
-    (118, 120, 111, 119),   # 5: enters the zone  (low=111 <= 113 -> touch #1 starts)
-    (119, 123, 115, 122),   # 6: leaves the zone  (low=115 > 113 -> touch #1 ends)
+    (118, 120, 111, 119),   # 5: enters the zone  (low=111 <= 113 -> activation touch)
+    (119, 123, 115, 122),   # 6: leaves the zone  (low=115 > 113 -> touch ends)
     (118, 122, 116, 121),   # 7: stays away       (low=116 > 113 -> still no touch)
 ]
 
 
-def test_odd_score_zone_tested_once_has_freshness_points_one_point_five():
-    df = _make_df(_DBR_TESTED_ONCE_ROWS)
+def test_m3_one_return_is_activation_touch_not_a_test():
+    """GTF M3: the first return to the zone is your planned entry, not a
+    test. times_tested should be 0 and freshness should be 3.0 (fresh)."""
+    df = _make_df(_DBR_ONE_RETURN_ROWS)
     zones = detect_zones(df)
 
     assert len(zones) == 1
     zone = zones[0]
 
     assert zone.proximal == pytest.approx(113)
-    assert zone.times_tested == 1
-    assert zone.is_fresh is False
-    # Rule: Freshness — tested exactly once = 1.5 points
-    assert zone.freshness_points == pytest.approx(1.5)
+    assert zone.times_tested == 0
+    assert zone.is_fresh is True
+    assert zone.freshness_points == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -307,18 +309,21 @@ def test_odd_score_zone_tested_once_has_freshness_points_one_point_five():
 # ---------------------------------------------------------------------------
 
 # Same clean DBR structure (proximal = 113), but the legout is a single,
-# non-gapping exciting candle (strength = 1) and price re-tests the zone
-# twice afterwards (freshness = 0). 0 (freshness) + 1 (strength) + 2 (time) = 3.
+# non-gapping exciting candle (strength = 1) and price returns to the zone
+# three times (M3: first return = activation, so tests = 3-1 = 2,
+# freshness = 0). 0 (freshness) + 1 (strength) + 2 (time) = 3.
 _DBR_NO_TRADE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
     (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
     (113, 126, 112, 125),   # 3: legout opens at 113 (<= base high 114 -> no gap)
     (124, 128, 120, 126),   # 4: away from zone (low=120 > 113)
-    (118, 120, 111, 119),   # 5: touch #1 starts (low=111 <= 113)
-    (119, 123, 115, 122),   # 6: touch #1 ends   (low=115 > 113)
-    (116, 119, 109, 117),   # 7: touch #2 starts (low=109 <= 113)
-    (117, 122, 114, 120),   # 8: touch #2 ends   (low=114 > 113)
+    (118, 120, 111, 119),   # 5: return #1 (activation touch, M3 — not a test)
+    (119, 123, 115, 122),   # 6: leaves zone
+    (116, 119, 109, 117),   # 7: return #2 (test #1)
+    (117, 122, 114, 120),   # 8: leaves zone
+    (116, 118, 110, 115),   # 9: return #3 (test #2)
+    (115, 121, 114, 120),   # 10: leaves zone
 ]
 
 
@@ -336,6 +341,59 @@ def test_no_trade_recommendation_when_score_below_five():
     assert zone.odd_score == pytest.approx(3.0)
     assert zone.odd_score < 5
     assert zone.entry_recommendation == "No Trade"
+
+
+# ---------------------------------------------------------------------------
+# M3: two returns = one test (activation touch excluded)
+# ---------------------------------------------------------------------------
+
+_DBR_TWO_RETURNS_ROWS = [
+    (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+    (111, 114, 109, 112),   # 1: base candle 1 (boring)
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+    (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap
+    (124, 128, 120, 126),   # 4: away from zone
+    (118, 120, 111, 119),   # 5: return #1 (activation touch — not a test)
+    (119, 123, 115, 122),   # 6: leaves zone
+    (116, 119, 109, 117),   # 7: return #2 (test #1)
+    (117, 122, 114, 120),   # 8: leaves zone
+]
+
+
+def test_m3_two_returns_counts_as_one_test():
+    """GTF M3: two returns = activation + 1 real test -> freshness 1.5."""
+    df = _make_df(_DBR_TWO_RETURNS_ROWS)
+    zones = detect_zones(df)
+
+    assert len(zones) == 1
+    zone = zones[0]
+    assert zone.times_tested == 1
+    assert zone.is_fresh is False
+    assert zone.freshness_points == pytest.approx(1.5)
+
+
+# ---------------------------------------------------------------------------
+# M3: zero returns = never touched -> fresh (3 points)
+# ---------------------------------------------------------------------------
+
+def test_m3_zero_returns_stays_fresh():
+    """A zone with no returns at all is untouched — freshness = 3."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away (low=120 > 113)
+        (126, 130, 118, 128),   # 5: away (low=118 > 113)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    assert len(zones) == 1
+    zone = zones[0]
+    assert zone.times_tested == 0
+    assert zone.is_fresh is True
+    assert zone.freshness_points == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------

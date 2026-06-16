@@ -123,12 +123,17 @@ def zone_strength_label(legout_candles: Sequence[CandleInfo]) -> str:
 
 def count_zone_tests(df: pd.DataFrame, category: str, proximal: float, start_idx: int) -> int:
     """Rule: "Tested" — count distinct re-entries into the zone after the
-    legout completes. A demand zone is re-entered when a later candle's low
-    crosses below its proximal line; a supply zone is re-entered when a
-    later candle's high crosses above its proximal line. A run of
-    consecutive candles that stay inside the zone counts as a single visit
-    (one "test"), matching how traders describe a zone as "tested once" /
-    "tested twice".
+    legout completes, excluding the first return (GTF M3).
+
+    A demand zone is re-entered when a later candle's low crosses below
+    its proximal line; a supply zone is re-entered when a later candle's
+    high crosses above its proximal line. A run of consecutive candles
+    that stay inside the zone counts as a single visit.
+
+    GTF M3: the first return to the zone is the "activation touch" (your
+    planned entry opportunity), NOT a test. The legout itself is also
+    never a test (handled by the caller passing ``legout_end + 1`` as
+    *start_idx*). Only the second and subsequent returns count as tests.
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
@@ -137,9 +142,10 @@ def count_zone_tests(df: pd.DataFrame, category: str, proximal: float, start_idx
         start_idx: First row index to scan from (typically ``legout_end + 1``).
 
     Returns:
-        The number of distinct times price has re-entered the zone.
+        The number of distinct times price has re-tested the zone
+        (excluding the activation touch).
     """
-    tests = 0
+    visits = 0
     inside = False
     n = len(df)
     for idx in range(max(start_idx, 0), n):
@@ -147,9 +153,9 @@ def count_zone_tests(df: pd.DataFrame, category: str, proximal: float, start_idx
         high = float(df["High"].iloc[idx])
         touching = (low <= proximal) if category == "demand" else (high >= proximal)
         if touching and not inside:
-            tests += 1
+            visits += 1
         inside = touching
-    return tests
+    return max(visits - 1, 0)
 
 
 def score_zone(
