@@ -271,7 +271,7 @@ def fetch_for_trading_type(
 # "75m" is special: yfinance has no native 75-minute interval, so we fetch
 # 15m bars and aggregate them into 75-minute candles via pandas resample.
 INTERVAL_OPTIONS: dict[str, dict[str, str | bool]] = {
-    "Daily":   {"interval": "1d",  "period": "1y",  "fetch_interval": "1d",  "resample": False},
+    "Daily":   {"interval": "1d",  "period": "5y",  "fetch_interval": "1d",  "resample": False},
     "Weekly":  {"interval": "1wk", "period": "5y",  "fetch_interval": "1wk", "resample": False},
     "Monthly": {"interval": "1mo", "period": "10y", "fetch_interval": "1mo", "resample": False},
     "75m":     {"interval": "75m", "period": "60d", "fetch_interval": "15m", "resample": True},
