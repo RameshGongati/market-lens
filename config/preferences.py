@@ -43,6 +43,8 @@ _DEFAULTS: dict[str, Any] = {
     "trading_type": "Short-term Trading",
     "primary_strategy": "Demand/Supply Zones",
     "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
+    # Chart display preferences.
+    "show_candle_tooltip": True,
 }
 
 

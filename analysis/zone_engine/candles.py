@@ -3,12 +3,16 @@
 Implements the institutional "boring vs exciting" candle taxonomy that
 underpins legin/base/legout pattern detection:
 
-  * BORING / BASE candle   : body_pct <= 0.50           (consolidation)
-  * indecisive candle      : 0.50 < body_pct < 0.60 -> treated as BORING
-  * EXCITING candle        : body_pct >= 0.60           (directional momentum)
+  * BORING / BASE candle   : body_pct < 0.50            (consolidation)
+  * EXCITING candle        : body_pct >= 0.50           (directional momentum)
   * STRONG EXCITING candle : body_pct >= 0.80           (very strong momentum)
 
 where ``body_pct = abs(close - open) / (high - low)``.
+
+GTF teaches the exciting cutoff as "a body greater than roughly 50% of the
+candle's range". 0.50 is therefore the boring/exciting split; there is no
+separate indecisive band. This threshold is intentionally a single named
+constant so it can be retuned after real-world testing.
 
 Direction is determined purely by close vs open: BULLISH when the candle
 closes above its open, BEARISH when it closes below, and DOJI when they are
@@ -18,11 +22,10 @@ equal (a doji carries no directional conviction and is treated as boring).
 from typing import TypedDict
 
 # Rule: Candle Classification — body-to-range thresholds.
-# The 0.50-0.60 band is explicitly "neutral/indecisive ... treat as boring",
-# so the boring/exciting split collapses to a single 0.60 cut here: anything
-# below it is boring (including the indecisive band and dojis), anything at
-# or above it is exciting.
-_EXCITING_THRESHOLD = 0.60   # body_pct >= 0.60 -> exciting
+# Boring/exciting split at 0.50 (GTF "body > ~50%"); anything below 0.50 is
+# boring (including dojis and zero-range bars), anything at or above is
+# exciting. Retune here after real-world testing.
+_EXCITING_THRESHOLD = 0.50   # body_pct >= 0.50 -> exciting
 _STRONG_THRESHOLD = 0.80     # body_pct >= 0.80 -> strong exciting
 
 

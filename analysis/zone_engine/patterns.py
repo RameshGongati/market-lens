@@ -256,11 +256,16 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             df=df,
             category=category,
             proximal=proximal,
+            distal=distal,
             num_base_candles=num_base_candles,
             has_gap=has_gap,
             legout_candles=legout_candles,
             test_scan_start_idx=legout_end + 1,
         )
+
+        if score["is_invalidated"]:
+            i = legout_end + 1
+            continue
 
         zones.append(
             Zone(
@@ -283,6 +288,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 entry_recommendation=score["entry_recommendation"],
                 created_at_index=legout_start,
                 is_fresh=score["is_fresh"],
+                activation_touch=score["activation_touch"],
             )
         )
 

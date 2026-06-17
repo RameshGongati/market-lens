@@ -8,10 +8,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from config.preferences import load_preferences
 from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
@@ -34,8 +36,79 @@ logger = get_logger(__name__)
 
 _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
 
+def _crosshair_js(show_date: bool) -> str:
+    """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off."""
+    show_date_flag = "true" if show_date else "false"
+    return (
+        "<script>\n"
+        "(function() {\n"
+        "    var doc = window.parent.document;\n"
+        "    var showDate = " + show_date_flag + ";\n"
+        "    doc.querySelectorAll('.y-price-label,.x-date-label')\n"
+        "       .forEach(function(el) { el.remove(); });\n"
+        "\n"
+        "    function init(n) {\n"
+        "        if (n > 15) return;\n"
+        "        var plots = doc.querySelectorAll('.js-plotly-plot');\n"
+        "        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "        var plot = plots[plots.length - 1];\n"
+        "        var drags = plot.querySelectorAll('.nsewdrag');\n"
+        "        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "\n"
+        "        plot.style.position = 'relative';\n"
+        "        var badge = 'background:#787b86;color:#fff;font-size:11px;padding:1px 5px;'\n"
+        "                  + 'pointer-events:none;display:none;z-index:1000;font-family:monospace;'\n"
+        "                  + 'border-radius:2px;white-space:nowrap;position:absolute;';\n"
+        "\n"
+        "        var priceLabel = doc.createElement('div');\n"
+        "        priceLabel.className = 'y-price-label';\n"
+        "        priceLabel.style.cssText = badge + 'left:0;transform:translateY(-50%)';\n"
+        "        plot.appendChild(priceLabel);\n"
+        "\n"
+        "        var dateLabel = null;\n"
+        "        if (showDate) {\n"
+        "            dateLabel = doc.createElement('div');\n"
+        "            dateLabel.className = 'x-date-label';\n"
+        "            dateLabel.style.cssText = badge + 'top:5px;transform:translateX(-50%)';\n"
+        "            plot.appendChild(dateLabel);\n"
+        "        }\n"
+        "\n"
+        "        drags[0].addEventListener('mousemove', function(e) {\n"
+        "            var ya = plot._fullLayout.yaxis;\n"
+        "            if (!ya || !ya.range) return;\n"
+        "            var r = drags[0].getBoundingClientRect();\n"
+        "            var pr = plot.getBoundingClientRect();\n"
+        "            var frac = (e.clientY - r.top) / r.height;\n"
+        "            var price = ya.range[1] - frac * (ya.range[1] - ya.range[0]);\n"
+        "            priceLabel.textContent = price.toFixed(2);\n"
+        "            priceLabel.style.top = (e.clientY - pr.top) + 'px';\n"
+        "            priceLabel.style.display = 'block';\n"
+        "\n"
+        "            if (dateLabel) {\n"
+        "                var xa = plot._fullLayout.xaxis;\n"
+        "                if (!xa || !xa.range) return;\n"
+        "                var xf = (e.clientX - r.left) / r.width;\n"
+        "                var r0 = typeof xa.range[0]==='number' ? xa.range[0] : new Date(xa.range[0]).getTime();\n"
+        "                var r1 = typeof xa.range[1]==='number' ? xa.range[1] : new Date(xa.range[1]).getTime();\n"
+        "                var d = new Date(r0 + xf * (r1 - r0));\n"
+        "                var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
+        "                dateLabel.textContent = d.getDate() + ' ' + M[d.getMonth()] + ' ' + d.getFullYear();\n"
+        "                dateLabel.style.left = (e.clientX - pr.left) + 'px';\n"
+        "                dateLabel.style.display = 'block';\n"
+        "            }\n"
+        "        });\n"
+        "        drags[0].addEventListener('mouseleave', function() {\n"
+        "            priceLabel.style.display = 'none';\n"
+        "            if (dateLabel) dateLabel.style.display = 'none';\n"
+        "        });\n"
+        "    }\n"
+        "    init(0);\n"
+        "})();\n"
+        "</script>\n"
+    )
+
 # Lookback windows (calendar days) for the period selector buttons
-_PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+_PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365, "2Y": 730, "3Y": 1095, "4Y": 1460, "5Y": 1825}
 
 # Interval-selector labels list — stable order for the radio widget.
 _INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
@@ -191,13 +264,12 @@ def render_stock_detail(
     # Period range — zoom/window on the fetched data (does not re-fetch)
     selected_period = "1Y"
     if chart_type != "TradingView":
-        selected_period = st.radio(
+        _period_options = list(_PERIOD_DAYS.keys())
+        selected_period = st.selectbox(
             "Period",
-            list(_PERIOD_DAYS.keys()),
-            index=4,
-            horizontal=True,
-            key="chart_period_radio",
-            label_visibility="collapsed",
+            _period_options,
+            index=_period_options.index("1Y"),
+            key="chart_period_select",
         )
 
     # -----------------------------------------------------------------------
@@ -206,7 +278,8 @@ def render_stock_detail(
     # to a previously viewed interval reuses the cached (df, result) pair
     # without an additional network call.
     # -----------------------------------------------------------------------
-    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}"
+    _use_fib = st.session_state.get("use_fibonacci", False)
+    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}_{_use_fib}"
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
@@ -218,7 +291,6 @@ def render_stock_detail(
             # Re-run the same primary strategy on the interval-specific data.
             _primary = st.session_state.get("primary_strategy", "Demand/Supply Zones")
             _analyser = _make_analyser_for_chart(_primary)
-            _use_fib = st.session_state.get("use_fibonacci", False)
             try:
                 if isinstance(_analyser, DemandSupplyAnalysis):
                     _chart_result = _analyser.analyse(
@@ -316,7 +388,12 @@ def render_stock_detail(
                 "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
                 "if within the displayed window."
             )
+        show_tooltip = load_preferences().get("show_candle_tooltip", True)
+        if not show_tooltip:
+            fig.update_layout(hovermode="closest")
+            fig.update_traces(hoverinfo="none")
         st.plotly_chart(fig, use_container_width=True)
+        st_components.html(_crosshair_js(show_date=not show_tooltip), height=0)
     else:
         st.warning(
             "Unable to load chart data for the selected interval. "
@@ -424,7 +501,7 @@ def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 
     Args:
         df: OHLCV DataFrame with a DatetimeIndex.
-        period: One of "1W", "1M", "3M", "6M", "1Y".
+        period: One of "1W", "1M", "3M", "6M", "1Y", "2Y", "3Y", "4Y", "5Y".
 
     Returns:
         Sliced (or original) DataFrame.
@@ -569,9 +646,26 @@ def _build_chart(
     fig.update_layout(
         height=500 + (120 if show_rsi else 0),
         template="plotly_white",
-        xaxis_rangeslider_visible=False,   # hide default rangeslider on price row
         margin={"t": 40, "b": 20, "l": 60, "r": 20},
         hovermode="x unified",
+        xaxis=dict(
+            rangeslider=dict(visible=False),
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor="grey",
+            spikedash="dash",
+            spikesnap="cursor",
+        ),
+        yaxis=dict(
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikecolor="grey",
+            spikedash="dash",
+            spikesnap="cursor",
+            side="left",
+        ),
     )
     # Place the rangeslider at the very bottom of the chart (below the last subplot)
     bottom_xaxis = f"xaxis{rows}"   # "xaxis2" for 2-row, "xaxis3" for 3-row
