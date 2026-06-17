@@ -377,7 +377,7 @@ def render_stock_detail(
         # _filter_by_period already falls back to the full dataset — no extra
         # handling needed here.
         df_view = _filter_by_period(chart_df, selected_period)
-        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type)
+        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
@@ -525,6 +525,7 @@ def _build_chart(
     result: dict[str, Any],
     analysis_type: str,
     chart_type: str,
+    full_df: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Build an interactive Plotly chart with volume subplot and overlays."""
     show_rsi = analysis_type == "Short Term Investment"
@@ -584,7 +585,7 @@ def _build_chart(
     # --- Analysis overlays ---
     if analysis_type == "Demand/Supply Zones":
         _add_trend_context_lines(fig, df)
-        _add_zone_overlays(fig, result, df)
+        _add_zone_overlays(fig, result, df, full_df=full_df)
         # Stage 3 (opt-in) — only draws anything when the Fibonacci
         # confluence checkbox was on (detected via result["fib_levels"]).
         _add_fibonacci_lines(fig, result, df)
@@ -743,7 +744,7 @@ def _stagger_label_positions(zones: list[dict[str, Any]], min_gap: float) -> lis
     return positions
 
 
-def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame, full_df: pd.DataFrame | None = None) -> None:
     """Draw the filtered demand/supply zones as decluttered chart overlays.
 
     ``result["demand_zones"]``/``result["supply_zones"]`` are already the
@@ -781,7 +782,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         return
 
     fib_active = bool(result.get("fib_levels"))
-    x0, x1 = df.index[0], df.index[-1]
+    x1 = df.index[-1]
 
     # Minimum vertical spacing between labels, scaled to the chart's price
     # range so it "just works" across very different stocks/price levels.
@@ -797,11 +798,18 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         proximal, distal = zone["proximal"], zone["distal"]
         top, bottom = zone["top"], zone["bottom"]
 
-        # Shaded zone rectangle, full chart width, drawn beneath the candles.
+        # Start the zone from where it formed (base_start_idx), not the chart edge.
+        _src = full_df if full_df is not None else df
+        zone_start_idx = zone.get("base_start_idx", 0)
+        zone_x0 = _src.index[min(zone_start_idx, len(_src) - 1)]
+        if zone_x0 < df.index[0]:
+            zone_x0 = df.index[0]
+
+        # Shaded zone rectangle from zone formation to chart right edge.
         fig.add_shape(
             type="rect",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=bottom, y1=top,
+            x0=zone_x0, x1=x1, y0=bottom, y1=top,
             fillcolor=fill_color,
             line_width=0,
             layer="below",
@@ -811,7 +819,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=proximal, y1=proximal,
+            x0=zone_x0, x1=x1, y0=proximal, y1=proximal,
             line={"color": line_color, "width": 1.25, "dash": "solid"},
             layer="below",
             row=1, col=1,
@@ -820,7 +828,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=distal, y1=distal,
+            x0=zone_x0, x1=x1, y0=distal, y1=distal,
             line={"color": line_color, "width": 1, "dash": "dot"},
             layer="below",
             row=1, col=1,
