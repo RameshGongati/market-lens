@@ -271,59 +271,59 @@ def test_odd_score_fresh_zone_two_base_candles_gap_legout_scores_seven():
 
 
 # ---------------------------------------------------------------------------
-# ODD score: one return = activation touch (M3), NOT a test -> still fresh
+# M3: one complete enter+exit cycle = 1 test
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113) followed by candles engineered
-# so price re-enters the zone (low <= 113) in exactly one contiguous visit.
-# GTF M3: the first return is the activation touch, not a test.
-_DBR_ONE_RETURN_ROWS = [
+# Same clean DBR structure (proximal = 113, distal = 108) followed by
+# candles where price enters and exits the zone once (one complete cycle).
+_DBR_ONE_CYCLE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap, single candle
-    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 113 -> no touch)
-    (118, 120, 111, 119),   # 5: enters the zone  (low=111 <= 113 -> activation touch)
-    (119, 123, 115, 122),   # 6: leaves the zone  (low=115 > 113 -> touch ends)
-    (118, 122, 116, 121),   # 7: stays away       (low=116 > 113 -> still no touch)
+    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 113)
+    (118, 120, 111, 119),   # 5: enters zone      (low=111 <= 113 -> activation touch)
+    (119, 123, 115, 122),   # 6: exits proximal   (low=115 > 113 -> test #1)
+    (118, 122, 116, 121),   # 7: stays away       (low=116 > 113)
 ]
 
 
-def test_m3_one_return_is_activation_touch_not_a_test():
-    """GTF M3: the first return to the zone is your planned entry, not a
-    test. times_tested should be 0 and freshness should be 3.0 (fresh)."""
-    df = _make_df(_DBR_ONE_RETURN_ROWS)
+def test_m3_single_cycle_counts_as_one_test():
+    """GTF M3: one complete enter+exit-through-proximal cycle = 1 test.
+    activation_touch is True (price entered the zone)."""
+    df = _make_df(_DBR_ONE_CYCLE_ROWS)
     zones = detect_zones(df)
 
     assert len(zones) == 1
     zone = zones[0]
 
     assert zone.proximal == pytest.approx(113)
-    assert zone.times_tested == 0
-    assert zone.is_fresh is True
-    assert zone.freshness_points == pytest.approx(3.0)
+    assert zone.times_tested == 1
+    assert zone.is_fresh is False
+    assert zone.freshness_points == pytest.approx(1.5)
+    assert zone.activation_touch is True
 
 
 # ---------------------------------------------------------------------------
 # "No Trade" recommendation when the total ODD score is below 5
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113), but the legout is a single,
-# non-gapping exciting candle (strength = 1) and price returns to the zone
-# three times (M3: first return = activation, so tests = 3-1 = 2,
-# freshness = 0). 0 (freshness) + 1 (strength) + 2 (time) = 3.
+# Same clean DBR structure (proximal = 113, distal = 108), but the legout
+# is a single, non-gapping exciting candle (strength = 1) and price
+# completes three enter+exit cycles (M3: tests = 3, freshness = 0).
+# 0 (freshness) + 1 (strength) + 2 (time) = 3.
 _DBR_NO_TRADE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
     (113, 126, 112, 125),   # 3: legout opens at 113 (<= base high 114 -> no gap)
     (124, 128, 120, 126),   # 4: away from zone (low=120 > 113)
-    (118, 120, 111, 119),   # 5: return #1 (activation touch, M3 — not a test)
-    (119, 123, 115, 122),   # 6: leaves zone
-    (116, 119, 109, 117),   # 7: return #2 (test #1)
-    (117, 122, 114, 120),   # 8: leaves zone
-    (116, 118, 110, 115),   # 9: return #3 (test #2)
-    (115, 121, 114, 120),   # 10: leaves zone
+    (118, 120, 111, 119),   # 5: enters zone (activation touch)
+    (119, 123, 115, 122),   # 6: exits proximal (test #1)
+    (116, 119, 109, 117),   # 7: enters zone
+    (117, 122, 114, 120),   # 8: exits proximal (test #2)
+    (116, 118, 110, 115),   # 9: enters zone
+    (115, 121, 114, 120),   # 10: exits proximal (test #3)
 ]
 
 
@@ -334,7 +334,7 @@ def test_no_trade_recommendation_when_score_below_five():
     assert len(zones) == 1
     zone = zones[0]
 
-    assert zone.times_tested == 2
+    assert zone.times_tested == 3
     assert zone.freshness_points == pytest.approx(0.0)
     assert zone.strength_points == pytest.approx(1.0)
     assert zone.time_points == pytest.approx(2.0)
@@ -344,32 +344,32 @@ def test_no_trade_recommendation_when_score_below_five():
 
 
 # ---------------------------------------------------------------------------
-# M3: two returns = one test (activation touch excluded)
+# M3: two complete enter+exit cycles = 2 tests
 # ---------------------------------------------------------------------------
 
-_DBR_TWO_RETURNS_ROWS = [
+_DBR_TWO_CYCLES_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap
     (124, 128, 120, 126),   # 4: away from zone
-    (118, 120, 111, 119),   # 5: return #1 (activation touch — not a test)
-    (119, 123, 115, 122),   # 6: leaves zone
-    (116, 119, 109, 117),   # 7: return #2 (test #1)
-    (117, 122, 114, 120),   # 8: leaves zone
+    (118, 120, 111, 119),   # 5: enters zone (activation touch)
+    (119, 123, 115, 122),   # 6: exits proximal (test #1)
+    (116, 119, 109, 117),   # 7: enters zone
+    (117, 122, 114, 120),   # 8: exits proximal (test #2)
 ]
 
 
-def test_m3_two_returns_counts_as_one_test():
-    """GTF M3: two returns = activation + 1 real test -> freshness 1.5."""
-    df = _make_df(_DBR_TWO_RETURNS_ROWS)
+def test_m3_two_cycles_count_as_two_tests():
+    """GTF M3: two complete enter+exit cycles = 2 tests -> freshness 0."""
+    df = _make_df(_DBR_TWO_CYCLES_ROWS)
     zones = detect_zones(df)
 
     assert len(zones) == 1
     zone = zones[0]
-    assert zone.times_tested == 1
+    assert zone.times_tested == 2
     assert zone.is_fresh is False
-    assert zone.freshness_points == pytest.approx(1.5)
+    assert zone.freshness_points == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +393,55 @@ def test_m3_zero_returns_stays_fresh():
     zone = zones[0]
     assert zone.times_tested == 0
     assert zone.is_fresh is True
+    assert zone.freshness_points == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# M3: zone invalidated when price breaches the distal line
+# ---------------------------------------------------------------------------
+
+_DBR_INVALIDATED_ROWS = [
+    (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+    (111, 114, 109, 112),   # 1: base candle 1 (boring)
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+    (124, 128, 120, 126),   # 4: away from zone
+    (118, 120, 107, 119),   # 5: low=107 < distal=108 -> zone invalidated
+]
+
+
+def test_m3_zone_invalidated_when_distal_breached():
+    """GTF M3: if price crosses the distal line the zone is dead and must
+    not appear in the detected zones list."""
+    df = _make_df(_DBR_INVALIDATED_ROWS)
+    zones = detect_zones(df)
+
+    assert len(zones) == 0
+
+
+# ---------------------------------------------------------------------------
+# M3: activation touch true when zone entered but no exit yet
+# ---------------------------------------------------------------------------
+
+def test_m3_activation_touch_without_complete_cycle():
+    """GTF M3: price enters zone but data ends before exit -> activation_touch
+    True, times_tested 0 (no complete cycle)."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (118, 120, 111, 119),   # 5: enters zone (low=111 <= 113), data ends while inside
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    assert len(zones) == 1
+    zone = zones[0]
+    assert zone.times_tested == 0
+    assert zone.is_fresh is True
+    assert zone.activation_touch is True
     assert zone.freshness_points == pytest.approx(3.0)
 
 

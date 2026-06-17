@@ -62,6 +62,8 @@ class ZoneScore(TypedDict):
     zone_strength: str
     entry_recommendation: str
     is_fresh: bool
+    activation_touch: bool
+    is_invalidated: bool
 
 
 def freshness_points(times_tested: int) -> float:
@@ -121,47 +123,64 @@ def zone_strength_label(legout_candles: Sequence[CandleInfo]) -> str:
     return "Normal"
 
 
-def count_zone_tests(df: pd.DataFrame, category: str, proximal: float, start_idx: int) -> int:
-    """Rule: "Tested" — count distinct re-entries into the zone after the
-    legout completes, excluding the first return (GTF M3).
+def count_zone_tests(
+    df: pd.DataFrame, category: str, proximal: float, distal: float, start_idx: int,
+) -> tuple[int, bool, bool]:
+    """Rule: Count complete test cycles and detect zone invalidation (GTF M3).
 
-    A demand zone is re-entered when a later candle's low crosses below
-    its proximal line; a supply zone is re-entered when a later candle's
-    high crosses above its proximal line. A run of consecutive candles
-    that stay inside the zone counts as a single visit.
-
-    GTF M3: the first return to the zone is the "activation touch" (your
-    planned entry opportunity), NOT a test. The legout itself is also
-    never a test (handled by the caller passing ``legout_end + 1`` as
-    *start_idx*). Only the second and subsequent returns count as tests.
+    A test cycle is one complete round-trip: price enters the zone
+    (crosses proximal) AND exits back through the proximal line.
+    ``activation_touch`` is a boolean — True when price has entered the
+    zone at least once.  Zone invalidation occurs when price crosses the
+    distal line at any point after the legout.
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
         category: ``"demand"`` or ``"supply"``.
         proximal: The zone's NORMAL proximal price line.
+        distal: The zone's NORMAL distal price line.
         start_idx: First row index to scan from (typically ``legout_end + 1``).
 
     Returns:
-        The number of distinct times price has re-tested the zone
-        (excluding the activation touch).
+        ``(times_tested, activation_touch, is_invalidated)``
     """
-    visits = 0
+    tests = 0
+    activation_touch = False
+    is_invalidated = False
     inside = False
     n = len(df)
+
     for idx in range(max(start_idx, 0), n):
         low = float(df["Low"].iloc[idx])
         high = float(df["High"].iloc[idx])
-        touching = (low <= proximal) if category == "demand" else (high >= proximal)
-        if touching and not inside:
-            visits += 1
-        inside = touching
-    return max(visits - 1, 0)
+
+        if category == "demand":
+            in_zone = low <= proximal
+            breached = low < distal
+        else:
+            in_zone = high >= proximal
+            breached = high > distal
+
+        if breached:
+            activation_touch = True
+            is_invalidated = True
+            break
+
+        if in_zone and not inside:
+            inside = True
+            activation_touch = True
+        elif not in_zone and inside:
+            inside = False
+            tests += 1
+
+    return tests, activation_touch, is_invalidated
 
 
 def score_zone(
     df: pd.DataFrame,
     category: str,
     proximal: float,
+    distal: float,
     num_base_candles: int,
     has_gap: bool,
     legout_candles: Sequence[CandleInfo],
@@ -178,6 +197,7 @@ def score_zone(
         df: Full OHLCV DataFrame.
         category: ``"demand"`` or ``"supply"``.
         proximal: The zone's NORMAL proximal price line.
+        distal: The zone's NORMAL distal price line.
         num_base_candles: Number of candles forming the base.
         has_gap: Whether the legout opened with a gap away from the base.
         legout_candles: Classification info for every legout candle.
@@ -187,7 +207,9 @@ def score_zone(
     Returns:
         A ``ZoneScore`` dict with the full scorecard and derived labels.
     """
-    times_tested = count_zone_tests(df, category, proximal, test_scan_start_idx)
+    times_tested, activation_touch, is_invalidated = count_zone_tests(
+        df, category, proximal, distal, test_scan_start_idx,
+    )
     f_pts = freshness_points(times_tested)
     s_pts = strength_points(has_gap, len(legout_candles))
     t_pts = time_at_base_points(num_base_candles)
@@ -202,6 +224,8 @@ def score_zone(
         zone_strength=zone_strength_label(legout_candles),
         entry_recommendation=entry_recommendation(total),
         is_fresh=times_tested == 0,
+        activation_touch=activation_touch,
+        is_invalidated=is_invalidated,
     )
 
 
