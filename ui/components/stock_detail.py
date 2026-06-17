@@ -279,7 +279,8 @@ def render_stock_detail(
     # to a previously viewed interval reuses the cached (df, result) pair
     # without an additional network call.
     # -----------------------------------------------------------------------
-    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}"
+    _use_fib = st.session_state.get("use_fibonacci", False)
+    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}_{_use_fib}"
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
@@ -291,7 +292,6 @@ def render_stock_detail(
             # Re-run the same primary strategy on the interval-specific data.
             _primary = st.session_state.get("primary_strategy", "Demand/Supply Zones")
             _analyser = _make_analyser_for_chart(_primary)
-            _use_fib = st.session_state.get("use_fibonacci", False)
             try:
                 if isinstance(_analyser, DemandSupplyAnalysis):
                     _chart_result = _analyser.analyse(
