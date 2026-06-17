@@ -108,7 +108,7 @@ def _crosshair_js(show_date: bool) -> str:
     )
 
 # Lookback windows (calendar days) for the period selector buttons
-_PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
+_PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365, "2Y": 730, "3Y": 1095, "4Y": 1460, "5Y": 1825}
 
 # Interval-selector labels list — stable order for the radio widget.
 _INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
@@ -264,13 +264,12 @@ def render_stock_detail(
     # Period range — zoom/window on the fetched data (does not re-fetch)
     selected_period = "1Y"
     if chart_type != "TradingView":
-        selected_period = st.radio(
+        _period_options = list(_PERIOD_DAYS.keys())
+        selected_period = st.selectbox(
             "Period",
-            list(_PERIOD_DAYS.keys()),
-            index=4,
-            horizontal=True,
-            key="chart_period_radio",
-            label_visibility="collapsed",
+            _period_options,
+            index=_period_options.index("1Y"),
+            key="chart_period_select",
         )
 
     # -----------------------------------------------------------------------
@@ -502,7 +501,7 @@ def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 
     Args:
         df: OHLCV DataFrame with a DatetimeIndex.
-        period: One of "1W", "1M", "3M", "6M", "1Y".
+        period: One of "1W", "1M", "3M", "6M", "1Y", "2Y", "3Y", "4Y", "5Y".
 
     Returns:
         Sliced (or original) DataFrame.
