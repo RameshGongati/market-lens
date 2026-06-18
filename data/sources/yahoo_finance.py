@@ -92,7 +92,8 @@ class YahooFinanceSource(DataSource):
             if df.empty:
                 logger.warning("No history returned for %s", symbol)
             df = df[["Open", "High", "Low", "Close", "Volume"]]
-            df = df[df["Volume"].fillna(0) > 0]
+            if interval not in ("1wk", "1mo"):
+                df = df[df["Volume"].fillna(0) > 0]
             return df
         except Exception as exc:
             logger.error("YahooFinance fetch_history failed for %s: %s", symbol, exc)

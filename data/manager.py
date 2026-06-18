@@ -169,7 +169,7 @@ def _default_fetch_fn(symbol: str, period: str, interval: str) -> pd.DataFrame:
             return df
         available = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
         df = df[available]
-        if "Volume" in df.columns:
+        if "Volume" in df.columns and interval not in ("1wk", "1mo"):
             df = df[df["Volume"].fillna(0) > 0]
         return df
     except Exception as exc:  # noqa: BLE001

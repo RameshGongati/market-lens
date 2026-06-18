@@ -385,7 +385,7 @@ def render_stock_detail(
         # _filter_by_period already falls back to the full dataset — no extra
         # handling needed here.
         df_view = _filter_by_period(chart_df, selected_period)
-        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df)
+        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df, interval_label=interval_label)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
@@ -534,6 +534,7 @@ def _build_chart(
     analysis_type: str,
     chart_type: str,
     full_df: pd.DataFrame | None = None,
+    interval_label: str = "Daily",
 ) -> go.Figure:
     """Build an interactive Plotly chart with volume subplot and overlays."""
     show_rsi = analysis_type == "Short Term Investment"
@@ -682,7 +683,8 @@ def _build_chart(
     fig.update_layout(
         **{bottom_xaxis: {"rangeslider": {"visible": True, "thickness": 0.04}}}
     )
-    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    if interval_label not in ("Weekly", "Monthly"):
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     if show_rsi:
