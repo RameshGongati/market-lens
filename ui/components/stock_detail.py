@@ -83,20 +83,28 @@ def _crosshair_js(show_date: bool) -> str:
         "            priceLabel.textContent = price.toFixed(2);\n"
         "            priceLabel.style.top = (e.clientY - pr.top) + 'px';\n"
         "            priceLabel.style.display = 'block';\n"
-        "\n"
-        "            if (dateLabel) {\n"
-        "                var xa = plot._fullLayout.xaxis;\n"
-        "                if (!xa || !xa.range) return;\n"
-        "                var xf = (e.clientX - r.left) / r.width;\n"
-        "                var r0 = typeof xa.range[0]==='number' ? xa.range[0] : new Date(xa.range[0]).getTime();\n"
-        "                var r1 = typeof xa.range[1]==='number' ? xa.range[1] : new Date(xa.range[1]).getTime();\n"
-        "                var d = new Date(r0 + xf * (r1 - r0));\n"
-        "                var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
-        "                dateLabel.textContent = d.getDate() + ' ' + M[d.getMonth()] + ' ' + d.getFullYear();\n"
-        "                dateLabel.style.left = (e.clientX - pr.left) + 'px';\n"
-        "                dateLabel.style.display = 'block';\n"
-        "            }\n"
         "        });\n"
+        "\n"
+        "        if (dateLabel) {\n"
+        "            var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
+        "            plot.on('plotly_hover', function(data) {\n"
+        "                if (!data.points || !data.points.length) return;\n"
+        "                var d = new Date(data.points[0].x);\n"
+        "                dateLabel.textContent = d.getDate()+' '+M[d.getMonth()]+' '+d.getFullYear();\n"
+        "                try {\n"
+        "                    var xa = plot._fullLayout.xaxis;\n"
+        "                    dateLabel.style.left = (xa._offset+xa.l2p(xa.d2l(d.getTime())))+'px';\n"
+        "                } catch(ex) {\n"
+        "                    var pr = plot.getBoundingClientRect();\n"
+        "                    dateLabel.style.left = (data.event.clientX-pr.left)+'px';\n"
+        "                }\n"
+        "                dateLabel.style.display = 'block';\n"
+        "            });\n"
+        "            plot.on('plotly_unhover', function() {\n"
+        "                dateLabel.style.display = 'none';\n"
+        "            });\n"
+        "        }\n"
+        "\n"
         "        drags[0].addEventListener('mouseleave', function() {\n"
         "            priceLabel.style.display = 'none';\n"
         "            if (dateLabel) dateLabel.style.display = 'none';\n"
@@ -657,7 +665,7 @@ def _build_chart(
             spikethickness=1,
             spikecolor="grey",
             spikedash="dash",
-            spikesnap="cursor",
+            spikesnap="data",
         ),
         yaxis=dict(
             showspikes=True,
