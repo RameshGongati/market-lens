@@ -6,8 +6,10 @@ A local stock market analysis application built with Python and Streamlit. Marke
 
 ## Features
 
-- **Stock Search with Autocomplete** — Search from 600+ NSE/BSE stocks by symbol or company name; exchange is auto-filled on selection
+- **Stock Search with Autocomplete** — Search from 2,374 NSE-listed stocks by symbol or company name; exchange is auto-filled on selection
 - **Custom Watchlists** — Create up to 10 watchlists, each holding up to 10 stocks (NSE / BSE)
+- **Predefined Index Watchlists** — One-click access to 10 NSE index watchlists: Nifty 50, Nifty Next 50, Nifty Auto, Nifty Bank, Nifty IT, Nifty Pharma, Nifty Metal, Nifty Energy, Nifty FMCG, and F&O Stocks (211 options-eligible stocks). Toggle between "My Watchlists" and "Index Watchlists" with a horizontal radio in the sidebar
+- **Screener** — Collapsible multi-criteria screener in the sidebar to filter analysis results by: Proximity to Zone (≤3% / ≤5% / ≤10%), Min ODD Score (7 / 6+ / 5+), and Zone Strength (Normal / Strong / Very Strong). Filters combine with AND logic and apply instantly without re-running analysis
 - **Multiple Data Sources** — Yahoo Finance (default, no auth), NSE India scraping, Zerodha Kite Connect, Upstox API, TradingView
 - **Two-Axis Analysis Model** — choose independently along two axes from the sidebar:
   - **Trading Type** (time horizon, sets the default candle timeframe): Options Trading, Intraday Trading, Short-term Trading, Long-term Investment
@@ -17,12 +19,15 @@ A local stock market analysis application built with Python and Streamlit. Marke
   - **ODD Enhancers** (optional, multi-select): Fibonacci Confluence, EMA 20 Confluence, RSI _(RSI is selectable but not yet wired into scoring)_
 - **Confidence / Strength Rating** — Strong / Medium / Weak badge on every stock card and detail view, derived from the active strategy's signal conviction
 - **Candle-Interval Selector** — On the detail chart, switch the candle interval (Daily / Weekly / Monthly / 75m / 15m) independently of the trading type; changing it re-fetches data **and** re-runs the analysis at that interval so the overlays stay consistent (75m is resampled from 15m; intraday falls back to Daily when unavailable)
+- **Period Selector** — Dropdown with 1W to 5Y period options; daily data fetches up to 5 years of history
+- **Zone Drawing from Formation Point** — Zone rectangles start from where the zone formed (base candles) rather than spanning the full chart width
+- **Crosshair with Price & Date Labels** — Interactive crosshair with floating price label on y-axis and date label; labels persist correctly across period and interval changes
 - **Candlestick & Line Chart Toggle** — Switch between candlestick and line chart; volume and RSI subplots included
 - **Colour-coded Stock Cards** — Company name, current price, absolute + percentage change, strength badge, and last-updated timestamp
 - **Market Status Indicator** — Live IST clock, green/red open/closed banner, and countdown to next open or close in the sidebar
 - **Analysis History** — Every run is preserved in the local database; a timeline table on the detail view shows the last 7 results with trend direction (improving / deteriorating / stable)
 - **Personal Notes per Stock** — Add, view, and delete timestamped notes on the stock detail page
-- **Filter & Sort Dashboard** — Filter results by status (Bullish / Bearish / Neutral) and strength (Strong / Medium / Weak); sort by status, strength, price change %, or alphabetically
+- **Filter & Sort Dashboard** — Filter results by status (Bullish / Bearish / Neutral) and strength (Strong / Medium / Weak); sort by status, strength, price change %, or alphabetically. Screener filters (proximity, score, zone strength) layer on top
 - **Export Analysis Results** — Download a three-sheet Excel workbook (Summary, Details, Alerts) or a formatted PDF report from the dashboard toolbar. Exports adapt to the active strategy (zone rows for Demand/Supply, signal/cross rows for Trend Following) and save to your **Windows Downloads** folder (`Downloads/market-lens`) when running under WSL, falling back to `~/market-lens-exports`
 - **Smart Defaults & Re-run** — Sidebar selections persist across sessions via `~/.market-lens/user_preferences.json`; one-click "Re-run Last" button with timestamp
 - **Interactive Charts** — Plotly charts with zone overlays, SMA/VWAP series, and RSI subplot
@@ -117,7 +122,8 @@ market-lens/
 │   ├── credentials.py         # Encrypted credential store
 │   └── preferences.py         # User preference persistence (+ old-schema migration)
 ├── data/
-│   ├── stock_list.json        # 600+ NSE/BSE stocks for autocomplete
+│   ├── stock_list.json        # 2,374 NSE-listed stocks for autocomplete
+│   ├── predefined_watchlists.json  # 10 NSE index watchlists (Nifty 50, Auto, Bank, F&O, etc.)
 │   ├── sources/
 │   │   ├── base.py            # Abstract DataSource class
 │   │   ├── yahoo_finance.py   # yfinance integration
