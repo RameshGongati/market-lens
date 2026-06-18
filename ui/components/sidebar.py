@@ -261,6 +261,42 @@ def render_sidebar() -> None:
             else:
                 st.caption("No predefined watchlists available.")
 
+        # ---------- Screener ----------
+        with st.expander("Screener", expanded=False):
+            _PROXIMITY_OPTIONS = ["All", "≤3%", "≤5%", "≤10%"]
+            st.session_state.setdefault("screener_proximity", "All")
+            _sp = st.session_state.get("screener_proximity", "All")
+            _sp_idx = _PROXIMITY_OPTIONS.index(_sp) if _sp in _PROXIMITY_OPTIONS else 0
+            st.selectbox(
+                "Proximity to Zone",
+                _PROXIMITY_OPTIONS,
+                index=_sp_idx,
+                key="sidebar_screener_proximity",
+            )
+            st.session_state["screener_proximity"] = st.session_state["sidebar_screener_proximity"]
+
+            _SCORE_OPTIONS = ["All", "7", "6+", "5+"]
+            st.session_state.setdefault("screener_min_score", "All")
+            _ss = st.session_state.get("screener_min_score", "All")
+            _ss_idx = _SCORE_OPTIONS.index(_ss) if _ss in _SCORE_OPTIONS else 0
+            st.selectbox(
+                "Min ODD Score",
+                _SCORE_OPTIONS,
+                index=_ss_idx,
+                key="sidebar_screener_score",
+            )
+            st.session_state["screener_min_score"] = st.session_state["sidebar_screener_score"]
+
+            _STRENGTH_OPTIONS = ["Normal", "Strong", "Very Strong"]
+            st.session_state.setdefault("screener_zone_strength", [])
+            st.multiselect(
+                "Zone Strength",
+                _STRENGTH_OPTIONS,
+                key="sidebar_screener_strength",
+                placeholder="All strengths",
+            )
+            st.session_state["screener_zone_strength"] = st.session_state["sidebar_screener_strength"]
+
         st.markdown("---")
 
         # ---------- Trading Type (axis 1) ----------

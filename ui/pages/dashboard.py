@@ -26,6 +26,58 @@ logger = get_logger(__name__)
 
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
+_PROXIMITY_PCT = {"≤3%": 3.0, "≤5%": 5.0, "≤10%": 10.0}
+_SCORE_THRESHOLD = {"7": 7.0, "6+": 6.0, "5+": 5.0}
+
+
+def _nearest_zones(result: dict) -> list[dict]:
+    """Return the nearest demand/supply zone dicts that exist."""
+    zones = []
+    for key in ("nearest_demand", "nearest_supply"):
+        z = result.get(key)
+        if z and z.get("proximal"):
+            zones.append(z)
+    return zones
+
+
+def _passes_screener(result: dict) -> bool:
+    """Return True if *result* passes all active screener filters.
+
+    Reads screener state from session state. A stock passes if ANY of its
+    nearest zones (demand or supply) satisfies all active criteria.
+    """
+    proximity = st.session_state.get("screener_proximity", "All")
+    min_score = st.session_state.get("screener_min_score", "All")
+    strength_filter: list[str] = st.session_state.get("screener_zone_strength", [])
+
+    if proximity == "All" and min_score == "All" and not strength_filter:
+        return True
+
+    price = result.get("current_price", 0.0)
+    if price <= 0:
+        return False
+
+    zones = _nearest_zones(result)
+    if not zones:
+        return False
+
+    pct = _PROXIMITY_PCT.get(proximity)
+    score_min = _SCORE_THRESHOLD.get(min_score)
+
+    for zone in zones:
+        if pct is not None:
+            distance = abs(price - zone["proximal"]) / price * 100
+            if distance > pct:
+                continue
+        if score_min is not None:
+            if zone.get("odd_score", 0) < score_min:
+                continue
+        if strength_filter:
+            if zone.get("zone_strength", "Normal") not in strength_filter:
+                continue
+        return True
+
+    return False
 
 
 def get_analyzer_for_primary(primary_strategy: str) -> BaseAnalysis:
@@ -300,6 +352,10 @@ def _render_filter_sort_bar(
 
     # Apply filters
     filtered = list(results.items())
+
+    # Screener filters (set in sidebar expander)
+    filtered = [(sym, r) for sym, r in filtered if _passes_screener(r)]
+
     if status_filter:
         lc_filter = {s.lower() for s in status_filter}
         filtered = [(sym, r) for sym, r in filtered if r.get("status", "neutral") in lc_filter]
@@ -318,7 +374,13 @@ def _render_filter_sort_bar(
     elif sort_by == "Alphabetical":
         filtered.sort(key=lambda x: x[0])
 
-    st.caption(f"Showing {len(filtered)} of {total} stocks")
+    _active_screeners = sum([
+        st.session_state.get("screener_proximity", "All") != "All",
+        st.session_state.get("screener_min_score", "All") != "All",
+        bool(st.session_state.get("screener_zone_strength", [])),
+    ])
+    _scr_note = f" | {_active_screeners} screener filter{'s' if _active_screeners != 1 else ''} active" if _active_screeners else ""
+    st.caption(f"Showing {len(filtered)} of {total} stocks{_scr_note}")
 
     # Handle export clicks — generate file then offer download
     if xl_clicked:
