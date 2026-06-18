@@ -400,7 +400,7 @@ def render_stock_detail(
         if not show_tooltip:
             fig.update_layout(hovermode="closest")
             fig.update_traces(hoverinfo="none")
-        st.plotly_chart(fig, use_container_width=True, key=f"plotly_{symbol}_{selected_period}")
+        st.plotly_chart(fig, use_container_width=True, key=f"plotly_{symbol}_{selected_period}", config={"scrollZoom": True})
         _js_bust = f"<!-- {symbol}_{selected_period}_{interval_label} -->"
         st_components.html(_js_bust + _crosshair_js(show_date=not show_tooltip), height=0)
     else:
