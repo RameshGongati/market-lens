@@ -11,6 +11,7 @@ import pytz
 
 _IST = pytz.timezone("Asia/Kolkata")
 _STOCK_LIST_PATH = Path(__file__).parent.parent / "data" / "stock_list.json"
+_PREDEFINED_WL_PATH = Path(__file__).parent.parent / "data" / "predefined_watchlists.json"
 
 
 def format_currency(amount: float | None, currency: str = "₹") -> str:
@@ -97,6 +98,18 @@ def _load_stock_list() -> list[dict[str, str]]:
     """Load and cache the stock list from data/stock_list.json."""
     try:
         return json.loads(_STOCK_LIST_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+@lru_cache(maxsize=1)
+def load_predefined_watchlists() -> list[dict[str, Any]]:
+    """Load predefined index watchlists from data/predefined_watchlists.json.
+
+    Returns a list of dicts, each with 'name', 'description', and 'symbols'.
+    """
+    try:
+        return json.loads(_PREDEFINED_WL_PATH.read_text(encoding="utf-8"))
     except Exception:
         return []
 

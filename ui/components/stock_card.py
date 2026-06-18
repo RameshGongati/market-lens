@@ -165,7 +165,7 @@ def render_stock_card(
 
     if st.button(
         f"View {symbol} →",
-        key=f"card_btn_{stock_id}",
+        key=f"card_btn_{symbol}_{stock_id}",
         use_container_width=True,
         type="secondary",
     ):

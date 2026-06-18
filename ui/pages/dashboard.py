@@ -17,6 +17,9 @@ from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
 from utils.export import export_to_excel, export_to_pdf
 from utils.logger import get_logger
+from types import SimpleNamespace
+
+from utils.helpers import load_predefined_watchlists
 from watchlist.manager import get_all_watchlists, get_stocks
 
 logger = get_logger(__name__)
@@ -72,6 +75,7 @@ def render_dashboard() -> None:
         _render_detail_view()
         return
 
+    wl_source = st.session_state.get("watchlist_source", "My Watchlists")
     watchlist_id = st.session_state.get("selected_watchlist_id")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
 
@@ -89,16 +93,24 @@ def render_dashboard() -> None:
 
     st.title("📈 Market Lens — Dashboard")
 
-    if watchlist_id is None:
-        st.info("Select a watchlist from the sidebar, then click **Run Analysis**.")
-        return
+    _is_predefined = wl_source == "Index Watchlists"
 
-    try:
-        watchlists = get_all_watchlists()
-        wl = next((w for w in watchlists if w.id == watchlist_id), None)
-        wl_name = wl.name if wl else "Unknown"
-    except Exception:
-        wl_name = "Unknown"
+    if _is_predefined:
+        _pd_name = st.session_state.get("selected_predefined_watchlist")
+        if not _pd_name:
+            st.info("Select an index watchlist from the sidebar, then click **Run Analysis**.")
+            return
+        wl_name = _pd_name
+    else:
+        if watchlist_id is None:
+            st.info("Select a watchlist from the sidebar, then click **Run Analysis**.")
+            return
+        try:
+            watchlists = get_all_watchlists()
+            wl = next((w for w in watchlists if w.id == watchlist_id), None)
+            wl_name = wl.name if wl else "Unknown"
+        except Exception:
+            wl_name = "Unknown"
 
     # Show the two-axis selection and effective timeframe in the header.
     _enhancer_label = ", ".join(enhancers) if enhancers else "None"
@@ -118,7 +130,21 @@ def render_dashboard() -> None:
 
     # Run analysis
     st.session_state.analysing = False
-    stocks = get_stocks(watchlist_id)
+
+    if _is_predefined:
+        _pd_wl = next(
+            (w for w in load_predefined_watchlists() if w["name"] == wl_name), None
+        )
+        if not _pd_wl or not _pd_wl["symbols"]:
+            st.warning("This index watchlist has no stocks.")
+            return
+        stocks = [
+            SimpleNamespace(symbol=sym, exchange="NSE", id=0)
+            for sym in _pd_wl["symbols"]
+        ]
+    else:
+        stocks = get_stocks(watchlist_id)
+
     if not stocks:
         st.warning("This watchlist has no stocks. Add some in Watchlists.")
         return
@@ -185,8 +211,9 @@ def render_dashboard() -> None:
                 "exchange": stock.exchange,
             })
             results[stock.symbol] = result
-            save_analysis_result(stock.id, analysis_type, result)
-            check_and_trigger_alerts(stock, result, alerts_on)
+            if stock.id:
+                save_analysis_result(stock.id, analysis_type, result)
+                check_and_trigger_alerts(stock, result, alerts_on)
         except Exception as exc:
             logger.error("Analysis error for %s: %s", stock.symbol, exc)
             results[stock.symbol] = {

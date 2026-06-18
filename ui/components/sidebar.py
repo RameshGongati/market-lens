@@ -27,6 +27,7 @@ from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
 from utils.helpers import format_timestamp
 from utils.market_hours import get_current_ist_time, get_market_countdown, is_market_open, is_trading_day
+from utils.helpers import load_predefined_watchlists
 from watchlist.manager import get_all_watchlists
 
 
@@ -201,32 +202,64 @@ def render_sidebar() -> None:
 
         # ---------- Watchlist ----------
         st.markdown("**Watchlist**")
-        try:
-            watchlists = get_all_watchlists()
-        except Exception:
-            watchlists = []
+        st.session_state.setdefault("watchlist_source", "My Watchlists")
+        wl_source = st.radio(
+            "Watchlist source",
+            ["My Watchlists", "Index Watchlists"],
+            index=["My Watchlists", "Index Watchlists"].index(
+                st.session_state.get("watchlist_source", "My Watchlists")
+            ),
+            key="sidebar_wl_source",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        st.session_state["watchlist_source"] = wl_source
 
-        if watchlists:
-            wl_names = [w.name for w in watchlists]
-            wl_ids = [w.id for w in watchlists]
-            current_wl_id = st.session_state.get("selected_watchlist_id")
+        if wl_source == "My Watchlists":
             try:
-                wl_idx = wl_ids.index(current_wl_id) if current_wl_id in wl_ids else 0
-            except (ValueError, TypeError):
-                wl_idx = 0
-            selected_wl_name = st.selectbox(
-                "Select watchlist",
-                wl_names,
-                index=wl_idx,
-                key="sidebar_watchlist_select",
-                label_visibility="collapsed",
-            )
-            selected_wl_id = wl_ids[wl_names.index(selected_wl_name)]
-            st.session_state.selected_watchlist_id = selected_wl_id
-            save_preferences({"selected_watchlist_id": selected_wl_id})
+                watchlists = get_all_watchlists()
+            except Exception:
+                watchlists = []
+
+            if watchlists:
+                wl_names = [w.name for w in watchlists]
+                wl_ids = [w.id for w in watchlists]
+                current_wl_id = st.session_state.get("selected_watchlist_id")
+                try:
+                    wl_idx = wl_ids.index(current_wl_id) if current_wl_id in wl_ids else 0
+                except (ValueError, TypeError):
+                    wl_idx = 0
+                selected_wl_name = st.selectbox(
+                    "Select watchlist",
+                    wl_names,
+                    index=wl_idx,
+                    key="sidebar_watchlist_select",
+                    label_visibility="collapsed",
+                )
+                selected_wl_id = wl_ids[wl_names.index(selected_wl_name)]
+                st.session_state.selected_watchlist_id = selected_wl_id
+                save_preferences({"selected_watchlist_id": selected_wl_id})
+            else:
+                st.caption("No watchlists yet. Create one in Watchlists.")
+                st.session_state.selected_watchlist_id = None
         else:
-            st.caption("No watchlists yet. Create one in Watchlists.")
-            st.session_state.selected_watchlist_id = None
+            predefined = load_predefined_watchlists()
+            if predefined:
+                pd_names = [w["name"] for w in predefined]
+                current_pd = st.session_state.get("selected_predefined_watchlist", pd_names[0])
+                pd_idx = pd_names.index(current_pd) if current_pd in pd_names else 0
+                selected_pd = st.selectbox(
+                    "Select index watchlist",
+                    pd_names,
+                    index=pd_idx,
+                    key="sidebar_predefined_select",
+                    label_visibility="collapsed",
+                )
+                st.session_state["selected_predefined_watchlist"] = selected_pd
+                wl_data = predefined[pd_names.index(selected_pd)]
+                st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
+            else:
+                st.caption("No predefined watchlists available.")
 
         st.markdown("---")
 
@@ -292,7 +325,13 @@ def render_sidebar() -> None:
             st.button("⏳ Analysing…", disabled=True, use_container_width=True, type="primary")
         else:
             if st.button("▶ Run Analysis", type="primary", use_container_width=True):
-                if not st.session_state.get("selected_watchlist_id"):
+                _wl_src = st.session_state.get("watchlist_source", "My Watchlists")
+                _has_wl = (
+                    st.session_state.get("selected_watchlist_id")
+                    if _wl_src == "My Watchlists"
+                    else st.session_state.get("selected_predefined_watchlist")
+                )
+                if not _has_wl:
                     st.warning("Please select a watchlist first.")
                 else:
                     st.session_state.active_page = "dashboard"
@@ -307,7 +346,13 @@ def render_sidebar() -> None:
         if last_ts:
             st.caption(f"Last run: {format_timestamp(last_ts)}")
             if st.button("↺ Re-run Last", use_container_width=True):
-                if st.session_state.get("selected_watchlist_id"):
+                _wl_src2 = st.session_state.get("watchlist_source", "My Watchlists")
+                _has_wl2 = (
+                    st.session_state.get("selected_watchlist_id")
+                    if _wl_src2 == "My Watchlists"
+                    else st.session_state.get("selected_predefined_watchlist")
+                )
+                if _has_wl2:
                     st.session_state.active_page = "dashboard"
                     st.session_state.analysing = True
                     update_last_analysis_timestamp()
