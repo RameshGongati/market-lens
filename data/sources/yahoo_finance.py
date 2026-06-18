@@ -91,7 +91,9 @@ class YahooFinanceSource(DataSource):
             df = ticker.history(period=period, interval=interval)
             if df.empty:
                 logger.warning("No history returned for %s", symbol)
-            return df[["Open", "High", "Low", "Close", "Volume"]]
+            df = df[["Open", "High", "Low", "Close", "Volume"]]
+            df = df[df["Volume"].fillna(0) > 0]
+            return df
         except Exception as exc:
             logger.error("YahooFinance fetch_history failed for %s: %s", symbol, exc)
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])

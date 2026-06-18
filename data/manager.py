@@ -168,7 +168,10 @@ def _default_fetch_fn(symbol: str, period: str, interval: str) -> pd.DataFrame:
         if df.empty:
             return df
         available = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-        return df[available]
+        df = df[available]
+        if "Volume" in df.columns:
+            df = df[df["Volume"].fillna(0) > 0]
+        return df
     except Exception as exc:  # noqa: BLE001
         logger.error("_default_fetch_fn failed for %s: %s", symbol, exc)
         return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])

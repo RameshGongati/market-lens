@@ -674,6 +674,7 @@ def _build_chart(
     fig.update_layout(
         **{bottom_xaxis: {"rangeslider": {"visible": True, "thickness": 0.04}}}
     )
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     if show_rsi:
