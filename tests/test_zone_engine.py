@@ -1013,3 +1013,121 @@ def test_analyse_nan_close_never_returns_nan_price():
     assert price is not None, "current_price must be present in result"
     assert math.isfinite(price), f"current_price must be finite, got {price}"
     assert price > 0, f"current_price must be positive, got {price}"
+
+
+# ---------------------------------------------------------------------------
+# M2: Exceptional distal auto-application
+# ---------------------------------------------------------------------------
+
+def test_m2_dbr_legin_wick_below_base_applies_exceptional():
+    """DBR demand: legin low extends below base low → exceptional distal."""
+    rows = [
+        # Legin: bearish exciting candle dropping into the base, wick reaches 80
+        (110, 112, 80, 90),
+        # Base: boring candle, low = 88 (higher than legin's 80)
+        (91, 93, 88, 92),
+        # Legout: bullish exciting candle rallying away
+        (93, 120, 92, 118),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.marking == "Exceptional"
+    # Distal should be legin's low (80), not base's low (88)
+    assert z.distal == 80.0
+    # Proximal stays on the base (highest body top of base)
+    assert z.proximal == 92.0
+
+
+def test_m2_dbr_legin_wick_not_below_base_stays_normal():
+    """DBR demand: legin low does NOT extend below base low → normal."""
+    rows = [
+        # Legin: bearish exciting candle, low = 89 (above base low of 85)
+        (110, 112, 89, 91),
+        # Base: boring candle, low = 85
+        (91, 93, 85, 92),
+        # Legout: bullish exciting candle
+        (93, 120, 92, 118),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.marking == "Normal"
+    assert z.distal == 85.0
+
+
+def test_m2_rbd_legin_wick_above_base_applies_exceptional():
+    """RBD supply: legin high extends above base high → exceptional distal."""
+    rows = [
+        # Legin: bullish exciting candle rallying into the base, wick reaches 125
+        (90, 125, 88, 110),
+        # Base: boring candle, high = 112 (lower than legin's 125)
+        (109, 112, 108, 110),
+        # Legout: bearish exciting candle dropping away
+        (108, 109, 82, 84),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    assert z.marking == "Exceptional"
+    assert z.distal == 125.0
+    assert z.proximal == 109.0
+
+
+def test_m2_rbr_legout_wick_below_base_applies_exceptional():
+    """RBR demand: legout low extends below base low → exceptional.
+    RBR only checks legout, not legin."""
+    rows = [
+        # Legin: bullish exciting candle (rally)
+        (80, 100, 78, 98),
+        # Base: boring candle, low = 96
+        (97, 99, 96, 98),
+        # Legout: bullish exciting candle, wick dips to 90 (below base low 96)
+        (97, 120, 90, 118),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbr = [z for z in zones if z.zone_type == "RBR"]
+    assert len(rbr) == 1
+    z = rbr[0]
+    assert z.marking == "Exceptional"
+    assert z.distal == 90.0
+
+
+def test_m2_dbd_legout_wick_above_base_applies_exceptional():
+    """DBD supply: legout high extends above base high → exceptional.
+    DBD only checks legout, not legin."""
+    rows = [
+        # Legin: bearish exciting candle (drop)
+        (120, 122, 100, 102),
+        # Base: boring candle, high = 104
+        (103, 104, 101, 102),
+        # Legout: bearish exciting candle, wick spikes to 110 (above base high 104)
+        (103, 110, 82, 84),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbd = [z for z in zones if z.zone_type == "DBD"]
+    assert len(dbd) == 1
+    z = dbd[0]
+    assert z.marking == "Exceptional"
+    assert z.distal == 110.0
+
+
+def test_m2_proximal_never_changes():
+    """M2 only affects the distal line; proximal stays on the base."""
+    rows = [
+        (110, 112, 75, 90),   # Legin: wick way below base
+        (91, 93, 88, 92),     # Base
+        (93, 120, 92, 118),   # Legout
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.marking == "Exceptional"
+    # Proximal = highest body top of base = max(91, 92) = 92
+    assert z.proximal == 92.0
+    # Distal = legin low = 75 (more extreme than base low 88)
+    assert z.distal == 75.0

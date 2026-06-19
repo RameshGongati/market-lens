@@ -849,7 +849,11 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
         # verdict from the trend-alignment safety rule. Plotly annotation
         # text supports inline <span style="color:..."> for exactly this
         # kind of "mostly one color, one bit highlighted" label.
-        flags = " | EMA20" if zone.get("ema20_enhancer") else ""
+        flags = ""
+        if zone.get("marking") == "Exceptional":
+            flags += " | Exceptional"
+        if zone.get("ema20_enhancer"):
+            flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for
         # this analysis — otherwise the label stays byte-for-byte identical
         # to Stage 2's (see fib_active / module docstring above).
