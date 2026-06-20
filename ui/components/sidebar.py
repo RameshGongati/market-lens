@@ -263,7 +263,7 @@ def render_sidebar() -> None:
 
         # ---------- Screener ----------
         with st.expander("Screener", expanded=False):
-            _PROXIMITY_OPTIONS = ["All", "≤3%", "≤5%", "≤10%"]
+            _PROXIMITY_OPTIONS = ["All", "Inside Zone", "≤3%", "≤5%", "≤10%"]
             st.session_state.setdefault("screener_proximity", "All")
             _sp = st.session_state.get("screener_proximity", "All")
             _sp_idx = _PROXIMITY_OPTIONS.index(_sp) if _sp in _PROXIMITY_OPTIONS else 0

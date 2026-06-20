@@ -62,13 +62,17 @@ def _passes_screener(result: dict) -> bool:
         return False
 
     pct = _PROXIMITY_PCT.get(proximity)
+    inside_only = proximity == "Inside Zone"
     score_min = _SCORE_THRESHOLD.get(min_score)
 
     for zone in zones:
-        if pct is not None:
-            top = max(zone["proximal"], zone["distal"])
-            bottom = min(zone["proximal"], zone["distal"])
-            inside = bottom <= price <= top
+        top = max(zone["proximal"], zone["distal"])
+        bottom = min(zone["proximal"], zone["distal"])
+        inside = bottom <= price <= top
+        if inside_only:
+            if not inside:
+                continue
+        elif pct is not None:
             if not inside:
                 distance = abs(price - zone["proximal"]) / price * 100
                 if distance > pct:
