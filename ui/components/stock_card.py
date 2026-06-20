@@ -127,6 +127,30 @@ def render_stock_card(
         f"border:1px solid {strength_color};'>{strength}</span>"
     )
 
+    # "In Zone" badge when CMP is inside a fresh zone
+    in_zone_badge = ""
+    if _price_ok and result:
+        for _zk, _zcolor, _zlabel in (
+            ("nearest_demand", "#28a745", "In Demand Zone"),
+            ("nearest_supply", "#dc3545", "In Supply Zone"),
+        ):
+            _z = result.get(_zk)
+            if not _z or not _z.get("proximal"):
+                continue
+            _ztop = max(_z["proximal"], _z["distal"])
+            _zbot = min(_z["proximal"], _z["distal"])
+            if _zbot <= current_price <= _ztop:
+                in_zone_badge = (
+                    f"<style>@keyframes zp{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}</style>"
+                    f"<div style='margin-top:4px;text-align:right;'>"
+                    f"<span style='font-size:0.72rem;background:{_zcolor};"
+                    f"color:white;padding:2px 7px;border-radius:10px;"
+                    f"font-weight:600;white-space:nowrap;"
+                    f"animation:zp 1.5s ease-in-out infinite;'>{_zlabel}</span>"
+                    f"</div>"
+                )
+                break
+
     card_html = f"""
     <div style="
         background:{cfg['bg']};
@@ -148,7 +172,7 @@ def render_stock_card(
                 &nbsp;
                 {strength_badge_html}
             </div>
-        </div>
+        </div>{in_zone_badge}
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
             <span style="font-size:1.1rem;font-weight:700;">{price_html}</span>
             <span style="color:{change_color};font-weight:600;font-size:0.88rem;">
