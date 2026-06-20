@@ -27,7 +27,7 @@ from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
 from utils.helpers import format_timestamp
 from utils.market_hours import get_current_ist_time, get_market_countdown, is_market_open, is_trading_day
-from utils.helpers import load_predefined_watchlists
+from utils.helpers import get_nse_stock_batches, load_predefined_watchlists
 from watchlist.manager import get_all_watchlists
 
 
@@ -202,13 +202,14 @@ def render_sidebar() -> None:
 
         # ---------- Watchlist ----------
         st.markdown("**Watchlist**")
+        _WL_SOURCES = ["My Watchlists", "Index Watchlists", "All NSE Stocks"]
         st.session_state.setdefault("watchlist_source", "My Watchlists")
         wl_source = st.radio(
             "Watchlist source",
-            ["My Watchlists", "Index Watchlists"],
-            index=["My Watchlists", "Index Watchlists"].index(
+            _WL_SOURCES,
+            index=_WL_SOURCES.index(
                 st.session_state.get("watchlist_source", "My Watchlists")
-            ),
+            ) if st.session_state.get("watchlist_source", "My Watchlists") in _WL_SOURCES else 0,
             key="sidebar_wl_source",
             horizontal=True,
             label_visibility="collapsed",
@@ -242,7 +243,7 @@ def render_sidebar() -> None:
             else:
                 st.caption("No watchlists yet. Create one in Watchlists.")
                 st.session_state.selected_watchlist_id = None
-        else:
+        elif wl_source == "Index Watchlists":
             predefined = load_predefined_watchlists()
             if predefined:
                 pd_names = [w["name"] for w in predefined]
@@ -260,6 +261,23 @@ def render_sidebar() -> None:
                 st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
             else:
                 st.caption("No predefined watchlists available.")
+        else:
+            batches = get_nse_stock_batches()
+            batch_labels = [b["label"] for b in batches]
+            current_batch = st.session_state.get("selected_nse_batch", batch_labels[0])
+            batch_idx = batch_labels.index(current_batch) if current_batch in batch_labels else 0
+            selected_batch = st.selectbox(
+                "Select stock range",
+                batch_labels,
+                index=batch_idx,
+                key="sidebar_nse_batch_select",
+                label_visibility="collapsed",
+            )
+            st.session_state["selected_nse_batch"] = selected_batch
+            batch_data = batches[batch_labels.index(selected_batch)]
+            st.session_state["selected_nse_batch_start"] = batch_data["start"]
+            st.session_state["selected_nse_batch_end"] = batch_data["end"]
+            st.caption(f"{batch_data['end'] - batch_data['start']} stocks in this batch")
 
         # ---------- Screener ----------
         with st.expander("Screener", expanded=False):
@@ -362,11 +380,12 @@ def render_sidebar() -> None:
         else:
             if st.button("▶ Run Analysis", type="primary", use_container_width=True):
                 _wl_src = st.session_state.get("watchlist_source", "My Watchlists")
-                _has_wl = (
-                    st.session_state.get("selected_watchlist_id")
-                    if _wl_src == "My Watchlists"
-                    else st.session_state.get("selected_predefined_watchlist")
-                )
+                if _wl_src == "All NSE Stocks":
+                    _has_wl = st.session_state.get("selected_nse_batch")
+                elif _wl_src == "My Watchlists":
+                    _has_wl = st.session_state.get("selected_watchlist_id")
+                else:
+                    _has_wl = st.session_state.get("selected_predefined_watchlist")
                 if not _has_wl:
                     st.warning("Please select a watchlist first.")
                 else:
@@ -383,11 +402,12 @@ def render_sidebar() -> None:
             st.caption(f"Last run: {format_timestamp(last_ts)}")
             if st.button("↺ Re-run Last", use_container_width=True):
                 _wl_src2 = st.session_state.get("watchlist_source", "My Watchlists")
-                _has_wl2 = (
-                    st.session_state.get("selected_watchlist_id")
-                    if _wl_src2 == "My Watchlists"
-                    else st.session_state.get("selected_predefined_watchlist")
-                )
+                if _wl_src2 == "All NSE Stocks":
+                    _has_wl2 = st.session_state.get("selected_nse_batch")
+                elif _wl_src2 == "My Watchlists":
+                    _has_wl2 = st.session_state.get("selected_watchlist_id")
+                else:
+                    _has_wl2 = st.session_state.get("selected_predefined_watchlist")
                 if _has_wl2:
                     st.session_state.active_page = "dashboard"
                     st.session_state.analysing = True

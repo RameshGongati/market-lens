@@ -36,6 +36,7 @@ def render_stock_card(
     strength: str = "Weak",
     updated_at: datetime | str | None = None,
     result: dict[str, Any] | None = None,
+    serial_no: int | None = None,
 ) -> None:
     """Render a colour-coded stock card with full price and strength info.
 
@@ -163,7 +164,7 @@ def render_stock_card(
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
                 <span style="font-weight:700;font-size:1.05rem;color:{cfg['text']};">
-                    {icon} {symbol}
+                    {f"<span style='font-size:0.7rem;background:#6c757d;color:white;padding:1px 5px;border-radius:6px;margin-right:4px;font-weight:600;'>{serial_no}</span>" if serial_no is not None else ""}{icon} {symbol}
                 </span>
                 <div style="font-size:0.75rem;color:#666;margin-top:1px;">{company_name}</div>
             </div>

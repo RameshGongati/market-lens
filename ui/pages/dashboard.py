@@ -19,7 +19,7 @@ from utils.export import export_to_excel, export_to_pdf
 from utils.logger import get_logger
 from types import SimpleNamespace
 
-from utils.helpers import load_predefined_watchlists
+from utils.helpers import get_nse_batch_stocks, load_predefined_watchlists
 from watchlist.manager import get_all_watchlists, get_stocks
 
 logger = get_logger(__name__)
@@ -154,8 +154,15 @@ def render_dashboard() -> None:
     st.title("📈 Market Lens — Dashboard")
 
     _is_predefined = wl_source == "Index Watchlists"
+    _is_all_nse = wl_source == "All NSE Stocks"
 
-    if _is_predefined:
+    if _is_all_nse:
+        _nse_batch = st.session_state.get("selected_nse_batch")
+        if not _nse_batch:
+            st.info("Select a stock range from the sidebar, then click **Run Analysis**.")
+            return
+        wl_name = f"All NSE Stocks ({_nse_batch})"
+    elif _is_predefined:
         _pd_name = st.session_state.get("selected_predefined_watchlist")
         if not _pd_name:
             st.info("Select an index watchlist from the sidebar, then click **Run Analysis**.")
@@ -191,7 +198,15 @@ def render_dashboard() -> None:
     # Run analysis
     st.session_state.analysing = False
 
-    if _is_predefined:
+    if _is_all_nse:
+        _batch_start = st.session_state.get("selected_nse_batch_start", 0)
+        _batch_end = st.session_state.get("selected_nse_batch_end", 200)
+        _batch_stocks = get_nse_batch_stocks(_batch_start, _batch_end)
+        stocks = [
+            SimpleNamespace(symbol=s["symbol"], exchange="NSE", id=0)
+            for s in _batch_stocks
+        ]
+    elif _is_predefined:
         _pd_wl = next(
             (w for w in load_predefined_watchlists() if w["name"] == wl_name), None
         )
@@ -471,6 +486,7 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
                 strength=result.get("strength", "Weak"),
                 updated_at=result.get("updated_at"),
                 result=result,
+                serial_no=idx + 1,
             )
 
 
