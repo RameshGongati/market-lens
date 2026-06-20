@@ -66,9 +66,13 @@ def _passes_screener(result: dict) -> bool:
 
     for zone in zones:
         if pct is not None:
-            distance = abs(price - zone["proximal"]) / price * 100
-            if distance > pct:
-                continue
+            top = max(zone["proximal"], zone["distal"])
+            bottom = min(zone["proximal"], zone["distal"])
+            inside = bottom <= price <= top
+            if not inside:
+                distance = abs(price - zone["proximal"]) / price * 100
+                if distance > pct:
+                    continue
         if score_min is not None:
             if zone.get("odd_score", 0) < score_min:
                 continue
