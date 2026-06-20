@@ -37,28 +37,32 @@ logger = get_logger(__name__)
 _STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
 
 def _crosshair_js(show_date: bool) -> str:
-    """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off."""
+    """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off.
+
+    Uses a MutationObserver to re-bind listeners after Plotly fullscreen
+    transitions which recreate the drag overlay elements.
+    """
     show_date_flag = "true" if show_date else "false"
     return (
         "<script>\n"
         "(function() {\n"
         "    var doc = window.parent.document;\n"
         "    var showDate = " + show_date_flag + ";\n"
-        "    doc.querySelectorAll('.y-price-label,.x-date-label')\n"
-        "       .forEach(function(el) { el.remove(); });\n"
         "\n"
-        "    function init(n) {\n"
-        "        if (n > 15) return;\n"
-        "        var plots = doc.querySelectorAll('.js-plotly-plot');\n"
-        "        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
-        "        var plot = plots[plots.length - 1];\n"
+        "    function bind(plot) {\n"
         "        var drags = plot.querySelectorAll('.nsewdrag');\n"
-        "        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "        if (!drags.length) return;\n"
+        "        var drag = drags[0];\n"
+        "        if (drag._crosshairBound) return;\n"
+        "        drag._crosshairBound = true;\n"
         "\n"
         "        plot.style.position = 'relative';\n"
         "        var badge = 'background:#787b86;color:#fff;font-size:11px;padding:1px 5px;'\n"
         "                  + 'pointer-events:none;display:none;z-index:1000;font-family:monospace;'\n"
         "                  + 'border-radius:2px;white-space:nowrap;position:absolute;';\n"
+        "\n"
+        "        plot.querySelectorAll('.y-price-label,.x-date-label')\n"
+        "           .forEach(function(el) { el.remove(); });\n"
         "\n"
         "        var priceLabel = doc.createElement('div');\n"
         "        priceLabel.className = 'y-price-label';\n"
@@ -73,34 +77,61 @@ def _crosshair_js(show_date: bool) -> str:
         "            plot.appendChild(dateLabel);\n"
         "        }\n"
         "\n"
-        "        drags[0].addEventListener('mousemove', function(e) {\n"
+        "        drag.addEventListener('mousemove', function(e) {\n"
         "            var ya = plot._fullLayout.yaxis;\n"
         "            if (!ya || !ya.range) return;\n"
-        "            var r = drags[0].getBoundingClientRect();\n"
+        "            var r = drag.getBoundingClientRect();\n"
         "            var pr = plot.getBoundingClientRect();\n"
         "            var frac = (e.clientY - r.top) / r.height;\n"
         "            var price = ya.range[1] - frac * (ya.range[1] - ya.range[0]);\n"
         "            priceLabel.textContent = price.toFixed(2);\n"
         "            priceLabel.style.top = (e.clientY - pr.top) + 'px';\n"
         "            priceLabel.style.display = 'block';\n"
-        "\n"
-        "            if (dateLabel) {\n"
-        "                var xa = plot._fullLayout.xaxis;\n"
-        "                if (!xa || !xa.range) return;\n"
-        "                var xf = (e.clientX - r.left) / r.width;\n"
-        "                var r0 = typeof xa.range[0]==='number' ? xa.range[0] : new Date(xa.range[0]).getTime();\n"
-        "                var r1 = typeof xa.range[1]==='number' ? xa.range[1] : new Date(xa.range[1]).getTime();\n"
-        "                var d = new Date(r0 + xf * (r1 - r0));\n"
-        "                var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
-        "                dateLabel.textContent = d.getDate() + ' ' + M[d.getMonth()] + ' ' + d.getFullYear();\n"
-        "                dateLabel.style.left = (e.clientX - pr.left) + 'px';\n"
-        "                dateLabel.style.display = 'block';\n"
-        "            }\n"
         "        });\n"
-        "        drags[0].addEventListener('mouseleave', function() {\n"
+        "\n"
+        "        if (dateLabel) {\n"
+        "            var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
+        "            plot.on('plotly_hover', function(data) {\n"
+        "                if (!data.points || !data.points.length) return;\n"
+        "                var d = new Date(data.points[0].x);\n"
+        "                dateLabel.textContent = d.getDate()+' '+M[d.getMonth()]+' '+d.getFullYear();\n"
+        "                try {\n"
+        "                    var xa = plot._fullLayout.xaxis;\n"
+        "                    dateLabel.style.left = (xa._offset+xa.l2p(xa.d2l(d.getTime())))+'px';\n"
+        "                } catch(ex) {\n"
+        "                    var pr2 = plot.getBoundingClientRect();\n"
+        "                    dateLabel.style.left = (data.event.clientX-pr2.left)+'px';\n"
+        "                }\n"
+        "                dateLabel.style.display = 'block';\n"
+        "            });\n"
+        "            plot.on('plotly_unhover', function() {\n"
+        "                dateLabel.style.display = 'none';\n"
+        "            });\n"
+        "        }\n"
+        "\n"
+        "        drag.addEventListener('mouseleave', function() {\n"
         "            priceLabel.style.display = 'none';\n"
         "            if (dateLabel) dateLabel.style.display = 'none';\n"
         "        });\n"
+        "    }\n"
+        "\n"
+        "    function init(n) {\n"
+        "        if (n > 15) return;\n"
+        "        var plots = doc.querySelectorAll('.js-plotly-plot');\n"
+        "        if (!plots.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "        var plot = plots[plots.length - 1];\n"
+        "        var drags = plot.querySelectorAll('.nsewdrag');\n"
+        "        if (!drags.length) { setTimeout(function(){ init(n+1); }, 300); return; }\n"
+        "\n"
+        "        bind(plot);\n"
+        "\n"
+        "        var observer = new MutationObserver(function() {\n"
+        "            var newDrags = plot.querySelectorAll('.nsewdrag');\n"
+        "            if (newDrags.length && !newDrags[0]._crosshairBound) {\n"
+        "                bind(plot);\n"
+        "            }\n"
+        "        });\n"
+        "        observer.observe(plot, { childList: true, subtree: true });\n"
         "    }\n"
         "    init(0);\n"
         "})();\n"
@@ -377,7 +408,7 @@ def render_stock_detail(
         # _filter_by_period already falls back to the full dataset — no extra
         # handling needed here.
         df_view = _filter_by_period(chart_df, selected_period)
-        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type)
+        fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df, interval_label=interval_label)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
@@ -392,8 +423,9 @@ def render_stock_detail(
         if not show_tooltip:
             fig.update_layout(hovermode="closest")
             fig.update_traces(hoverinfo="none")
-        st.plotly_chart(fig, use_container_width=True)
-        st_components.html(_crosshair_js(show_date=not show_tooltip), height=0)
+        st.plotly_chart(fig, use_container_width=True, key=f"plotly_{symbol}_{selected_period}", config={"scrollZoom": True})
+        _js_bust = f"<!-- {symbol}_{selected_period}_{interval_label} -->"
+        st_components.html(_js_bust + _crosshair_js(show_date=not show_tooltip), height=0)
     else:
         st.warning(
             "Unable to load chart data for the selected interval. "
@@ -524,6 +556,8 @@ def _build_chart(
     result: dict[str, Any],
     analysis_type: str,
     chart_type: str,
+    full_df: pd.DataFrame | None = None,
+    interval_label: str = "Daily",
 ) -> go.Figure:
     """Build an interactive Plotly chart with volume subplot and overlays."""
     show_rsi = analysis_type == "Short Term Investment"
@@ -583,7 +617,7 @@ def _build_chart(
     # --- Analysis overlays ---
     if analysis_type == "Demand/Supply Zones":
         _add_trend_context_lines(fig, df)
-        _add_zone_overlays(fig, result, df)
+        _add_zone_overlays(fig, result, df, full_df=full_df)
         # Stage 3 (opt-in) — only draws anything when the Fibonacci
         # confluence checkbox was on (detected via result["fib_levels"]).
         _add_fibonacci_lines(fig, result, df)
@@ -655,7 +689,7 @@ def _build_chart(
             spikethickness=1,
             spikecolor="grey",
             spikedash="dash",
-            spikesnap="cursor",
+            spikesnap="data",
         ),
         yaxis=dict(
             showspikes=True,
@@ -672,6 +706,8 @@ def _build_chart(
     fig.update_layout(
         **{bottom_xaxis: {"rangeslider": {"visible": True, "thickness": 0.04}}}
     )
+    if interval_label not in ("Weekly", "Monthly"):
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     if show_rsi:
@@ -742,7 +778,7 @@ def _stagger_label_positions(zones: list[dict[str, Any]], min_gap: float) -> lis
     return positions
 
 
-def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame) -> None:
+def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame, full_df: pd.DataFrame | None = None) -> None:
     """Draw the filtered demand/supply zones as decluttered chart overlays.
 
     ``result["demand_zones"]``/``result["supply_zones"]`` are already the
@@ -780,7 +816,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         return
 
     fib_active = bool(result.get("fib_levels"))
-    x0, x1 = df.index[0], df.index[-1]
+    x1 = df.index[-1]
 
     # Minimum vertical spacing between labels, scaled to the chart's price
     # range so it "just works" across very different stocks/price levels.
@@ -796,11 +832,18 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         proximal, distal = zone["proximal"], zone["distal"]
         top, bottom = zone["top"], zone["bottom"]
 
-        # Shaded zone rectangle, full chart width, drawn beneath the candles.
+        # Start the zone from where it formed (base_start_idx), not the chart edge.
+        _src = full_df if full_df is not None else df
+        zone_start_idx = zone.get("base_start_idx", 0)
+        zone_x0 = _src.index[min(zone_start_idx, len(_src) - 1)]
+        if zone_x0 < df.index[0]:
+            zone_x0 = df.index[0]
+
+        # Shaded zone rectangle from zone formation to chart right edge.
         fig.add_shape(
             type="rect",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=bottom, y1=top,
+            x0=zone_x0, x1=x1, y0=bottom, y1=top,
             fillcolor=fill_color,
             line_width=0,
             layer="below",
@@ -810,7 +853,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=proximal, y1=proximal,
+            x0=zone_x0, x1=x1, y0=proximal, y1=proximal,
             line={"color": line_color, "width": 1.25, "dash": "solid"},
             layer="below",
             row=1, col=1,
@@ -819,7 +862,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         fig.add_shape(
             type="line",
             xref="x", yref="y",
-            x0=x0, x1=x1, y0=distal, y1=distal,
+            x0=zone_x0, x1=x1, y0=distal, y1=distal,
             line={"color": line_color, "width": 1, "dash": "dot"},
             layer="below",
             row=1, col=1,
@@ -829,7 +872,11 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame)
         # verdict from the trend-alignment safety rule. Plotly annotation
         # text supports inline <span style="color:..."> for exactly this
         # kind of "mostly one color, one bit highlighted" label.
-        flags = " | EMA20" if zone.get("ema20_enhancer") else ""
+        flags = ""
+        if zone.get("marking") == "Exceptional":
+            flags += " | Exceptional"
+        if zone.get("ema20_enhancer"):
+            flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for
         # this analysis — otherwise the label stays byte-for-byte identical
         # to Stage 2's (see fib_active / module docstring above).

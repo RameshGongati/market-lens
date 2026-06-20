@@ -106,7 +106,7 @@ def test_interval_options_has_required_keys(label: str) -> None:
 def test_daily_spec() -> None:
     s = INTERVAL_OPTIONS["Daily"]
     assert s["interval"] == "1d"
-    assert s["period"] == "1y"
+    assert s["period"] == "5y"
     assert s["fetch_interval"] == "1d"
     assert s["resample"] is False
 

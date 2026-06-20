@@ -116,9 +116,7 @@ def filter_zones(zones: Sequence[Zone], current_price: float) -> list[Zone]:
       1. **Freshness filter** — drop zones tested 2+ times.
       2. **Score filter** — drop zones scoring below 5 (the documented
          "no trade below 5" rule).
-      3. **Merge** — collapse overlapping same-category zones into one
-         widened representative zone.
-      4. **Nearest-N** — keep only the 3 demand zones whose proximal line
+      3. **Nearest-N** — keep only the 3 demand zones whose proximal line
          sits closest below ``current_price``, and the 3 supply zones
          whose proximal line sits closest above it.
 
@@ -130,6 +128,8 @@ def filter_zones(zones: Sequence[Zone], current_price: float) -> list[Zone]:
     Returns:
         At most 6 zones (≤3 demand + ≤3 supply): demand zones first
         (nearest to price first), then supply zones (nearest first).
+        Overlapping zones are kept separate — each zone's boundaries
+        reflect its own base candles only.
         Returns an empty list when given no zones or none survive.
     """
     if not zones:
@@ -141,18 +141,17 @@ def filter_zones(zones: Sequence[Zone], current_price: float) -> list[Zone]:
     # Rule 2: Score filter ("no trade below 5").
     candidates = [z for z in candidates if z.odd_score >= _MIN_DISPLAY_SCORE]
 
-    # Rule 3: Merge overlapping same-category zones.
-    candidates = _merge_overlapping_zones(candidates)
-
-    # Rule 4: Nearest-N — demand zones must sit below price, supply zones
-    # above it; rank each side by how close its proximal line is to price.
+    # Rule 3: Nearest-N — demand zones at or below price, supply zones at
+    # or above.  Zones where price is inside (between proximal and distal)
+    # are included; zones where price breached the distal are already
+    # invalidated by M3.
     demand = sorted(
-        (z for z in candidates if z.category == "demand" and z.proximal < current_price),
-        key=lambda z: current_price - z.proximal,
+        (z for z in candidates if z.category == "demand" and z.distal <= current_price),
+        key=lambda z: abs(current_price - z.proximal),
     )[:_MAX_ZONES_PER_SIDE]
     supply = sorted(
-        (z for z in candidates if z.category == "supply" and z.proximal > current_price),
-        key=lambda z: z.proximal - current_price,
+        (z for z in candidates if z.category == "supply" and z.distal >= current_price),
+        key=lambda z: abs(current_price - z.proximal),
     )[:_MAX_ZONES_PER_SIDE]
 
     return demand + supply

@@ -11,6 +11,7 @@ import pytz
 
 _IST = pytz.timezone("Asia/Kolkata")
 _STOCK_LIST_PATH = Path(__file__).parent.parent / "data" / "stock_list.json"
+_PREDEFINED_WL_PATH = Path(__file__).parent.parent / "data" / "predefined_watchlists.json"
 
 
 def format_currency(amount: float | None, currency: str = "₹") -> str:
@@ -97,6 +98,47 @@ def _load_stock_list() -> list[dict[str, str]]:
     """Load and cache the stock list from data/stock_list.json."""
     try:
         return json.loads(_STOCK_LIST_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+_NSE_BATCH_SIZE = 200
+
+
+def get_nse_stock_batches() -> list[dict[str, Any]]:
+    """Return batch descriptors for all NSE stocks (200 per batch).
+
+    Each dict has ``label`` (e.g. ``"1 – 200 (20MICRONS – BFUTILITIE)"``),
+    ``start`` index, and ``end`` index (exclusive).
+    """
+    stocks = _load_stock_list()
+    total = len(stocks)
+    batches: list[dict[str, Any]] = []
+    for i in range(0, total, _NSE_BATCH_SIZE):
+        end = min(i + _NSE_BATCH_SIZE, total)
+        first_sym = stocks[i]["symbol"]
+        last_sym = stocks[end - 1]["symbol"]
+        batches.append({
+            "label": f"{i + 1} – {end} ({first_sym} – {last_sym})",
+            "start": i,
+            "end": end,
+        })
+    return batches
+
+
+def get_nse_batch_stocks(start: int, end: int) -> list[dict[str, str]]:
+    """Return the slice of the NSE stock list from *start* to *end*."""
+    return _load_stock_list()[start:end]
+
+
+@lru_cache(maxsize=1)
+def load_predefined_watchlists() -> list[dict[str, Any]]:
+    """Load predefined index watchlists from data/predefined_watchlists.json.
+
+    Returns a list of dicts, each with 'name', 'description', and 'symbols'.
+    """
+    try:
+        return json.loads(_PREDEFINED_WL_PATH.read_text(encoding="utf-8"))
     except Exception:
         return []
 

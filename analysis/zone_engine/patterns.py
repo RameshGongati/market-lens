@@ -242,12 +242,19 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
         legout_end = _extend_run(candles, legout_start, +1, _MAX_LEG_RUN, n)
 
         proximal, distal = _normal_marking(df, category, base_start, base_end)
-        # No alternate proximal rule is documented for EXCEPTIONAL marking —
-        # it mirrors the NORMAL proximal line.
         proximal_exceptional = proximal
         distal_exceptional = _exceptional_distal(
             df, zone_type, legin_start, legin_anchor, legout_start, legout_end
         )
+
+        # M2: auto-apply exceptional distal when leg wick exceeds base wick.
+        marking = "Normal"
+        if category == "demand" and distal_exceptional < distal:
+            distal = distal_exceptional
+            marking = "Exceptional"
+        elif category == "supply" and distal_exceptional > distal:
+            distal = distal_exceptional
+            marking = "Exceptional"
 
         has_gap = _has_gap(df, category, base_end, legout_start)
         legout_candles = candles[legout_start: legout_end + 1]
@@ -275,6 +282,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 distal=distal,
                 proximal_exceptional=proximal_exceptional,
                 distal_exceptional=distal_exceptional,
+                marking=marking,
                 base_start_idx=base_start,
                 base_end_idx=base_end,
                 legout_idx=legout_start,

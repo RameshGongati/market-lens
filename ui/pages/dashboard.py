@@ -17,12 +17,75 @@ from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
 from utils.export import export_to_excel, export_to_pdf
 from utils.logger import get_logger
+from types import SimpleNamespace
+
+from utils.helpers import get_nse_batch_stocks, load_predefined_watchlists
 from watchlist.manager import get_all_watchlists, get_stocks
 
 logger = get_logger(__name__)
 
 _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
+_PROXIMITY_PCT = {"≤3%": 3.0, "≤5%": 5.0, "≤10%": 10.0}
+_SCORE_THRESHOLD = {"7": 7.0, "6+": 6.0, "5+": 5.0}
+
+
+def _nearest_zones(result: dict) -> list[dict]:
+    """Return the nearest demand/supply zone dicts that exist."""
+    zones = []
+    for key in ("nearest_demand", "nearest_supply"):
+        z = result.get(key)
+        if z and z.get("proximal"):
+            zones.append(z)
+    return zones
+
+
+def _passes_screener(result: dict) -> bool:
+    """Return True if *result* passes all active screener filters.
+
+    Reads screener state from session state. A stock passes if ANY of its
+    nearest zones (demand or supply) satisfies all active criteria.
+    """
+    proximity = st.session_state.get("screener_proximity", "All")
+    min_score = st.session_state.get("screener_min_score", "All")
+    strength_filter: list[str] = st.session_state.get("screener_zone_strength", [])
+
+    if proximity == "All" and min_score == "All" and not strength_filter:
+        return True
+
+    price = result.get("current_price", 0.0)
+    if price <= 0:
+        return False
+
+    zones = _nearest_zones(result)
+    if not zones:
+        return False
+
+    pct = _PROXIMITY_PCT.get(proximity)
+    inside_only = proximity == "Inside Zone"
+    score_min = _SCORE_THRESHOLD.get(min_score)
+
+    for zone in zones:
+        top = max(zone["proximal"], zone["distal"])
+        bottom = min(zone["proximal"], zone["distal"])
+        inside = bottom <= price <= top
+        if inside_only:
+            if not inside:
+                continue
+        elif pct is not None:
+            if not inside:
+                distance = abs(price - zone["proximal"]) / price * 100
+                if distance > pct:
+                    continue
+        if score_min is not None:
+            if zone.get("odd_score", 0) < score_min:
+                continue
+        if strength_filter:
+            if zone.get("zone_strength", "Normal") not in strength_filter:
+                continue
+        return True
+
+    return False
 
 
 def get_analyzer_for_primary(primary_strategy: str) -> BaseAnalysis:
@@ -72,6 +135,7 @@ def render_dashboard() -> None:
         _render_detail_view()
         return
 
+    wl_source = st.session_state.get("watchlist_source", "My Watchlists")
     watchlist_id = st.session_state.get("selected_watchlist_id")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
 
@@ -89,16 +153,31 @@ def render_dashboard() -> None:
 
     st.title("📈 Market Lens — Dashboard")
 
-    if watchlist_id is None:
-        st.info("Select a watchlist from the sidebar, then click **Run Analysis**.")
-        return
+    _is_predefined = wl_source == "Index Watchlists"
+    _is_all_nse = wl_source == "All NSE Stocks"
 
-    try:
-        watchlists = get_all_watchlists()
-        wl = next((w for w in watchlists if w.id == watchlist_id), None)
-        wl_name = wl.name if wl else "Unknown"
-    except Exception:
-        wl_name = "Unknown"
+    if _is_all_nse:
+        _nse_batch = st.session_state.get("selected_nse_batch")
+        if not _nse_batch:
+            st.info("Select a stock range from the sidebar, then click **Run Analysis**.")
+            return
+        wl_name = f"All NSE Stocks ({_nse_batch})"
+    elif _is_predefined:
+        _pd_name = st.session_state.get("selected_predefined_watchlist")
+        if not _pd_name:
+            st.info("Select an index watchlist from the sidebar, then click **Run Analysis**.")
+            return
+        wl_name = _pd_name
+    else:
+        if watchlist_id is None:
+            st.info("Select a watchlist from the sidebar, then click **Run Analysis**.")
+            return
+        try:
+            watchlists = get_all_watchlists()
+            wl = next((w for w in watchlists if w.id == watchlist_id), None)
+            wl_name = wl.name if wl else "Unknown"
+        except Exception:
+            wl_name = "Unknown"
 
     # Show the two-axis selection and effective timeframe in the header.
     _enhancer_label = ", ".join(enhancers) if enhancers else "None"
@@ -118,7 +197,29 @@ def render_dashboard() -> None:
 
     # Run analysis
     st.session_state.analysing = False
-    stocks = get_stocks(watchlist_id)
+
+    if _is_all_nse:
+        _batch_start = st.session_state.get("selected_nse_batch_start", 0)
+        _batch_end = st.session_state.get("selected_nse_batch_end", 200)
+        _batch_stocks = get_nse_batch_stocks(_batch_start, _batch_end)
+        stocks = [
+            SimpleNamespace(symbol=s["symbol"], exchange="NSE", id=0)
+            for s in _batch_stocks
+        ]
+    elif _is_predefined:
+        _pd_wl = next(
+            (w for w in load_predefined_watchlists() if w["name"] == wl_name), None
+        )
+        if not _pd_wl or not _pd_wl["symbols"]:
+            st.warning("This index watchlist has no stocks.")
+            return
+        stocks = [
+            SimpleNamespace(symbol=sym, exchange="NSE", id=0)
+            for sym in _pd_wl["symbols"]
+        ]
+    else:
+        stocks = get_stocks(watchlist_id)
+
     if not stocks:
         st.warning("This watchlist has no stocks. Add some in Watchlists.")
         return
@@ -185,8 +286,9 @@ def render_dashboard() -> None:
                 "exchange": stock.exchange,
             })
             results[stock.symbol] = result
-            save_analysis_result(stock.id, analysis_type, result)
-            check_and_trigger_alerts(stock, result, alerts_on)
+            if stock.id:
+                save_analysis_result(stock.id, analysis_type, result)
+                check_and_trigger_alerts(stock, result, alerts_on)
         except Exception as exc:
             logger.error("Analysis error for %s: %s", stock.symbol, exc)
             results[stock.symbol] = {
@@ -273,6 +375,10 @@ def _render_filter_sort_bar(
 
     # Apply filters
     filtered = list(results.items())
+
+    # Screener filters (set in sidebar expander)
+    filtered = [(sym, r) for sym, r in filtered if _passes_screener(r)]
+
     if status_filter:
         lc_filter = {s.lower() for s in status_filter}
         filtered = [(sym, r) for sym, r in filtered if r.get("status", "neutral") in lc_filter]
@@ -291,7 +397,13 @@ def _render_filter_sort_bar(
     elif sort_by == "Alphabetical":
         filtered.sort(key=lambda x: x[0])
 
-    st.caption(f"Showing {len(filtered)} of {total} stocks")
+    _active_screeners = sum([
+        st.session_state.get("screener_proximity", "All") != "All",
+        st.session_state.get("screener_min_score", "All") != "All",
+        bool(st.session_state.get("screener_zone_strength", [])),
+    ])
+    _scr_note = f" | {_active_screeners} screener filter{'s' if _active_screeners != 1 else ''} active" if _active_screeners else ""
+    st.caption(f"Showing {len(filtered)} of {total} stocks{_scr_note}")
 
     # Handle export clicks — generate file then offer download
     if xl_clicked:
@@ -374,6 +486,7 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
                 strength=result.get("strength", "Weak"),
                 updated_at=result.get("updated_at"),
                 result=result,
+                serial_no=idx + 1,
             )
 
 
