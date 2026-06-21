@@ -190,11 +190,12 @@ def test_clean_dbr_demand_zone_detected_with_correct_proximal_distal():
     assert zone.zone_type == "DBR"
     assert zone.category == "demand"
 
-    # Rule: DEMAND NORMAL marking —
-    #   proximal = highest BODY top of the base = max(max(111,112), max(112,113)) = 113
-    #   distal   = lowest WICK (lowest low) of the base = min(109, 108) = 108
-    assert zone.proximal == pytest.approx(113)
+    # Rule: M13 wick-to-wick marking (clean narrow base, ratio < 1.5) —
+    #   proximal = highest HIGH of the base = max(114, 115) = 115
+    #   distal   = lowest LOW of the base = min(109, 108) = 108
+    assert zone.proximal == pytest.approx(115)
     assert zone.distal == pytest.approx(108)
+    assert zone.proximal_marking == "Wick-to-Wick"
     assert zone.base_start_idx == 1
     assert zone.base_end_idx == 2
     assert zone.num_base_candles == 2
@@ -226,11 +227,12 @@ def test_clean_rbd_supply_zone_detected_with_correct_proximal_distal():
     assert zone.zone_type == "RBD"
     assert zone.category == "supply"
 
-    # Rule: SUPPLY NORMAL marking —
-    #   proximal = lowest BODY bottom of the base = min(min(111,110), min(110,109)) = 109
-    #   distal   = highest WICK (highest high) of the base = max(113, 112) = 113
-    assert zone.proximal == pytest.approx(109)
+    # Rule: M13 wick-to-wick marking (clean narrow base, ratio 1.5 = not > 1.5) —
+    #   proximal = lowest LOW of the base = min(108, 107) = 107
+    #   distal   = highest HIGH of the base = max(113, 112) = 113
+    assert zone.proximal == pytest.approx(107)
     assert zone.distal == pytest.approx(113)
+    assert zone.proximal_marking == "Wick-to-Wick"
     assert zone.base_start_idx == 1
     assert zone.base_end_idx == 2
     assert zone.num_base_candles == 2
@@ -274,17 +276,17 @@ def test_odd_score_fresh_zone_two_base_candles_gap_legout_scores_seven():
 # M3: one complete enter+exit cycle = 1 test
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113, distal = 108) followed by
+# Same clean DBR structure (WTW proximal = 115, distal = 108) followed by
 # candles where price enters and exits the zone once (one complete cycle).
 _DBR_ONE_CYCLE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap, single candle
-    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 113)
-    (118, 120, 111, 119),   # 5: enters zone      (low=111 <= 113 -> activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal   (low=115 > 113 -> test #1)
-    (118, 122, 116, 121),   # 7: stays away       (low=116 > 113)
+    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 115)
+    (118, 120, 111, 119),   # 5: enters zone      (low=111 <= 115 -> activation touch)
+    (119, 123, 116, 122),   # 6: exits proximal   (low=116 > 115 -> test #1)
+    (118, 122, 117, 121),   # 7: stays away       (low=117 > 115)
 ]
 
 
@@ -294,10 +296,11 @@ def test_m3_single_cycle_counts_as_one_test():
     df = _make_df(_DBR_ONE_CYCLE_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
 
-    assert zone.proximal == pytest.approx(113)
+    assert zone.proximal == pytest.approx(115)
     assert zone.times_tested == 1
     assert zone.is_fresh is False
     assert zone.freshness_points == pytest.approx(1.5)
@@ -308,22 +311,22 @@ def test_m3_single_cycle_counts_as_one_test():
 # "No Trade" recommendation when the total ODD score is below 5
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113, distal = 108), but the legout
+# Same clean DBR structure (WTW proximal = 115, distal = 108), but the legout
 # is a single, non-gapping exciting candle (strength = 1) and price
 # completes three enter+exit cycles (M3: tests = 3, freshness = 0).
 # 0 (freshness) + 1 (strength) + 2 (time) = 3.
 _DBR_NO_TRADE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (113, 126, 112, 125),   # 3: legout opens at 113 (<= base high 114 -> no gap)
-    (124, 128, 120, 126),   # 4: away from zone (low=120 > 113)
+    (124, 128, 120, 126),   # 4: away from zone (low=120 > 115)
     (118, 120, 111, 119),   # 5: enters zone (activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal (test #1)
-    (116, 119, 109, 117),   # 7: enters zone
-    (117, 122, 114, 120),   # 8: exits proximal (test #2)
-    (116, 118, 110, 115),   # 9: enters zone
-    (115, 121, 114, 120),   # 10: exits proximal (test #3)
+    (119, 123, 116, 122),   # 6: exits proximal (test #1)
+    (117, 119, 109, 118),   # 7: enters zone
+    (118, 122, 116, 120),   # 8: exits proximal (test #2)
+    (117, 118, 110, 116),   # 9: enters zone
+    (116, 121, 116, 120),   # 10: exits proximal (test #3)
 ]
 
 
@@ -331,8 +334,9 @@ def test_no_trade_recommendation_when_score_below_five():
     df = _make_df(_DBR_NO_TRADE_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
 
     assert zone.times_tested == 3
     assert zone.freshness_points == pytest.approx(0.0)
@@ -350,13 +354,13 @@ def test_no_trade_recommendation_when_score_below_five():
 _DBR_TWO_CYCLES_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap
     (124, 128, 120, 126),   # 4: away from zone
     (118, 120, 111, 119),   # 5: enters zone (activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal (test #1)
-    (116, 119, 109, 117),   # 7: enters zone
-    (117, 122, 114, 120),   # 8: exits proximal (test #2)
+    (119, 123, 116, 122),   # 6: exits proximal (test #1)
+    (117, 119, 109, 118),   # 7: enters zone
+    (118, 122, 116, 120),   # 8: exits proximal (test #2)
 ]
 
 
@@ -365,8 +369,9 @@ def test_m3_two_cycles_count_as_two_tests():
     df = _make_df(_DBR_TWO_CYCLES_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
     assert zone.times_tested == 2
     assert zone.is_fresh is False
     assert zone.freshness_points == pytest.approx(0.0)
@@ -416,7 +421,8 @@ def test_m3_zone_invalidated_when_distal_breached():
     df = _make_df(_DBR_INVALIDATED_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 0
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +443,9 @@ def test_m3_activation_touch_without_complete_cycle():
     df = _make_df(rows)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
     assert zone.times_tested == 0
     assert zone.is_fresh is True
     assert zone.activation_touch is True
@@ -1036,8 +1043,8 @@ def test_m2_dbr_legin_wick_below_base_applies_exceptional():
     assert z.marking == "Exceptional"
     # Distal should be legin's low (80), not base's low (88)
     assert z.distal == 80.0
-    # Proximal stays on the base (highest body top of base)
-    assert z.proximal == 92.0
+    # M13: WTW proximal = base high = 93 (narrow base, ratio < 1.5)
+    assert z.proximal == 93.0
 
 
 def test_m2_dbr_legin_wick_not_below_base_stays_normal():
@@ -1074,7 +1081,8 @@ def test_m2_rbd_legin_wick_above_base_applies_exceptional():
     z = rbd[0]
     assert z.marking == "Exceptional"
     assert z.distal == 125.0
-    assert z.proximal == 109.0
+    # M13: WTW proximal = base lowest low = 108 (narrow base, ratio < 1.5)
+    assert z.proximal == 108.0
 
 
 def test_m2_rbr_legout_wick_below_base_applies_exceptional():
@@ -1115,8 +1123,8 @@ def test_m2_dbd_legout_wick_above_base_applies_exceptional():
     assert z.distal == 110.0
 
 
-def test_m2_proximal_never_changes():
-    """M2 only affects the distal line; proximal stays on the base."""
+def test_m2_proximal_independent_of_distal():
+    """M2 affects distal; M13 may change proximal independently."""
     rows = [
         (110, 112, 75, 90),   # Legin: wick way below base
         (91, 93, 88, 92),     # Base
@@ -1127,7 +1135,301 @@ def test_m2_proximal_never_changes():
     assert len(dbr) == 1
     z = dbr[0]
     assert z.marking == "Exceptional"
-    # Proximal = highest body top of base = max(91, 92) = 92
-    assert z.proximal == 92.0
-    # Distal = legin low = 75 (more extreme than base low 88)
+    # M13: WTW proximal = base high = 93 (narrow base, ratio < 1.5)
+    assert z.proximal == 93.0
+    # M2: Distal = legin low = 75 (more extreme than base low 88)
     assert z.distal == 75.0
+
+
+# ---------------------------------------------------------------------------
+# M13: Wick-to-wick vs body-to-wick proximal marking
+# ---------------------------------------------------------------------------
+
+def test_m13_clean_narrow_base_gets_wick_to_wick():
+    """M13 P3: narrow base (ratio <= 1.5) → wick-to-wick proximal."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 113, 109, 112),   # Base (boring, body=1/4=0.25)
+        (113, 125, 112, 124),   # Legout (bullish exciting, no gap, 1 candle)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW: proximal=112, distal=109, width=3
+    # WTW: proximal=113, distal=109, width=4
+    # Ratio=4/3=1.33 < 1.5 → WTW
+    assert z.proximal == 113.0
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_m13_wide_wick_base_stays_body_to_wick():
+    """M13 P3: wide wicks (ratio > 1.5) → body-to-wick proximal."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 110, 98, 102),    # Base (boring, body=1/12=0.08 — but also doji!)
+        (103, 125, 102, 124),   # Legout (bullish exciting, no gap)
+    ]
+    # body_pct = 1/12 = 0.083 < 0.10 → doji → P2 forces BTW
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    assert z.proximal == 102.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+def test_m13_doji_in_base_forces_body_to_wick():
+    """M13 P2: doji candle in base (body < 10% of range) → BTW."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (103, 108, 98, 103),    # Base 1 (boring, body=0/10=0, doji)
+        (104, 106, 99, 105),    # Base 2 (boring, body=1/7=0.14, not doji)
+        (106, 125, 105, 124),   # Legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P2: doji in base → body-to-wick
+    assert z.proximal_marking == "Body-to-Wick"
+    # BTW proximal = max body top = max(103, 105) = 105
+    assert z.proximal == 105.0
+
+
+def test_m13_explosive_legout_gap_plus_exciting_forces_wick_to_wick():
+    """M13 P1: gap(1) + exciting candle(1) = 2 units → explosive → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, body=1/9=0.11, wide wicks)
+        (117, 130, 116, 128),   # Legout: gap (opens 117 > 116) + exciting (body=0.79)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # gap=1 + exciting=1 = 2 units → explosive → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+    assert z.strength_points == pytest.approx(2.0)
+
+
+def test_m13_explosive_legout_two_candles_forces_wick_to_wick():
+    """M13 P1: 2+ exciting legout candles → explosive override → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, wide wicks)
+        (113, 125, 112, 124),   # Legout 1 (bullish exciting, no gap)
+        (124, 135, 123, 134),   # Legout 2 (bullish exciting, extends run)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P1: 2 legout candles → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+
+
+def test_m13_width_ratio_exactly_1_5_picks_wick_to_wick():
+    """M13 P3: width ratio exactly 1.5 (not > 1.5) → WTW."""
+    # BTW width=2, WTW width=3, ratio=1.5 exactly → NOT > 1.5 → WTW
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 113, 110, 112),   # Base (boring, body=1/3, high=113, low=110)
+        (113, 125, 112, 124),   # Legout (bullish exciting, no gap)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW proximal=112, distal=110, width=2
+    # WTW proximal=113, distal=110, width=3
+    # ratio = 3/2 = 1.5, NOT > 1.5 → WTW
+    assert z.proximal == 113.0
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_m13_width_ratio_above_1_5_picks_body_to_wick():
+    """M13 P3: width ratio > 1.5 → BTW (zone too wide for WTW)."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 108, 95, 103),    # Base (boring, body=2/13=0.15, wide wicks)
+        (104, 125, 103, 124),   # Legout (bullish exciting, no gap, 1 candle)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW proximal=103, distal=95, width=8
+    # WTW proximal=108, distal=95, width=13
+    # ratio = 13/8 = 1.625 > 1.5 → BTW
+    assert z.proximal == 103.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+def test_m13_p1_overrides_doji():
+    """M13: P1 (explosive) takes priority over P2 (doji) — WTW wins."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 108, 95, 101),    # Base (boring, body=0/13=0.0, doji!)
+        (109, 125, 108, 124),   # Legout 1 opens 109 > base high 108 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P1 (gap) overrides P2 (doji) → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 108.0
+    assert z.strength_points == pytest.approx(2.0)
+
+
+def test_m13_supply_zone_wick_to_wick():
+    """M13: supply zone WTW — proximal = lowest low of base."""
+    rows = [
+        (100, 112, 99, 111),   # Legin (bullish exciting)
+        (111, 113, 108, 110),  # Base (boring)
+        (109, 110, 90, 92),    # Legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    # BTW proximal=110, distal=113, width=3
+    # WTW proximal=108, distal=113, width=5
+    # ratio=5/3=1.67 > 1.5 → BTW
+    assert z.proximal == 110.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+def test_m13_gap_between_consecutive_legout_candles():
+    """M13: gap between legout candles (Pattern 2) → explosive → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, wide wicks)
+        (113, 120, 112, 119),   # Legout 1 (bullish exciting, no gap from base)
+        (121, 135, 120, 134),   # Legout 2 opens 121 > legout1 high 120 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    assert z.strength_points == pytest.approx(2.0)
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+
+
+def test_m13_both_m2_and_m13_can_apply():
+    """M2 (exceptional distal) and M13 (WTW proximal) are independent."""
+    rows = [
+        (110, 112, 75, 90),    # Legin: wick way below base (M2 trigger)
+        (91, 93, 88, 92),      # Base
+        (93, 120, 92, 118),    # Legout
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # M2: exceptional distal = 75
+    assert z.marking == "Exceptional"
+    assert z.distal == 75.0
+    # M13: narrow base → WTW proximal = 93
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 93.0
+
+
+# ---------------------------------------------------------------------------
+# Gap-in-base terminates the base
+# ---------------------------------------------------------------------------
+
+def test_gap_up_in_base_forms_zone_with_gap_as_legout():
+    """Gap up between base candles → base stops, gap IS the legout (demand)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (104, 106, 100, 105),   # 2: opens 104 > prev high 103 → GAP UP = bullish legout
+        (106, 125, 105, 124),   # 3: additional candle (not part of this zone's legout)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # Base = [1] (1 candle), gap at candle 2 is the legout departure
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_gap_down_in_base_forms_supply_zone():
+    """Gap down between base candles → base stops, gap IS the legout (supply)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: legin (bullish exciting)
+        (111, 114, 108, 110),   # 1: base candle 1 (boring)
+        (107, 110, 105, 109),   # 2: opens 107 < prev low 108 → GAP DOWN = bearish legout
+        (108, 109, 90, 92),     # 3: additional candle
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_no_gap_in_base_extends_normally():
+    """Base candles without gaps extend normally (control test)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (102, 105, 99, 104),    # 2: base candle 2 — opens 102 <= prev high 103 → NO gap
+        (105, 125, 104, 124),   # 3: legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].num_base_candles == 2
+
+
+def test_gap_in_base_with_exciting_candle_after():
+    """Gap between base candles + exciting candle after → gap is legout, exciting extends it."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (104, 120, 103, 118),   # 2: opens 104 > prev high 103 → GAP; exciting bullish
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_gap_legout_has_gap_true_for_scoring():
+    """Gap-as-legout zones get has_gap=True → strength 2. Gap alone = 1 unit,
+    not explosive, so M13 falls to P3 (narrow base → WTW via ratio)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (104, 106, 100, 105),   # 2: gap up (boring) → gap is legout
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.strength_points == pytest.approx(2.0)
+    # Gap alone = 1 unit (not explosive), but narrow base ratio < 1.5 → P3 picks WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_gap_only_legout_not_explosive_wide_base_gets_btw():
+    """Gap-only legout (1 unit) with wide-wick base → not explosive → P3 → BTW."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 108, 95, 103),    # 1: base (boring, wide wicks: body=2/13, high=108, low=95)
+        (109, 111, 106, 110),   # 2: gap up (boring, opens 109 > prev high 108)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # Gap=1 unit, 0 exciting=0 units, total=1 → NOT explosive
+    # BTW proximal=103, distal=95, width=8
+    # WTW proximal=108, distal=95, width=13
+    # ratio=13/8=1.625 > 1.5 → BTW
+    assert z.proximal == 103.0
+    assert z.proximal_marking == "Body-to-Wick"

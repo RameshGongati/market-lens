@@ -92,17 +92,29 @@ def _legout_clears_base(df: pd.DataFrame, direction: str, base_start: int, base_
     return False
 
 
-def _has_gap(df: pd.DataFrame, category: str, base_end: int, legout_start: int) -> bool:
-    """Rule: Strength/gap check — a (breakaway) gap exists when the legout
-    candle opens beyond the final base candle's range, in the legout
-    direction (price "jumped" away from the base rather than grinding out
-    of it)."""
-    base_high = float(df["High"].iloc[base_end])
-    base_low = float(df["Low"].iloc[base_end])
-    legout_open = float(df["Open"].iloc[legout_start])
-    if category == "demand":
-        return legout_open > base_high
-    return legout_open < base_low
+def _has_gap(df: pd.DataFrame, category: str, base_end: int, legout_start: int, legout_end: int) -> bool:
+    """Rule: Strength/gap check — a gap exists when ANY candle in the legout
+    sequence opens beyond the previous candle's range in the departure
+    direction.
+
+    Two patterns both count:
+      1. base → gap → legout  (gap between last base candle and first legout)
+      2. base → legout → gap  (gap between consecutive legout candles)
+
+    For demand: gap up = next open > previous high.
+    For supply: gap down = next open < previous low.
+    """
+    prev_idx = base_end
+    for lo_idx in range(legout_start, legout_end + 1):
+        prev_high = float(df["High"].iloc[prev_idx])
+        prev_low = float(df["Low"].iloc[prev_idx])
+        lo_open = float(df["Open"].iloc[lo_idx])
+        if category == "demand" and lo_open > prev_high:
+            return True
+        if category == "supply" and lo_open < prev_low:
+            return True
+        prev_idx = lo_idx
+    return False
 
 
 def _normal_marking(df: pd.DataFrame, category: str, base_start: int, base_end: int) -> tuple[float, float]:
@@ -126,6 +138,89 @@ def _normal_marking(df: pd.DataFrame, category: str, base_start: int, base_end: 
         proximal = float(body_bottoms.min())
         distal = float(base["High"].max())
     return proximal, distal
+
+
+# M13: Wick-to-wick vs body-to-wick proximal marking.
+# If wick-to-wick zone width exceeds body-to-wick width by more than this
+# ratio, body-to-wick is used to keep the zone tradeable (R:R concern).
+_WICK_TO_BODY_ZONE_RATIO_THRESHOLD = 1.5
+
+# M13: Doji detection — body smaller than this fraction of the candle range
+# is treated as a doji for marking purposes (wicks = noise, not boundaries).
+_DOJI_BODY_THRESHOLD = 0.10
+
+
+def _wick_to_wick_marking(
+    df: pd.DataFrame, category: str, base_start: int, base_end: int,
+) -> tuple[float, float]:
+    """Rule: WICK-TO-WICK zone boundary marking (M13 alternate).
+
+      * DEMAND: proximal = highest HIGH of the base; distal = lowest LOW.
+      * SUPPLY: proximal = lowest LOW of the base; distal = highest HIGH.
+
+    Both edges use wick extremes, creating a tighter zone when wicks are small.
+    """
+    base = df.iloc[base_start: base_end + 1]
+    if category == "demand":
+        return float(base["High"].max()), float(base["Low"].min())
+    return float(base["Low"].min()), float(base["High"].max())
+
+
+def _has_doji_in_base(df: pd.DataFrame, base_start: int, base_end: int) -> bool:
+    """Return True if any base candle is a doji (body < 10% of range)."""
+    for idx in range(base_start, base_end + 1):
+        o = float(df["Open"].iloc[idx])
+        h = float(df["High"].iloc[idx])
+        l = float(df["Low"].iloc[idx])
+        c = float(df["Close"].iloc[idx])
+        rng = h - l
+        if rng <= 0:
+            continue
+        body_pct = abs(c - o) / rng
+        if body_pct < _DOJI_BODY_THRESHOLD:
+            return True
+    return False
+
+
+def _m13_proximal_marking(
+    df: pd.DataFrame,
+    category: str,
+    base_start: int,
+    base_end: int,
+    has_gap: bool,
+    num_exciting_legout: int,
+    btw_proximal: float,
+    btw_distal: float,
+) -> tuple[float, str]:
+    """M13: Choose between wick-to-wick and body-to-wick proximal.
+
+    Priority chain:
+      P1 — Explosive leg-out (2+ total leg-out units) → wick-to-wick.
+           Each exciting candle = 1 unit, each gap = 1 unit.
+      P2 — Doji in base → body-to-wick.
+      P3 — Width ratio > 1.5 → body-to-wick; else wick-to-wick.
+
+    Returns (proximal, proximal_marking) where proximal_marking is
+    ``"Wick-to-Wick"`` or ``"Body-to-Wick"``.
+    """
+    wtw_proximal, _wtw_distal = _wick_to_wick_marking(df, category, base_start, base_end)
+
+    # P1: Explosive leg-out override — 2+ total units → wick-to-wick.
+    total_legout_units = num_exciting_legout + (1 if has_gap else 0)
+    if total_legout_units >= 2:
+        return wtw_proximal, "Wick-to-Wick"
+
+    # P2: Doji in base — always body-to-wick.
+    if _has_doji_in_base(df, base_start, base_end):
+        return btw_proximal, "Body-to-Wick"
+
+    # P3: Width ratio.
+    btw_width = abs(btw_proximal - btw_distal)
+    wtw_width = abs(wtw_proximal - _wtw_distal)
+    if btw_width > 0 and wtw_width / btw_width > _WICK_TO_BODY_ZONE_RATIO_THRESHOLD:
+        return btw_proximal, "Body-to-Wick"
+
+    return wtw_proximal, "Wick-to-Wick"
 
 
 def _exceptional_distal(
@@ -200,46 +295,62 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
 
         base_start = i
         base_end = base_start
+        gap_is_legout = False
         while (
             base_end + 1 < n
             and candles[base_end + 1]["is_boring"]
             and (base_end - base_start + 1) < _MAX_SCAN_BASE_CANDLES
         ):
+            nxt_open = float(df["Open"].iloc[base_end + 1])
+            cur_high = float(df["High"].iloc[base_end])
+            cur_low = float(df["Low"].iloc[base_end])
+            if nxt_open > cur_high or nxt_open < cur_low:
+                gap_is_legout = True
+                break
             base_end += 1
         num_base_candles = base_end - base_start + 1
 
         legout_start = base_end + 1
-        if legout_start >= n or not candles[legout_start]["is_exciting"]:
-            # No exciting candle right after this base -> no legout here.
-            # Resume scanning from the candle after the base; it may itself
-            # anchor the next legin.
+        if legout_start >= n:
             i = base_end + 1
             continue
 
-        legout_direction = candles[legout_start]["direction"]
-        if legout_direction == "doji":
-            i = base_end + 1
-            continue
-
-        # Rule: Legout validation — must clear the base range (by close) in
-        # its own direction, i.e. a genuinely decisive move away.
-        if not _legout_clears_base(df, legout_direction, base_start, base_end, legout_start):
-            i = base_end + 1
-            continue
+        if gap_is_legout:
+            # Rule: A gap between consecutive candles IS a leg-out departure.
+            # The gap counts as the first leg-out "candle" — the zone forms
+            # even if the candle after the gap is boring.
+            gap_open = float(df["Open"].iloc[legout_start])
+            if gap_open > float(df["High"].iloc[base_end]):
+                legout_direction = "bullish"
+            else:
+                legout_direction = "bearish"
+        else:
+            if not candles[legout_start]["is_exciting"]:
+                i = base_end + 1
+                continue
+            legout_direction = candles[legout_start]["direction"]
+            if legout_direction == "doji":
+                i = base_end + 1
+                continue
+            if not _legout_clears_base(df, legout_direction, base_start, base_end, legout_start):
+                i = base_end + 1
+                continue
 
         legin_direction = candles[legin_anchor]["direction"]
         pattern = _PATTERN_MAP.get((legin_direction, legout_direction))
         if pattern is None:
-            # A doji legin (or any other non-decisive combination) does not
-            # form one of the four documented patterns.
             i = base_end + 1
             continue
         zone_type, category = pattern
 
-        # Rule: LEGIN/LEGOUT — "one or more exciting candles"; extend each
-        # leg to capture multi-candle runs that share the same direction.
         legin_start = _extend_run(candles, legin_anchor, -1, _MAX_LEG_RUN, n)
-        legout_end = _extend_run(candles, legout_start, +1, _MAX_LEG_RUN, n)
+        # Extend legout: if candle at legout_start is exciting in the
+        # legout direction, extend the run; otherwise legout is just
+        # the gap candle itself.
+        if candles[legout_start]["is_exciting"] and candles[legout_start]["direction"] == legout_direction:
+            legout_end = _extend_run(candles, legout_start, +1, _MAX_LEG_RUN, n)
+        else:
+            legout_end = legout_start
 
         proximal, distal = _normal_marking(df, category, base_start, base_end)
         proximal_exceptional = proximal
@@ -256,8 +367,18 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             distal = distal_exceptional
             marking = "Exceptional"
 
-        has_gap = _has_gap(df, category, base_end, legout_start)
+        has_gap = _has_gap(df, category, base_end, legout_start, legout_end)
         legout_candles = candles[legout_start: legout_end + 1]
+        num_exciting_legout = sum(1 for c in legout_candles if c["is_exciting"])
+
+        # M13: wick-to-wick vs body-to-wick proximal marking.
+        proximal, proximal_marking = _m13_proximal_marking(
+            df, category, base_start, base_end,
+            has_gap=has_gap,
+            num_exciting_legout=num_exciting_legout,
+            btw_proximal=proximal,
+            btw_distal=distal,
+        )
 
         score = score_zone(
             df=df,
@@ -283,6 +404,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 proximal_exceptional=proximal_exceptional,
                 distal_exceptional=distal_exceptional,
                 marking=marking,
+                proximal_marking=proximal_marking,
                 base_start_idx=base_start,
                 base_end_idx=base_end,
                 legout_idx=legout_start,

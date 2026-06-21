@@ -68,6 +68,7 @@ class Zone:
     is_fresh: bool                  # True when times_tested == 0
     activation_touch: bool = False  # True when price has entered zone at least once
     marking: str = "Normal"         # "Normal" | "Exceptional" — which distal is active (M2)
+    proximal_marking: str = "Body-to-Wick"  # "Body-to-Wick" | "Wick-to-Wick" — M13 proximal choice
 
     # --- Stage 2 context (additive — never folded into odd_score) --------
     trend_at_zone: str = ""         # "UP" | "DOWN" | "SIDEWAYS" at evaluation time
