@@ -353,6 +353,22 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             legout_end = legout_start
 
         proximal, distal = _normal_marking(df, category, base_start, base_end)
+
+        # Trim legout: a candle that opens outside the zone and touches
+        # back in is a zone test, not a legout continuation.  Use the
+        # WTW proximal (widest zone boundary) so the check catches
+        # candles that enter even the wick-based zone.
+        wtw_prox, _ = _wick_to_wick_marking(df, category, base_start, base_end)
+        for trim_idx in range(legout_start + 1, legout_end + 1):
+            o = float(df["Open"].iloc[trim_idx])
+            h = float(df["High"].iloc[trim_idx])
+            l = float(df["Low"].iloc[trim_idx])
+            if category == "supply" and o < wtw_prox and h >= wtw_prox:
+                legout_end = trim_idx - 1
+                break
+            if category == "demand" and o > wtw_prox and l <= wtw_prox:
+                legout_end = trim_idx - 1
+                break
         proximal_exceptional = proximal
         distal_exceptional = _exceptional_distal(
             df, zone_type, legin_start, legin_anchor, legout_start, legout_end
