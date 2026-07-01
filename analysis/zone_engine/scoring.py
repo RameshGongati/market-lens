@@ -86,9 +86,10 @@ def strength_points(has_gap: bool, num_legout_candles: int) -> float:
 
 
 def time_at_base_points(num_base_candles: int) -> float:
-    """Rule: Time at base — 1-3 candles = 2, 4-5 candles = 1,
-    more than 5 candles = 0 (GTF Episode 8 / M28)."""
-    if 1 <= num_base_candles <= 3:
+    """Rule: Time at base — 0-3 candles = 2, 4-5 candles = 1,
+    more than 5 candles = 0.  Zero base candles = missing-base
+    (M17 instant reversal) — maximum speed, maximum score."""
+    if num_base_candles <= 3:
         return _SHORT_BASE_POINTS
     if 4 <= num_base_candles <= 5:
         return _MEDIUM_BASE_POINTS

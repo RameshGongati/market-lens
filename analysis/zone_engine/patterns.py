@@ -34,6 +34,12 @@ _MAX_SCAN_BASE_CANDLES = 10
 # legin/legout run, so the scan stays bounded on strongly trending data.
 _MAX_LEG_RUN = 6
 
+# Minimum gap size (as fraction of price) for gap-as-legout to fire.
+# Gaps smaller than this between base candles are bid-ask noise, not
+# genuine supply/demand departure.  0.1% filters sub-tick artefacts
+# without blocking any visually meaningful gap.
+_MIN_GAP_LEGOUT_PCT = 0.001
+
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("bearish", "bullish"): ("DBR", "demand"),   # Drop-Base-Rally
@@ -223,6 +229,24 @@ def _m13_proximal_marking(
     return wtw_proximal, "Wick-to-Wick"
 
 
+def _missing_base_marking(
+    df: pd.DataFrame, category: str, turning_point_idx: int,
+) -> tuple[float, float]:
+    """M17: Zone boundary marking for missing-base (instant reversal) zones.
+
+    The turning-point candle (last leg-in candle) provides both edges:
+      * DEMAND: proximal = body top, distal = low
+      * SUPPLY: proximal = body bottom, distal = high
+    """
+    o = float(df["Open"].iloc[turning_point_idx])
+    h = float(df["High"].iloc[turning_point_idx])
+    l = float(df["Low"].iloc[turning_point_idx])
+    c = float(df["Close"].iloc[turning_point_idx])
+    if category == "demand":
+        return max(o, c), l
+    return min(o, c), h
+
+
 def _exceptional_distal(
     df: pd.DataFrame,
     zone_type: str,
@@ -273,14 +297,14 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
         empty or too-short dataframes (need at least legin+base+legout).
     """
     n = len(df)
-    if n < 3:
+    if n < 2:
         return []
 
     candles = _classify_all(df)
     zones: list[Zone] = []
 
     i = 1
-    while i < n - 1:
+    while i < n:
         legin_anchor = i - 1
 
         # Rule: LEGIN — at least one exciting candle immediately before the base.
@@ -290,6 +314,108 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
 
         # Rule: BASE — must start with a boring candle right after the legin.
         if not candles[i]["is_boring"]:
+            # M17: Missing-base — two consecutive exciting candles in
+            # opposite directions form an instant-reversal zone.
+            legin_dir = candles[legin_anchor]["direction"]
+            next_dir = candles[i]["direction"]
+            if (
+                candles[i]["is_exciting"]
+                and next_dir != "doji"
+                and legin_dir != "doji"
+                and legin_dir != next_dir
+            ):
+                turning_point = legin_anchor
+                mb_legout_start = i
+                mb_legout_dir = next_dir
+
+                mb_pattern = _PATTERN_MAP.get((legin_dir, mb_legout_dir))
+                if mb_pattern is None:
+                    i += 1
+                    continue
+                mb_zone_type, mb_category = mb_pattern
+
+                if not _legout_clears_base(
+                    df, mb_legout_dir, turning_point, turning_point, mb_legout_start,
+                ):
+                    i += 1
+                    continue
+
+                mb_legin_start = _extend_run(candles, turning_point, -1, _MAX_LEG_RUN, n)
+                mb_legout_end = _extend_run(candles, mb_legout_start, +1, _MAX_LEG_RUN, n)
+
+                mb_proximal, mb_distal = _missing_base_marking(df, mb_category, turning_point)
+
+                # Trim legout: candle opening outside zone and touching back
+                for trim_idx in range(mb_legout_start + 1, mb_legout_end + 1):
+                    o = float(df["Open"].iloc[trim_idx])
+                    h = float(df["High"].iloc[trim_idx])
+                    l = float(df["Low"].iloc[trim_idx])
+                    if mb_category == "supply" and o < mb_proximal and h >= mb_proximal:
+                        mb_legout_end = trim_idx - 1
+                        break
+                    if mb_category == "demand" and o > mb_proximal and l <= mb_proximal:
+                        mb_legout_end = trim_idx - 1
+                        break
+
+                mb_prox_exc = mb_proximal
+                mb_dist_exc = _exceptional_distal(
+                    df, mb_zone_type, mb_legin_start, turning_point,
+                    mb_legout_start, mb_legout_end,
+                )
+                mb_marking = "Normal"
+                if mb_category == "demand" and mb_dist_exc < mb_distal:
+                    mb_distal = mb_dist_exc
+                    mb_marking = "Exceptional"
+                elif mb_category == "supply" and mb_dist_exc > mb_distal:
+                    mb_distal = mb_dist_exc
+                    mb_marking = "Exceptional"
+
+                mb_has_gap = _has_gap(
+                    df, mb_category, turning_point, mb_legout_start, mb_legout_end,
+                )
+                mb_legout_candles = candles[mb_legout_start: mb_legout_end + 1]
+
+                mb_score = score_zone(
+                    df=df,
+                    category=mb_category,
+                    proximal=mb_proximal,
+                    distal=mb_distal,
+                    num_base_candles=0,
+                    has_gap=mb_has_gap,
+                    legout_candles=mb_legout_candles,
+                    test_scan_start_idx=mb_legout_end + 1,
+                )
+
+                if not mb_score["is_invalidated"]:
+                    zones.append(
+                        Zone(
+                            zone_type=mb_zone_type,
+                            category=mb_category,
+                            proximal=mb_proximal,
+                            distal=mb_distal,
+                            proximal_exceptional=mb_prox_exc,
+                            distal_exceptional=mb_dist_exc,
+                            marking=mb_marking,
+                            proximal_marking="Missing-Base",
+                            base_start_idx=turning_point,
+                            base_end_idx=turning_point,
+                            legout_idx=mb_legout_start,
+                            num_base_candles=0,
+                            odd_score=mb_score["odd_score"],
+                            freshness_points=mb_score["freshness_points"],
+                            strength_points=mb_score["strength_points"],
+                            time_points=mb_score["time_points"],
+                            times_tested=mb_score["times_tested"],
+                            zone_strength=mb_score["zone_strength"],
+                            entry_recommendation=mb_score["entry_recommendation"],
+                            created_at_index=mb_legout_start,
+                            is_fresh=mb_score["is_fresh"],
+                            activation_touch=mb_score["activation_touch"],
+                        )
+                    )
+                    i = mb_legout_end + 2
+                    continue
+
             i += 1
             continue
 
@@ -304,7 +430,10 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             nxt_open = float(df["Open"].iloc[base_end + 1])
             cur_high = float(df["High"].iloc[base_end])
             cur_low = float(df["Low"].iloc[base_end])
-            if nxt_open > cur_high or nxt_open < cur_low:
+            gap_up = nxt_open - cur_high
+            gap_down = cur_low - nxt_open
+            if (gap_up > 0 and gap_up / cur_high > _MIN_GAP_LEGOUT_PCT) or \
+               (gap_down > 0 and gap_down / cur_low > _MIN_GAP_LEGOUT_PCT):
                 gap_is_legout = True
                 break
             base_end += 1

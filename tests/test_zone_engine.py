@@ -1261,6 +1261,179 @@ def test_m13_width_ratio_above_1_5_picks_body_to_wick():
     assert z.proximal_marking == "Body-to-Wick"
 
 
+# ---------------------------------------------------------------------------
+# M17: Missing-base (instant reversal) zones
+# ---------------------------------------------------------------------------
+
+def test_m17_missing_base_demand_dbr():
+    """M17: bearish exciting → bullish exciting = DBR demand (no base)."""
+    rows = [
+        (130, 131, 118, 119),   # 0: legin (bearish exciting)
+        (120, 121, 108, 109),   # 1: turning point (bearish exciting) — last legin candle
+        (110, 125, 109, 124),   # 2: legout (bullish exciting, opposite direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.category == "demand"
+    assert z.num_base_candles == 0
+    assert z.proximal_marking == "Missing-Base"
+    # Turning point (candle 1): O=120, H=121, L=108, C=109
+    # proximal = body top = max(120, 109) = 120
+    # distal = low = 108
+    assert z.proximal == 120.0
+    assert z.distal == 108.0
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+    assert z.legout_idx == 2
+
+
+def test_m17_missing_base_supply_rbd():
+    """M17: bullish exciting → bearish exciting = RBD supply (no base)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: legin (bullish exciting)
+        (110, 122, 109, 121),   # 1: turning point (bullish exciting)
+        (120, 121, 100, 102),   # 2: legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    assert z.category == "supply"
+    assert z.num_base_candles == 0
+    assert z.proximal_marking == "Missing-Base"
+    # Turning point (candle 1): O=110, H=122, L=109, C=121
+    # proximal = body bottom = min(110, 121) = 110
+    # distal = high = 122
+    assert z.proximal == 110.0
+    assert z.distal == 122.0
+
+
+def test_m17_scoring_zero_base_gets_max_time():
+    """M17: 0 base candles → time_at_base = 2 points (maximum speed)."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting)
+        (110, 130, 109, 128),   # 1: legout (bullish exciting, gap: 110 > 108? no)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.time_points == pytest.approx(2.0)
+    assert z.num_base_candles == 0
+
+
+def test_m17_no_double_counting():
+    """M17: bearish → bullish → bearish: only first zone, no reuse of candles."""
+    rows = [
+        (130, 131, 118, 119),   # 0: bearish exciting
+        (120, 121, 108, 109),   # 1: bearish exciting (turning point of zone 1)
+        (110, 125, 109, 124),   # 2: bullish exciting (legout of zone 1)
+        (123, 124, 109, 112),   # 3: bearish exciting (NOT a second zone turning point)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    # Candle 2 is legout of zone 1, not turning point of zone 2
+    assert dbr[0].legout_idx == 2
+
+
+def test_m17_legout_must_clear_turning_point():
+    """M17: legout must clear turning point range — weak reversal rejected."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting, high=121)
+        (110, 118, 109, 117),   # 1: bullish exciting, but close=117 < turning high=121
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0
+
+
+def test_m17_legin_extends_backwards():
+    """M17: leg-in extends backwards to include earlier same-direction candles."""
+    rows = [
+        (150, 151, 138, 139),   # 0: bearish exciting (part of legin run)
+        (140, 141, 128, 129),   # 1: bearish exciting (part of legin run)
+        (130, 131, 118, 119),   # 2: bearish exciting (turning point)
+        (120, 140, 119, 138),   # 3: bullish exciting (legout, clears 131)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.base_start_idx == 2  # turning point
+    assert z.legout_idx == 3
+
+
+def test_m17_legout_extends_forwards():
+    """M17: leg-out extends forwards to include same-direction exciting candles."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting)
+        (110, 130, 109, 128),   # 1: legout (bullish exciting)
+        (128, 145, 127, 143),   # 2: legout extension (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+
+
+def test_m17_same_direction_no_zone():
+    """M17: two exciting candles in same direction → no missing-base zone."""
+    rows = [
+        (120, 121, 108, 109),   # 0: bearish exciting
+        (110, 111, 98, 99),     # 1: bearish exciting (same direction, NOT a reversal)
+        (100, 115, 99, 114),    # 2: bullish exciting
+    ]
+    zones = detect_zones(_make_df(rows))
+    # No missing-base zone between candles 0 and 1 (same direction)
+    # There might be a missing-base zone between candles 1 and 2
+    dbr = [z for z in zones if z.zone_type == "DBR" and z.num_base_candles == 0]
+    assert len(dbr) == 1
+    assert dbr[0].base_start_idx == 1  # turning point is candle 1
+
+
+def test_m17_with_m2_exceptional_distal():
+    """M17: M2 exceptional distal still applies to missing-base zones."""
+    rows = [
+        (130, 131, 95, 109),    # 0: legin with deep wick (low=95, way below turning point)
+        (120, 121, 108, 109),   # 1: turning point (bearish, low=108)
+        (110, 135, 109, 133),   # 2: legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.marking == "Exceptional"
+    # M2: legin low (95) < turning point low (108) → exceptional distal = 95
+    assert z.distal == 95.0
+    # Proximal stays on turning point body top
+    assert z.proximal == 120.0
+
+
+def test_m17_continuation_not_missing_base():
+    """M17: same-direction exciting candles don't form missing-base (no reversal)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: bullish exciting
+        (112, 125, 111, 124),   # 1: bullish exciting (same direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 0
+
+
+def test_m17_gap_in_legout_scores_strength_2():
+    """M17: gap away from turning point in legout → strength 2."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish, high=121, low=108)
+        (122, 140, 121, 138),   # 1: legout opens 122 > turning high 121 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.strength_points == pytest.approx(2.0)
+
+
 def test_m13_p1_overrides_doji():
     """M13: P1 (explosive) takes priority over P2 (doji) — WTW wins."""
     rows = [
@@ -1381,6 +1554,40 @@ def test_no_gap_in_base_extends_normally():
     dbr = [z for z in zones if z.zone_type == "DBR"]
     assert len(dbr) == 1
     assert dbr[0].num_base_candles == 2
+
+
+def test_noise_gap_in_base_ignored():
+    """A gap below 0.1% of price is noise — base extends through it.
+
+    Reproduces the APLAPOLLO bug where a 0.9-point gap on a ~1850 stock
+    (0.05%) falsely terminated the base at 1 candle instead of 2.
+    """
+    rows = [
+        (1878, 1878, 1847, 1855),   # 0: legin (bearish exciting, body_pct=0.74)
+        (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
+        (1833, 1843, 1803, 1826),   # 2: opens 1833 < prev low 1834 → 0.05% gap = NOISE
+        (1835, 1838, 1788, 1794),   # 3: legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbd = [z for z in zones if z.zone_type == "DBD"]
+    assert len(dbd) == 1
+    assert dbd[0].num_base_candles == 2
+    assert dbd[0].base_start_idx == 1
+    assert dbd[0].base_end_idx == 2
+
+
+def test_real_gap_in_base_still_triggers():
+    """A gap above 0.1% still terminates the base (gap-as-legout works)."""
+    rows = [
+        (1878, 1878, 1847, 1855),   # 0: legin (bearish exciting, body_pct=0.74)
+        (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
+        (1830, 1843, 1803, 1826),   # 2: opens 1830 < prev low 1834 → 0.22% gap = REAL
+        (1825, 1830, 1788, 1794),   # 3: additional candle
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbd = [z for z in zones if z.zone_type == "DBD"]
+    assert len(dbd) == 1
+    assert dbd[0].num_base_candles == 1
 
 
 def test_gap_in_base_with_exciting_candle_after():
