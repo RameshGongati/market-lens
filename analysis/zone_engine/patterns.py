@@ -231,20 +231,27 @@ def _m13_proximal_marking(
 
 def _missing_base_marking(
     df: pd.DataFrame, category: str, turning_point_idx: int,
+    legout_start_idx: int,
 ) -> tuple[float, float]:
     """M17: Zone boundary marking for missing-base (instant reversal) zones.
 
-    The turning-point candle (last leg-in candle) provides both edges:
-      * DEMAND: proximal = body top, distal = low
-      * SUPPLY: proximal = body bottom, distal = high
+    Both the turning-point and first legout candle define the zone:
+      * DEMAND: proximal = body bottom of legout, distal = lowest low of both
+      * SUPPLY: proximal = body top of legout, distal = highest high of both
     """
-    o = float(df["Open"].iloc[turning_point_idx])
-    h = float(df["High"].iloc[turning_point_idx])
-    l = float(df["Low"].iloc[turning_point_idx])
-    c = float(df["Close"].iloc[turning_point_idx])
+    tp_o = float(df["Open"].iloc[turning_point_idx])
+    tp_h = float(df["High"].iloc[turning_point_idx])
+    tp_l = float(df["Low"].iloc[turning_point_idx])
+    tp_c = float(df["Close"].iloc[turning_point_idx])
+    lo_o = float(df["Open"].iloc[legout_start_idx])
+    lo_h = float(df["High"].iloc[legout_start_idx])
+    lo_l = float(df["Low"].iloc[legout_start_idx])
+    lo_c = float(df["Close"].iloc[legout_start_idx])
     if category == "demand":
-        return max(o, c), l
-    return min(o, c), h
+        proximal = min(max(tp_o, tp_c), max(lo_o, lo_c))
+        return proximal, min(tp_l, lo_l)
+    proximal = max(min(tp_o, tp_c), min(lo_o, lo_c))
+    return proximal, max(tp_h, lo_h)
 
 
 def _exceptional_distal(
@@ -334,16 +341,20 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                     continue
                 mb_zone_type, mb_category = mb_pattern
 
+                mb_legin_start = _extend_run(candles, turning_point, -1, _MAX_LEG_RUN, n)
+                mb_legout_end = _extend_run(candles, mb_legout_start, +1, _MAX_LEG_RUN, n)
+
+                # Validate using the furthest legout candle — the
+                # turning point is an exciting candle with a wide range,
+                # so a single legout candle may not clear it alone even
+                # though the multi-candle legout clearly does.
                 if not _legout_clears_base(
-                    df, mb_legout_dir, turning_point, turning_point, mb_legout_start,
+                    df, mb_legout_dir, turning_point, turning_point, mb_legout_end,
                 ):
                     i += 1
                     continue
 
-                mb_legin_start = _extend_run(candles, turning_point, -1, _MAX_LEG_RUN, n)
-                mb_legout_end = _extend_run(candles, mb_legout_start, +1, _MAX_LEG_RUN, n)
-
-                mb_proximal, mb_distal = _missing_base_marking(df, mb_category, turning_point)
+                mb_proximal, mb_distal = _missing_base_marking(df, mb_category, turning_point, mb_legout_start)
 
                 # Trim legout: candle opening outside zone and touching back
                 for trim_idx in range(mb_legout_start + 1, mb_legout_end + 1):

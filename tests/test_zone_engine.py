@@ -1279,9 +1279,8 @@ def test_m17_missing_base_demand_dbr():
     assert z.category == "demand"
     assert z.num_base_candles == 0
     assert z.proximal_marking == "Missing-Base"
-    # Turning point (candle 1): O=120, H=121, L=108, C=109
-    # proximal = body top = max(120, 109) = 120
-    # distal = low = 108
+    # Turning point (candle 1): O=120, C=109 → proximal = body top = 120
+    # Distal = lowest low of tp/legout = min(108, 109) = 108
     assert z.proximal == 120.0
     assert z.distal == 108.0
     assert z.base_start_idx == 1
@@ -1303,9 +1302,8 @@ def test_m17_missing_base_supply_rbd():
     assert z.category == "supply"
     assert z.num_base_candles == 0
     assert z.proximal_marking == "Missing-Base"
-    # Turning point (candle 1): O=110, H=122, L=109, C=121
-    # proximal = body bottom = min(110, 121) = 110
-    # distal = high = 122
+    # Turning point (candle 1): O=110, C=121 → proximal = body bottom = 110
+    # Distal = highest high of tp/legout = max(122, 121) = 122
     assert z.proximal == 110.0
     assert z.distal == 122.0
 
@@ -1348,6 +1346,21 @@ def test_m17_legout_must_clear_turning_point():
     zones = detect_zones(_make_df(rows))
     dbr = [z for z in zones if z.zone_type == "DBR"]
     assert len(dbr) == 0
+
+
+def test_m17_multi_candle_legout_clears():
+    """M17: single legout candle doesn't clear turning point, but extended legout does."""
+    rows = [
+        (150, 155, 148, 149),   # 0: bearish legin
+        (148, 149, 130, 131),   # 1: turning point (bearish exciting, high=149)
+        (132, 140, 131, 139),   # 2: bullish exciting but close=139 < turning high=149
+        (140, 152, 139, 151),   # 3: bullish exciting, high=152 > turning high=149 ✓
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 0
 
 
 def test_m17_legin_extends_backwards():
@@ -1405,9 +1418,9 @@ def test_m17_with_m2_exceptional_distal():
     assert len(dbr) == 1
     z = dbr[0]
     assert z.marking == "Exceptional"
-    # M2: legin low (95) < turning point low (108) → exceptional distal = 95
+    # M2: legin low (95) < normal distal (min(108,109)=108) → exceptional distal = 95
     assert z.distal == 95.0
-    # Proximal stays on turning point body top
+    # Proximal = body top of turning point = max(120, 109) = 120
     assert z.proximal == 120.0
 
 
