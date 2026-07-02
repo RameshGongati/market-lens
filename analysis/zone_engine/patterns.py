@@ -21,7 +21,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from analysis.zone_engine.candles import CandleInfo, classify_candle
+from analysis.zone_engine.candles import CandleInfo, classify_candle, _MIN_BODY_PCT_OF_PRICE
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.scoring import score_zone
 
@@ -35,10 +35,9 @@ _MAX_SCAN_BASE_CANDLES = 10
 _MAX_LEG_RUN = 6
 
 # Minimum gap size (as fraction of price) for gap-as-legout to fire.
-# Gaps smaller than this between base candles are bid-ask noise, not
-# genuine supply/demand departure.  0.1% filters sub-tick artefacts
-# without blocking any visually meaningful gap.
-_MIN_GAP_LEGOUT_PCT = 0.001
+# Uses the same 1.3% threshold as exciting candle classification —
+# the gap must show institutional conviction, not bid-ask noise.
+_MIN_GAP_LEGOUT_PCT = _MIN_BODY_PCT_OF_PRICE
 
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
@@ -344,13 +343,15 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 mb_legin_start = _extend_run(candles, turning_point, -1, _MAX_LEG_RUN, n)
                 mb_legout_end = _extend_run(candles, mb_legout_start, +1, _MAX_LEG_RUN, n)
 
-                # Validate using the furthest legout candle — the
-                # turning point is an exciting candle with a wide range,
-                # so a single legout candle may not clear it alone even
-                # though the multi-candle legout clearly does.
-                if not _legout_clears_base(
-                    df, mb_legout_dir, turning_point, turning_point, mb_legout_end,
-                ):
+                # Validate: ANY candle in the extended legout must clear
+                # the turning point range.
+                mb_legout_clears = any(
+                    _legout_clears_base(
+                        df, mb_legout_dir, turning_point, turning_point, idx,
+                    )
+                    for idx in range(mb_legout_start, mb_legout_end + 1)
+                )
+                if not mb_legout_clears:
                     i += 1
                     continue
 

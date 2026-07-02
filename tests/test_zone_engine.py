@@ -1447,6 +1447,44 @@ def test_m17_gap_in_legout_scores_strength_2():
     assert z.strength_points == pytest.approx(2.0)
 
 
+def test_m17_first_legout_clears_but_last_does_not():
+    """M17: first legout close clears TP but extended run's last close doesn't.
+
+    Without the ANY-candle fix, only the last extended candle is checked
+    and the zone would be wrongly rejected.
+    """
+    rows = [
+        (130, 131, 118, 119),   # 0: turning point (bearish, high=131)
+        (120, 135, 119, 132),   # 1: legout (bullish, close=132 > tp high 131 ✓)
+        (125, 132, 124, 130),   # 2: extended (bullish exciting, close=130 < 131)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 0
+    assert z.base_start_idx == 0
+
+
+def test_min_body_pct_of_price_rejects_small_candle():
+    """Small candle body relative to price should not qualify as exciting."""
+    info = classify_candle(1878.0, 1878.0, 1847.0, 1855.0)
+    # body=23, range=31 → body_pct=0.74 (passes body-to-range)
+    # body/price=23/1855=1.24% (fails 1.3% min body)
+    assert info["body_pct"] == pytest.approx(23 / 31, rel=1e-6)
+    assert info["is_exciting"] is False
+    assert info["is_boring"] is True
+
+
+def test_min_body_pct_of_price_accepts_large_candle():
+    """Candle body above 1.3% of price should still qualify as exciting."""
+    info = classify_candle(1882.0, 1882.0, 1847.0, 1855.0)
+    # body=27, range=35 → body_pct=0.77 (passes body-to-range)
+    # body/price=27/1855=1.46% (passes 1.3% min body)
+    assert info["is_exciting"] is True
+    assert info["is_boring"] is False
+
+
 def test_m13_p1_overrides_doji():
     """M13: P1 (explosive) takes priority over P2 (doji) — WTW wins."""
     rows = [
@@ -1525,14 +1563,13 @@ def test_gap_up_in_base_forms_zone_with_gap_as_legout():
     rows = [
         (120, 121, 100, 101),   # 0: legin (bearish exciting)
         (101, 103, 98, 102),    # 1: base candle 1 (boring)
-        (104, 106, 100, 105),   # 2: opens 104 > prev high 103 → GAP UP = bullish legout
-        (106, 125, 105, 124),   # 3: additional candle (not part of this zone's legout)
+        (106, 108, 102, 107),   # 2: opens 106 > prev high 103 → 2.9% GAP UP = legout
+        (108, 125, 107, 124),   # 3: additional candle
     ]
     zones = detect_zones(_make_df(rows))
     dbr = [z for z in zones if z.zone_type == "DBR"]
     assert len(dbr) == 1
     z = dbr[0]
-    # Base = [1] (1 candle), gap at candle 2 is the legout departure
     assert z.num_base_candles == 1
     assert z.base_start_idx == 1
     assert z.base_end_idx == 1
@@ -1543,8 +1580,8 @@ def test_gap_down_in_base_forms_supply_zone():
     rows = [
         (100, 112, 99, 111),    # 0: legin (bullish exciting)
         (111, 114, 108, 110),   # 1: base candle 1 (boring)
-        (107, 110, 105, 109),   # 2: opens 107 < prev low 108 → GAP DOWN = bearish legout
-        (108, 109, 90, 92),     # 3: additional candle
+        (106, 110, 103, 108),   # 2: opens 106 < prev low 108 → 1.9% GAP DOWN = legout
+        (107, 109, 90, 92),     # 3: additional candle
     ]
     zones = detect_zones(_make_df(rows))
     rbd = [z for z in zones if z.zone_type == "RBD"]
@@ -1570,13 +1607,13 @@ def test_no_gap_in_base_extends_normally():
 
 
 def test_noise_gap_in_base_ignored():
-    """A gap below 0.1% of price is noise — base extends through it.
+    """A gap below 1.3% of price is noise — base extends through it.
 
     Reproduces the APLAPOLLO bug where a 0.9-point gap on a ~1850 stock
     (0.05%) falsely terminated the base at 1 candle instead of 2.
     """
     rows = [
-        (1878, 1878, 1847, 1855),   # 0: legin (bearish exciting, body_pct=0.74)
+        (1882, 1882, 1847, 1855),   # 0: legin (bearish exciting, body/price=1.46%)
         (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
         (1833, 1843, 1803, 1826),   # 2: opens 1833 < prev low 1834 → 0.05% gap = NOISE
         (1835, 1838, 1788, 1794),   # 3: legout (bearish exciting)
@@ -1590,12 +1627,12 @@ def test_noise_gap_in_base_ignored():
 
 
 def test_real_gap_in_base_still_triggers():
-    """A gap above 0.1% still terminates the base (gap-as-legout works)."""
+    """A gap above 1.3% of price terminates the base (gap-as-legout works)."""
     rows = [
-        (1878, 1878, 1847, 1855),   # 0: legin (bearish exciting, body_pct=0.74)
+        (1882, 1882, 1847, 1855),   # 0: legin (bearish exciting, body/price=1.46%)
         (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
-        (1830, 1843, 1803, 1826),   # 2: opens 1830 < prev low 1834 → 0.22% gap = REAL
-        (1825, 1830, 1788, 1794),   # 3: additional candle
+        (1808, 1843, 1780, 1800),   # 2: opens 1808 < prev low 1834 → 1.42% gap = REAL
+        (1795, 1800, 1760, 1770),   # 3: additional candle
     ]
     zones = detect_zones(_make_df(rows))
     dbd = [z for z in zones if z.zone_type == "DBD"]
@@ -1625,7 +1662,7 @@ def test_gap_legout_has_gap_true_for_scoring():
     rows = [
         (120, 121, 100, 101),   # 0: legin (bearish exciting)
         (101, 103, 98, 102),    # 1: base candle 1 (boring)
-        (104, 106, 100, 105),   # 2: gap up (boring) → gap is legout
+        (106, 108, 102, 107),   # 2: gap up (boring, 106 > 103 → 2.9% gap) → gap is legout
     ]
     zones = detect_zones(_make_df(rows))
     dbr = [z for z in zones if z.zone_type == "DBR"]
@@ -1641,7 +1678,7 @@ def test_gap_only_legout_not_explosive_wide_base_gets_btw():
     rows = [
         (120, 121, 100, 101),   # 0: legin (bearish exciting)
         (101, 108, 95, 103),    # 1: base (boring, wide wicks: body=2/13, high=108, low=95)
-        (109, 111, 106, 110),   # 2: gap up (boring, opens 109 > prev high 108)
+        (110, 113, 107, 112),   # 2: gap up (boring, opens 110 > prev high 108 → 1.9% gap)
     ]
     zones = detect_zones(_make_df(rows))
     dbr = [z for z in zones if z.zone_type == "DBR"]
