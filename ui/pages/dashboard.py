@@ -142,7 +142,7 @@ def render_dashboard() -> None:
     # Stage D — read the two-axis selections; analysis_type IS primary_strategy
     # now that the Stage B temporary bridge is removed and real routing is live.
     # Stage C keeps driving timeframe via get_timeframe(trading_type).
-    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    trading_type = st.session_state.get("trading_type", "Options Trading")
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
     enhancers: list[str] = st.session_state.get("enhancers", [])
     analysis_type = primary_strategy  # "Demand/Supply Zones" or "Trend Following (SMA50/EMA20)"
@@ -509,7 +509,7 @@ def _render_detail_view() -> None:
     # Stage C: the chart data must match the analysis timeframe so that zone
     # overlays and Fibonacci lines land on the same bars as the analysis.
     # Cache key includes trading_type so switching type invalidates old cache.
-    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    trading_type = st.session_state.get("trading_type", "Options Trading")
     cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
     history_df = st.session_state.get(cache_key)
 

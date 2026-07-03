@@ -61,9 +61,9 @@ def _init_two_axis_state() -> None:
     on the very first render.
     """
     prefs = load_preferences()
-    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Short-term Trading"))
+    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Options Trading"))
     st.session_state.setdefault("primary_strategy", prefs.get("primary_strategy", "Demand/Supply Zones"))
-    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Short-term Trading")["enhancers"]))
+    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Options Trading")["enhancers"]))
     # Derive use_fibonacci from the persisted enhancers so the dashboard
     # doesn't see a stale False value before the user changes anything.
     st.session_state.setdefault(
@@ -90,7 +90,7 @@ def _on_trading_type_change() -> None:
     snap back to Demand/Supply Zones + Fibonacci).  After the reset the user can
     freely override both — this callback only fires on an explicit type change.
     """
-    new_type: str = st.session_state.get("sidebar_trading_type", "Short-term Trading")
+    new_type: str = st.session_state.get("sidebar_trading_type", "Options Trading")
     defaults = get_defaults(new_type)
     new_primary: str = defaults["primary"]  # type: ignore[assignment]
     new_enhancers: list[str] = list(defaults["enhancers"])  # type: ignore[arg-type]
@@ -203,7 +203,7 @@ def render_sidebar() -> None:
         # ---------- Watchlist ----------
         st.markdown("**Watchlist**")
         _WL_SOURCES = ["My Watchlists", "Index Watchlists", "All NSE Stocks"]
-        st.session_state.setdefault("watchlist_source", "My Watchlists")
+        st.session_state.setdefault("watchlist_source", "Index Watchlists")
         wl_source = st.radio(
             "Watchlist source",
             _WL_SOURCES,
@@ -319,7 +319,7 @@ def render_sidebar() -> None:
 
         # ---------- Trading Type (axis 1) ----------
         st.markdown("**Trading Type**")
-        _tt = st.session_state.get("trading_type", "Short-term Trading")
+        _tt = st.session_state.get("trading_type", "Options Trading")
         _tt_idx = TRADING_TYPES.index(_tt) if _tt in TRADING_TYPES else 0
         st.radio(
             "Trading Type",

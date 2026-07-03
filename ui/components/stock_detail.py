@@ -206,7 +206,7 @@ def render_stock_detail(
     # Stage C: show the effective timeframe alongside analysis type.
     # Prefer the session-state label (which reflects any intraday fallback)
     # over the configured label from get_timeframe().
-    _trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    _trading_type = st.session_state.get("trading_type", "Options Trading")
     _tf_label = st.session_state.get("_used_tf_label") or interval_display_label(
         get_timeframe(_trading_type)["interval"]
     )
@@ -248,7 +248,7 @@ def render_stock_detail(
     # the trading-type default.  Changing it re-fetches data AND re-runs
     # analysis at the new interval so chart overlays stay consistent.
     # -----------------------------------------------------------------------
-    _trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    _trading_type = st.session_state.get("trading_type", "Options Trading")
     _default_label = default_interval_label(_trading_type)
     _iv_key = f"detail_interval_radio_{symbol}"
     # Initialise to the trading-type default on first open for this stock.

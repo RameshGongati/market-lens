@@ -45,7 +45,7 @@ def render_settings() -> None:
         p1, p2 = st.columns(2)
         with p1:
             st.markdown(f"**Data Source:** {prefs.get('selected_data_source', 'Yahoo Finance')}")
-            st.markdown(f"**Trading Type:** {prefs.get('trading_type', 'Short-term Trading')}")
+            st.markdown(f"**Trading Type:** {prefs.get('trading_type', 'Options Trading')}")
             st.markdown(f"**Primary Strategy:** {prefs.get('primary_strategy', 'Demand/Supply Zones')}")
         with p2:
             _enh = prefs.get("enhancers") or []
