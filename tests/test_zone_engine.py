@@ -402,27 +402,104 @@ def test_m3_zero_returns_stays_fresh():
 
 
 # ---------------------------------------------------------------------------
-# M3: zone invalidated when price breaches the distal line
+# M3 + M46: zone invalidation — CLOSE beyond distal (wick is noise)
 # ---------------------------------------------------------------------------
 
-_DBR_INVALIDATED_ROWS = [
-    (120, 121, 110, 111),   # 0: legin (bearish, exciting)
-    (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
-    (114, 125, 113, 124),   # 3: legout (bullish, exciting)
-    (124, 128, 120, 126),   # 4: away from zone
-    (118, 120, 107, 119),   # 5: low=107 < distal=108 -> zone invalidated
-]
-
-
-def test_m3_zone_invalidated_when_distal_breached():
-    """GTF M3: if price crosses the distal line the zone is dead and must
-    not appear in the detected zones list."""
-    df = _make_df(_DBR_INVALIDATED_ROWS)
+def test_m46_demand_wick_below_distal_but_close_above_survives():
+    """GTF M46: a demand zone whose distal is wicked through but the candle
+    CLOSES above the distal line is NOT invalidated — the wick is noise
+    (stop-hunt / spring), only the close counts."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (118, 120, 107, 119),   # 5: low=107 < distal=108 (wick breach), but close=119 > 108
+    ]
+    df = _make_df(rows)
     zones = detect_zones(df)
 
     dbr = [z for z in zones if z.zone_type == "DBR"]
-    assert len(dbr) == 0
+    assert len(dbr) == 1, "zone survives — wick through distal but close held"
+    zone = dbr[0]
+    assert zone.activation_touch is True
+    assert zone.is_fresh is True
+
+
+def test_m46_demand_close_below_distal_invalidated():
+    """GTF M46: a demand zone where price CLOSES below the distal line
+    is invalidated — this is a genuine breach, not just noise."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (110, 112, 106, 107),   # 5: close=107 < distal=108 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0, "zone invalidated — close below distal"
+
+
+def test_m46_supply_wick_above_distal_but_close_below_survives():
+    """GTF M46: a supply zone whose distal is wicked through but the candle
+    CLOSES below the distal line is NOT invalidated."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (100, 113, 99, 111),    # 5: high=113 > distal=112 (wick breach), but close=111 < 112
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1, "zone survives — wick through distal but close held"
+    zone = rbd[0]
+    assert zone.activation_touch is True
+    assert zone.is_fresh is True
+
+
+def test_m46_supply_close_above_distal_invalidated():
+    """GTF M46: a supply zone where price CLOSES above the distal line
+    is invalidated."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (100, 114, 99, 113),    # 5: close=113 > distal=112 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 0, "zone invalidated — close above distal"
+
+
+def test_m46_close_exactly_at_distal_survives():
+    """GTF M46: close exactly at the distal line means the level held —
+    strict inequality required for invalidation."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (110, 112, 106, 108),   # 5: close=108 == distal=108 → survives (held the line)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — close at distal means level held"
 
 
 # ---------------------------------------------------------------------------

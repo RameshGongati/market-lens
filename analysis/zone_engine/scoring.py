@@ -127,13 +127,14 @@ def zone_strength_label(legout_candles: Sequence[CandleInfo]) -> str:
 def count_zone_tests(
     df: pd.DataFrame, category: str, proximal: float, distal: float, start_idx: int,
 ) -> tuple[int, bool, bool]:
-    """Rule: Count complete test cycles and detect zone invalidation (GTF M3).
+    """Rule: Count complete test cycles and detect zone invalidation (GTF M3 + M46).
 
     A test cycle is one complete round-trip: price enters the zone
-    (crosses proximal) AND exits back through the proximal line.
+    (crosses proximal via wick) AND exits back through the proximal line.
     ``activation_touch`` is a boolean — True when price has entered the
-    zone at least once.  Zone invalidation occurs when price crosses the
-    distal line at any point after the legout.
+    zone at least once.  Zone invalidation (M46) occurs only when price
+    CLOSES beyond the distal line — a wick through the distal is noise
+    (stop-hunt / spring), not a real breach.
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
@@ -154,13 +155,19 @@ def count_zone_tests(
     for idx in range(max(start_idx, 0), n):
         low = float(df["Low"].iloc[idx])
         high = float(df["High"].iloc[idx])
+        close = float(df["Close"].iloc[idx])
 
+        # M46 (closing concept): test-counting uses the WICK (low/high)
+        # because a wick into the zone means the zone was probed.
+        # Invalidation uses the CLOSE because a wick through the distal
+        # is noise (stop-hunt / spring) — only a close beyond proves
+        # the zone is broken.  Strict inequality: close AT distal = held.
         if category == "demand":
             in_zone = low <= proximal
-            breached = low < distal
+            breached = close < distal
         else:
             in_zone = high >= proximal
-            breached = high > distal
+            breached = close > distal
 
         if breached:
             activation_touch = True
