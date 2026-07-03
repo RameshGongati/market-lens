@@ -69,6 +69,11 @@ class Zone:
     activation_touch: bool = False  # True when price has entered zone at least once
     marking: str = "Normal"         # "Normal" | "Exceptional" — which distal is active (M2)
     proximal_marking: str = "Body-to-Wick"  # "Body-to-Wick" | "Wick-to-Wick" — M13 proximal choice
+    # M8: closing concept — did the leg-out CLOSE beyond the nearest
+    # opposing zone's proximal?  "strong" = yes (orders absorbed),
+    # "weak" = no (wick only, departure unconvincing),
+    # "unchecked" = no opposing zone found in the leg-out's path.
+    closing_quality: str = "unchecked"
 
     # --- Stage 2 context (additive — never folded into odd_score) --------
     trend_at_zone: str = ""         # "UP" | "DOWN" | "SIDEWAYS" at evaluation time

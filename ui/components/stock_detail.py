@@ -875,6 +875,12 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
         flags = ""
         if zone.get("marking") == "Exceptional":
             flags += " | Exceptional"
+        # M8: closing concept — show Strong/Weak Close, hide Unchecked.
+        _cq = zone.get("closing_quality", "unchecked")
+        if _cq == "strong":
+            flags += " | Strong Close"
+        elif _cq == "weak":
+            flags += " | Weak Close"
         if zone.get("ema20_enhancer"):
             flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for

@@ -7,11 +7,14 @@ label derived from the legout candles. Each helper's docstring cites the
 exact rule it encodes.
 """
 
+from __future__ import annotations
+
 from typing import Sequence, TypedDict
 
 import pandas as pd
 
 from analysis.zone_engine.candles import CandleInfo
+from analysis.zone_engine.models import Zone
 
 # Rule: Freshness points — how many times has price re-tested the zone since
 # the legout completed?
@@ -300,3 +303,132 @@ def confluence_rating(ema20_enhancer: bool, fib_result: dict) -> ConfluenceRatin
         label = "None"
 
     return ConfluenceRating(confluence_score=score, confluence_label=label, factors=factors)
+
+
+# ---------------------------------------------------------------------------
+# M8: Closing concept — leg-out quality vs. opposing zones
+# ---------------------------------------------------------------------------
+
+def assess_closing_quality(zones: list[Zone], df: pd.DataFrame) -> None:
+    """M8 (closing concept): for each zone, check whether its leg-out
+    CLOSED beyond the nearest opposing zone's proximal line.
+
+    A close beyond proves the opposing orders were absorbed (strong
+    departure).  A wick-only penetration or a close that fell short
+    means the departure is unconvincing (weak).  When no opposing zone
+    sits in the leg-out's path, the check is inapplicable (unchecked).
+
+    Mutates ``zone.closing_quality`` in place:
+      * ``"strong"``    — leg-out close cleared the opposing proximal
+      * ``"weak"``      — leg-out close did NOT clear
+      * ``"unchecked"`` — no opposing zone in the leg-out's path
+
+    This is a quality flag only — it does NOT change the ODD score.
+
+    Args:
+        zones: The full list of detected (non-invalidated) zones,
+               in chronological order (by ``created_at_index``).
+        df:    The OHLCV DataFrame used during detection.
+    """
+    for i, zone in enumerate(zones):
+        opposing = _find_nearest_opposing_zone(zone, zones[:i], df)
+        if opposing is None:
+            zone.closing_quality = "unchecked"
+            continue
+
+        legout_close = float(df["Close"].iloc[zone.legout_idx])
+
+        if zone.category == "demand":
+            # Demand leg-out rallies up — must close ABOVE opposing
+            # supply zone's proximal to prove strength.
+            zone.closing_quality = (
+                "strong" if legout_close > opposing.proximal else "weak"
+            )
+        else:
+            # Supply leg-out drops down — must close BELOW opposing
+            # demand zone's proximal to prove strength.
+            zone.closing_quality = (
+                "strong" if legout_close < opposing.proximal else "weak"
+            )
+
+
+def _find_nearest_opposing_zone(
+    zone: Zone,
+    prior_zones: list[Zone],
+    df: pd.DataFrame,
+) -> Zone | None:
+    """Find the nearest opposing zone whose proximal sits in the leg-out's
+    departure path — the first obstacle the leg-out encountered.
+
+    "Nearest" means closest to the base in price (the first obstacle),
+    not chronologically closest.
+
+    For a DEMAND zone (bullish leg-out):
+      Search for SUPPLY zones whose proximal is between the base top
+      and the leg-out's highest high.
+
+    For a SUPPLY zone (bearish leg-out):
+      Search for DEMAND zones whose proximal is between the base bottom
+      and the leg-out's lowest low.
+
+    Only zones that formed BEFORE this zone (``created_at_index`` <
+    this zone's) are considered — future zones can't be obstacles the
+    leg-out needed to overcome.  Invalidated zones are excluded because
+    they are already absent from the ``zones`` list.
+
+    Args:
+        zone:        The zone being assessed.
+        prior_zones: All zones with ``created_at_index`` < this zone's
+                     (the slice ``zones[:i]`` from the caller).
+        df:          The OHLCV DataFrame for reading leg-out extremes.
+
+    Returns:
+        The nearest opposing Zone, or None if no opposing zone sits
+        in the leg-out's path.
+    """
+    # Determine the leg-out's price range (the path it traversed).
+    legout_start = zone.legout_idx
+    # Find legout end: scan forward from legout_start for exciting
+    # candles in the same direction, bounded by created_at_index of
+    # the next zone or the end of the dataframe.
+    legout_end = legout_start
+    n = len(df)
+    for idx in range(legout_start + 1, n):
+        # Stop at a reasonable bound — legout runs are short.
+        if idx - legout_start > 6:
+            break
+        legout_end = idx
+
+    if zone.category == "demand":
+        # Bullish leg-out: path goes from base top up to leg-out high.
+        base_top = float(df["High"].iloc[zone.base_start_idx: zone.base_end_idx + 1].max())
+        legout_extreme = float(df["High"].iloc[legout_start: legout_end + 1].max())
+
+        # Find supply zones whose proximal is in the leg-out's path.
+        candidates = [
+            z for z in prior_zones
+            if z.category == "supply"
+            and z.created_at_index < zone.created_at_index
+            and base_top < z.proximal <= legout_extreme
+        ]
+        if not candidates:
+            return None
+        # Nearest to base = lowest proximal (first obstacle going up).
+        return min(candidates, key=lambda z: z.proximal)
+
+    else:
+        # Bearish leg-out: path goes from base bottom down to leg-out low.
+        base_bottom = float(df["Low"].iloc[zone.base_start_idx: zone.base_end_idx + 1].min())
+        legout_extreme = float(df["Low"].iloc[legout_start: legout_end + 1].min())
+
+        # Find demand zones whose proximal is in the leg-out's path.
+        candidates = [
+            z for z in prior_zones
+            if z.category == "demand"
+            and z.created_at_index < zone.created_at_index
+            and legout_extreme <= z.proximal < base_bottom
+        ]
+        if not candidates:
+            return None
+        # Nearest to base = highest proximal (first obstacle going down).
+        return max(candidates, key=lambda z: z.proximal)

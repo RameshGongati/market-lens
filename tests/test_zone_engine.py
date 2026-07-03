@@ -26,7 +26,12 @@ from analysis.zone_engine.fibonacci import (
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import confluence_rating, entry_recommendation, time_at_base_points
+from analysis.zone_engine.scoring import (
+    assess_closing_quality,
+    confluence_rating,
+    entry_recommendation,
+    time_at_base_points,
+)
 from analysis.zone_engine.trend import detect_trend
 
 
@@ -1336,6 +1341,137 @@ def test_m13_width_ratio_above_1_5_picks_body_to_wick():
     # ratio = 13/8 = 1.625 > 1.5 → BTW
     assert z.proximal == 103.0
     assert z.proximal_marking == "Body-to-Wick"
+
+
+# ---------------------------------------------------------------------------
+# M8: Closing concept — leg-out quality vs. opposing zones
+# ---------------------------------------------------------------------------
+
+def test_m8_demand_legout_closes_beyond_supply_strong():
+    """M8: demand zone's leg-out closes above the nearest supply zone's
+    proximal → closing_quality = 'strong' (orders absorbed)."""
+    rows = [
+        # --- RBD supply zone (proximal=1904, distal=1912) ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1910),   # 5: legout close=1910 > supply prox=1904 → STRONG
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "strong"
+
+
+def test_m8_demand_legout_wicks_past_supply_but_closes_below_weak():
+    """M8: demand zone's leg-out wicks above the supply proximal but closes
+    below it → closing_quality = 'weak' (departure unconvincing)."""
+    rows = [
+        # --- RBD supply zone (proximal=1904, distal=1912) ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1900),   # 5: legout close=1900 < supply prox=1904 → WEAK
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "weak"
+
+
+def test_m8_no_opposing_zone_unchecked():
+    """M8: when no opposing zone sits in the leg-out's path the closing
+    concept cannot be checked → closing_quality = 'unchecked'."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base (boring)
+        (112, 115, 108, 113),   # 2: base (boring)
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "unchecked"
+
+
+def test_m8_supply_legout_closes_below_demand_strong():
+    """M8: supply zone's leg-out closes below the nearest demand zone's
+    proximal → closing_quality = 'strong'."""
+    rows = [
+        # --- DBR demand zone (proximal=1888, distal=1879) ---
+        (1910, 1911, 1878, 1880),   # 0: legin (bearish, exciting)
+        (1882, 1888, 1879, 1884),   # 1: base (boring)
+        (1885, 1915, 1884, 1912),   # 2: legout (bullish, exciting)
+        # --- RBD supply zone ---
+        (1912, 1940, 1910, 1938),   # 3: legin (bullish, exciting)
+        (1937, 1940, 1933, 1935),   # 4: base (boring)
+        (1934, 1935, 1875, 1878),   # 5: legout close=1878 < demand prox=1888 → STRONG
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].closing_quality == "strong"
+
+
+def test_m8_supply_legout_closes_above_demand_weak():
+    """M8: supply zone's leg-out wicks below the demand proximal but closes
+    above it → closing_quality = 'weak'."""
+    rows = [
+        # --- DBR demand zone (proximal=1888, distal=1879) ---
+        (1910, 1911, 1878, 1880),   # 0: legin (bearish, exciting)
+        (1882, 1888, 1879, 1884),   # 1: base (boring)
+        (1885, 1915, 1884, 1912),   # 2: legout (bullish, exciting)
+        # --- RBD supply zone ---
+        (1912, 1940, 1910, 1938),   # 3: legin (bullish, exciting)
+        (1937, 1940, 1933, 1935),   # 4: base (boring)
+        (1934, 1935, 1875, 1892),   # 5: legout close=1892 > demand prox=1888 → WEAK
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].closing_quality == "weak"
+
+
+def test_m8_closing_quality_does_not_change_odd_score():
+    """M8: closing_quality is a quality flag only — it must NOT change
+    the ODD score."""
+    rows = [
+        # --- RBD supply zone ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1910),   # 5: legout (bullish, exciting) → strong
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    scores_before = {z.zone_type: z.odd_score for z in zones}
+    assess_closing_quality(zones, df)
+    scores_after = {z.zone_type: z.odd_score for z in zones}
+    assert scores_before == scores_after
 
 
 # ---------------------------------------------------------------------------

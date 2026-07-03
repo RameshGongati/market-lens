@@ -55,7 +55,7 @@ from analysis.zone_engine.fibonacci import calculate_fib_levels, fib_confluence,
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import confluence_rating
+from analysis.zone_engine.scoring import assess_closing_quality, confluence_rating
 from analysis.zone_engine.trend import detect_trend
 from utils.logger import get_logger
 
@@ -216,6 +216,10 @@ class DemandSupplyAnalysis(BaseAnalysis):
                     if dt.datetime.now(ist).hour < 16:
                         zone_data = data.iloc[:-1]
             zones = detect_zones(zone_data)
+            # M8: assess closing quality before filtering — each zone's
+            # leg-out is checked against the nearest opposing zone's
+            # proximal to flag strong vs. weak departures.
+            assess_closing_quality(zones, zone_data)
             all_zones_count = len(zones)
             display_zones = filter_zones(zones, current_price)
 

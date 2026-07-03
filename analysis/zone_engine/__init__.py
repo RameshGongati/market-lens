@@ -43,7 +43,13 @@ from analysis.zone_engine.fibonacci import (
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import ConfluenceRating, ZoneScore, confluence_rating, score_zone
+from analysis.zone_engine.scoring import (
+    ConfluenceRating,
+    ZoneScore,
+    assess_closing_quality,
+    confluence_rating,
+    score_zone,
+)
 from analysis.zone_engine.trend import TrendInfo, detect_trend
 
 __all__ = [
@@ -60,6 +66,7 @@ __all__ = [
     "filter_zones",
     "Zone",
     "detect_zones",
+    "assess_closing_quality",
     "ConfluenceRating",
     "ZoneScore",
     "confluence_rating",
