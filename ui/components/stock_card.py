@@ -188,13 +188,20 @@ def render_stock_card(
     """
     st.markdown(card_html, unsafe_allow_html=True)
 
-    if st.button(
-        f"View {symbol} →",
-        key=f"card_btn_{symbol}_{stock_id}",
-        use_container_width=True,
-        type="secondary",
-    ):
-        st.session_state.selected_stock_symbol = symbol
-        st.session_state.selected_stock_id = stock_id
-        st.session_state.active_page = "stock_detail"
-        st.rerun()
+    # Open stock detail in a new browser tab via query-param deep link.
+    _detail_url = f"?stock={symbol}&exchange={exchange}"
+    st.markdown(
+        f"""
+        <a href="{_detail_url}" target="_blank" style="
+            display:block;width:100%;padding:6px 0;
+            text-align:center;font-size:0.85rem;font-weight:600;
+            color:#555;background:#f0f2f6;border:1px solid #ddd;
+            border-radius:6px;text-decoration:none;
+            margin-top:4px;cursor:pointer;
+        " onmouseover="this.style.background='#e0e3ea'"
+          onmouseout="this.style.background='#f0f2f6'">
+            View {symbol} →
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )

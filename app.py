@@ -64,6 +64,17 @@ def main() -> None:
 
     init_session_state()
 
+    # Open-in-new-tab support: if URL has ?stock=SYMBOL, jump straight to
+    # stock detail view so a new browser tab shows the chart directly.
+    _qp_stock = st.query_params.get("stock")
+    if _qp_stock and not st.session_state.get("_qp_handled"):
+        st.session_state.selected_stock_symbol = _qp_stock
+        st.session_state.selected_stock_id = 0
+        st.session_state.active_page = "stock_detail"
+        _qp_exchange = st.query_params.get("exchange", "NSE")
+        st.session_state["_qp_exchange"] = _qp_exchange
+        st.session_state["_qp_handled"] = True
+
     try:
         init_db()
     except Exception as exc:
