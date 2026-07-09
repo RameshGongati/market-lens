@@ -1,8 +1,10 @@
 """Individual stock status card component."""
 
+import html
 import math
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import streamlit as st
 
@@ -62,6 +64,9 @@ def render_stock_card(
     change_sign = "+" if change_pct >= 0 else ""
     change_color = "#28a745" if change_pct >= 0 else "#dc3545"
     company_name = get_company_name(symbol)
+    # HTML-escape symbol and company name so chars like & render correctly.
+    _esc_symbol = html.escape(symbol)
+    _esc_company = html.escape(company_name)
     strength_color = STRENGTH_COLORS.get(strength, "#721c24")
     strength_bg = STRENGTH_BG.get(strength, "#f8d7da")
     ts = format_timestamp(updated_at) if updated_at else ""
@@ -164,9 +169,9 @@ def render_stock_card(
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
             <div>
                 <span style="font-weight:700;font-size:1.05rem;color:{cfg['text']};">
-                    {f"<span style='font-size:0.7rem;background:#6c757d;color:white;padding:1px 5px;border-radius:6px;margin-right:4px;font-weight:600;'>{serial_no}</span>" if serial_no is not None else ""}{icon} {symbol}
+                    {f"<span style='font-size:0.7rem;background:#6c757d;color:white;padding:1px 5px;border-radius:6px;margin-right:4px;font-weight:600;'>{serial_no}</span>" if serial_no is not None else ""}{icon} {_esc_symbol}
                 </span>
-                <div style="font-size:0.75rem;color:#666;margin-top:1px;">{company_name}</div>
+                <div style="font-size:0.75rem;color:#666;margin-top:1px;">{_esc_company}</div>
             </div>
             <div style="text-align:right;">
                 {primary_badge_html}
@@ -181,7 +186,7 @@ def render_stock_card(
             </span>
         </div>
         <div style="font-size:0.76rem;color:#555;margin-top:6px;line-height:1.4;">
-            {summary[:100]}{"…" if len(summary) > 100 else ""}
+            {html.escape(summary[:100])}{"…" if len(summary) > 100 else ""}
         </div>
         {"<div style='font-size:0.68rem;color:#999;margin-top:4px;'>Updated: " + ts + "</div>" if ts else ""}
     </div>
@@ -189,7 +194,8 @@ def render_stock_card(
     st.markdown(card_html, unsafe_allow_html=True)
 
     # Open stock detail in a new browser tab via query-param deep link.
-    _detail_url = f"?stock={symbol}&exchange={exchange}"
+    # URL-encode params so symbols with special chars (e.g. M&M) work correctly.
+    _detail_url = "?" + urlencode({"stock": symbol, "exchange": exchange})
     st.markdown(
         f"""
         <a href="{_detail_url}" target="_blank" style="
@@ -200,7 +206,7 @@ def render_stock_card(
             margin-top:4px;cursor:pointer;
         " onmouseover="this.style.background='#e0e3ea'"
           onmouseout="this.style.background='#f0f2f6'">
-            View {symbol} →
+            View {_esc_symbol} →
         </a>
         """,
         unsafe_allow_html=True,

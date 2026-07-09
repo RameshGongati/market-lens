@@ -183,6 +183,8 @@ def render_stock_detail(
     if st.button("← Back to Dashboard", key="back_btn"):
         st.session_state.active_page = "dashboard"
         st.session_state.selected_stock_symbol = None
+        # Clear query params so the URL doesn't re-trigger stock detail on rerun.
+        st.query_params.clear()
         st.rerun()
 
     status = result.get("status", "neutral")
