@@ -107,7 +107,7 @@ base_width_pct = (base_high - base_low) / price * 100
 
 ## Phase 2-8 — Future Phases
 
-Listed in recommended implementation order within each phase. See `docs/requirements.md` for full specs.
+Listed in recommended implementation order within each phase. See `requirements.md` for full specs.
 
 ### Phase 2: Trade Computation
 1. **M7** — Volatility buffer (ATR-based, needed by M1)
