@@ -98,6 +98,8 @@ python -m pytest tests/ -v
 
 See `docs/requirements.md` for the cross-checked GTF roadmap (Phases 1-8) and `docs/REFINEMENT_PLAN.md` for the prioritized implementation plan.
 
+After completing any task from `docs/requirements.md`, update both `docs/requirements.md` (mark item DONE with commit hash) and `docs/REFINEMENT_PLAN.md` (update current status). Commit doc changes separately from code changes.
+
 ## Gotchas & Non-Obvious Design Decisions
 
 1. **Today's candle drop:** During market hours (before 4 PM IST), `demand_supply.py` drops the last candle from zone detection (`zone_data = data.iloc[:-1]`) because its OHLC values are still changing. The live price is still used for display. This can cause different zone counts/scores depending on when analysis runs.
