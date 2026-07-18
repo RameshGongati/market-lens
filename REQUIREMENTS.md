@@ -1,5 +1,7 @@
 # Market Lens — GTF Methodology Requirements
 
+> **This file is superseded by [`docs/requirements.md`](docs/requirements.md)**, which was cross-checked against the master requirements roadmap and the actual codebase on 2026-07-18. See also [`docs/REFINEMENT_PLAN.md`](docs/REFINEMENT_PLAN.md) for the prioritized implementation roadmap.
+
 This document describes the GTF (Trading in the Zone) demand/supply zone methodology **as implemented in code and validated by tests**. Each rule is identified by its M-number from the GTF course. Items marked `[ASSUMPTION — needs confirmation]` are inferred from roadmap descriptions, not from code or tests.
 
 ---

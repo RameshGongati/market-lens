@@ -96,7 +96,7 @@ python -m pytest tests/ -v
 - **M12** — Narrow base width as quality metric
 - **M65/M66** — LOTL merge + achievement weighting
 
-See `REQUIREMENTS.md` for the full GTF roadmap (Phases 1-8).
+See `docs/requirements.md` for the cross-checked GTF roadmap (Phases 1-8) and `docs/REFINEMENT_PLAN.md` for the prioritized implementation plan.
 
 ## Gotchas & Non-Obvious Design Decisions
 
