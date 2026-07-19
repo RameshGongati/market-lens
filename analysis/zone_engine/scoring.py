@@ -135,9 +135,10 @@ def count_zone_tests(
     A test cycle is one complete round-trip: price enters the zone
     (crosses proximal via wick) AND exits back through the proximal line.
     ``activation_touch`` is a boolean — True when price has entered the
-    zone at least once.  Zone invalidation (M46) occurs only when price
-    CLOSES beyond the distal line — a wick through the distal is noise
-    (stop-hunt / spring), not a real breach.
+    zone at least once.  Zone invalidation (M46) occurs when price
+    breaches the distal line via wick OR close — any penetration past
+    the distal destroys the zone.  Strict inequality: touching exactly
+    at the distal means the level held.
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
@@ -160,17 +161,16 @@ def count_zone_tests(
         high = float(df["High"].iloc[idx])
         close = float(df["Close"].iloc[idx])
 
-        # M46 (closing concept): test-counting uses the WICK (low/high)
-        # because a wick into the zone means the zone was probed.
-        # Invalidation uses the CLOSE because a wick through the distal
-        # is noise (stop-hunt / spring) — only a close beyond proves
-        # the zone is broken.  Strict inequality: close AT distal = held.
+        # M46: test-counting uses the WICK (low/high) because a wick
+        # into the zone means the zone was probed.  Invalidation also
+        # uses the WICK — any penetration past the distal destroys the
+        # zone.  Strict inequality: wick exactly AT distal = held.
         if category == "demand":
             in_zone = low <= proximal
-            breached = close < distal
+            breached = low < distal
         else:
             in_zone = high >= proximal
-            breached = close > distal
+            breached = high > distal
 
         if breached:
             activation_touch = True
