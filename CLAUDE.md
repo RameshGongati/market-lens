@@ -88,7 +88,7 @@ python -m pytest tests/ -v
 | M13  | Proximal marking: WTW vs BTW via priority chain (P1 explosive, P2 doji, P3 ratio) |
 | M17  | Missing-base zones: instant reversal, 0 base candles |
 | M28  | Time-at-base scoring: 0-3 candles = 2pts, 4-5 = 1pt, 6+ = 0pts |
-| M46  | Close-based invalidation: only CLOSE beyond distal invalidates (wick = survives) |
+| M46  | Wick-based invalidation: any penetration past distal (wick or close) invalidates |
 
 ## Next Pending Rules
 
@@ -108,7 +108,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 3. **M3 "perpetual zone":** If price enters a zone and never leaves (e.g., 16+ candles with High >= proximal), the test count is 0 — because M3 requires a complete enter+exit cycle. The zone stays "fresh" despite price living inside it.
 
-4. **M46 strict inequality:** Close exactly AT the distal means the zone survives. Only close strictly BEYOND the distal invalidates. This is intentional — the zone boundary is the decision point, not the invalidation point.
+4. **M46 strict inequality:** Wick or close exactly AT the distal means the zone survives. Any penetration strictly BEYOND the distal (wick or close) invalidates. This is intentional — the zone boundary is the decision point, not the invalidation point.
 
 5. **Legout trimming:** After extending the legout run, any candle that opens outside the zone and touches back in is treated as a test (not a legout continuation). This uses the WTW proximal for the check (widest zone boundary).
 

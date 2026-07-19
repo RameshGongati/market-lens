@@ -6,38 +6,14 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 
 ## Immediate — Close Phase 1 Gaps
 
-These gaps were identified as DONE* items during the cross-check. They must be addressed before Phase 1 is considered complete.
+### Resolved
 
-### 1. M3 Prolonged Habitation Logic
+- ~~M3 Prolonged Habitation~~ — Deemed unnecessary (2026-07-20). Enter+exit cycle counting correctly handles all real-world cases (e.g., NHPC consecutive daily tests). No code change needed.
+- ~~M46 Distal Wick Breaches~~ — Resolved by changing M46 to wick-based invalidation (`458ba6c`, 2026-07-20). Any wick past distal now destroys the zone, so a "wick breaches" counter is unnecessary.
 
-**Gap:** When price enters a zone and stays for an extended period without exiting, the current code counts 0 tests (no complete enter+exit cycle). The spec defines supplemental habitation-based counting.
+### Remaining
 
-**What to implement:**
-- Add constants to `scoring.py`:
-  - `_HABITATION_TEST_THRESHOLD = 5`
-  - `_HABITATION_DOUBLE_THRESHOLD = 10`
-- In `count_zone_tests()`, track continuous candles inside the zone (wick touching proximal without exiting)
-- If habitation exceeds 5 candles: +1 test (supplements round-trip count)
-- If habitation exceeds 10 candles: +2 tests instead (replaces the +1)
-- This is additive: round-trip tests + habitation tests = total
-
-**Files:** `analysis/zone_engine/scoring.py`
-**Tests needed:** Habitation at 4 (no extra), 5 (+1), 10 (+2), habitation + round-trip combined
-
-### 2. M46 Distal Wick Breaches Counter
-
-**Gap:** No tracking of how many candles wick past the distal without closing beyond it. This is a warning signal (zone under pressure) but must NOT auto-invalidate.
-
-**What to implement:**
-- Add field to Zone model: `distal_wick_breaches: int = 0`
-- In `count_zone_tests()`, when a candle's wick crosses distal but close stays inside: increment counter
-- Surface in UI as a warning badge (e.g., "2 wick breaches" in zone detail)
-- Do NOT change invalidation logic (only close beyond distal invalidates)
-
-**Files:** `analysis/zone_engine/models.py`, `analysis/zone_engine/scoring.py`, `ui/components/stock_detail.py`
-**Tests needed:** No breaches, 1 breach, multiple breaches, breach + close invalidation, supply side
-
-### 3. M17 Docstring Fix
+### 1. M17 Docstring Fix
 
 **Gap:** The docstring at `patterns.py:238` says "body bottom of legout" for demand proximal, but the code computes `min(body_top_tp, body_top_legout)` (the more conservative of the two body tops).
 
@@ -58,7 +34,7 @@ These gaps were identified as DONE* items during the cross-check. They must be a
 
 ## Phase 1 Remaining — New Rules
 
-### 4. M10 — Garbage-Area Rejection
+### 2. M10 — Garbage-Area Rejection
 
 **Priority:** High (filters out low-quality zones before they reach the UI)
 
@@ -76,7 +52,7 @@ achievement_ratio = (legout_extreme - proximal) / (proximal - distal)
 
 **Files:** New function in `analysis/zone_engine/scoring.py` or `patterns.py`. Zone model needs `achievement_ratio: float` and possibly `departure_quality: str` fields.
 
-### 5. M12 — Narrow Base Width
+### 3. M12 — Narrow Base Width
 
 **Priority:** Medium (information-only initially)
 
@@ -89,7 +65,7 @@ base_width_pct = (base_high - base_low) / price * 100
 
 **Files:** `analysis/zone_engine/models.py`, `analysis/zone_engine/patterns.py` (compute during detection), `ui/components/stock_detail.py` (display)
 
-### 6. M65/M66 — LOTL Merge + Achievement
+### 4. M65/M66 — LOTL Merge + Achievement
 
 **Priority:** Medium (depends on M8 being fully stable)
 

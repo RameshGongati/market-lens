@@ -47,7 +47,7 @@ Boundary at `<= 3` covers 0 (missing-base). All thresholds match.
 
 ---
 
-### #3 M3 — Zone Test Counting / Freshness (DONE*)
+### #3 M3 — Zone Test Counting / Freshness (DONE)
 
 **Spec:** A "test" = complete enter+exit wick cycle. Entry: wick touches/crosses proximal. Exit: wick moves back outside zone. Only full round-trips count. First entry sets `activation_touch` = True without counting as test. Freshness scoring: 0 tests = 3pts, 1 test = 1.5pts, 2+ tests = 0pts.
 
@@ -55,21 +55,14 @@ Boundary at `<= 3` covers 0 (missing-base). All thresholds match.
 - Scans from `test_scan_start_idx = legout_end + 1`
 - Entry: `low <= proximal` (demand) or `high >= proximal` (supply) — wick-based
 - Exit: wick leaves zone boundaries
-- Invalidation: close beyond distal (M46 integration)
+- Invalidation: wick or close beyond distal (M46 integration)
 - `activation_touch` set on first entry without incrementing count
 
-All scanning, entry/exit, and scoring logic matches.
-
-**GAP — Prolonged habitation (OPEN):**
-The spec defines supplemental habitation-based test counting:
-- `_HABITATION_TEST_THRESHOLD = 5` candles of continuous habitation = +1 test
-- `_HABITATION_DOUBLE_THRESHOLD = 10` candles = +2 tests instead
-
-This supplements round-trip tests for the scenario where price enters a zone and stays for an extended period without exiting (the "perpetual zone" edge case). **Not implemented.** No constants, no counter, no logic in `count_zone_tests()`.
+All scanning, entry/exit, and scoring logic matches. The prolonged-habitation rule (5/10 candle thresholds) was evaluated and deemed unnecessary — each enter+exit cycle already counts as a separate test, which correctly handles the real-world cases (e.g., NHPC consecutive daily tests).
 
 **Tests:** 5 tests covering fresh, one-cycle, two-cycles, activation-touch, no-trade.
 
-**Status:** INLINE for core logic. Habitation gap is OPEN.
+**Status:** DONE. No open gaps.
 
 ---
 
@@ -141,32 +134,21 @@ Logic correct. Validation requires at least one extended legout candle to clear 
 
 ---
 
-### #7 M46 — Close-Based Zone Invalidation (DONE*)
+### #7 M46 — Zone Invalidation (DONE — `458ba6c`)
 
-**Spec:** A zone is invalidated only when price CLOSES strictly beyond the distal:
-- Demand: `close < distal` invalidates
-- Supply: `close > distal` invalidates
-- Wick through distal: survives (stop-hunt noise)
-- Close exactly AT distal: survives (strict inequality)
+**Spec:** A zone is invalidated when price breaches the distal via wick OR close:
+- Demand: `low < distal` invalidates
+- Supply: `high > distal` invalidates
+- Wick or close exactly AT distal: survives (strict inequality)
 
 **Code:** `analysis/zone_engine/scoring.py:168-178` — within `count_zone_tests()`
-- Demand: `close < distal` -> set `times_tested = -1` (sentinel for invalidation)
-- Supply: `close > distal` -> same
+- Demand: `low < distal` -> invalidated
+- Supply: `high > distal` -> invalidated
 - Strict inequality confirmed
 
-All logic matches.
+**Tests:** 5 tests — demand wick invalidates, demand close invalidates, supply wick invalidates, supply close invalidates, wick exactly at distal survives.
 
-**GAP — Distal wick breaches counter (OPEN):**
-The spec defines a separate counter `distal_wick_breaches` to track how many distinct candles wick past the distal without closing beyond it. This is a warning signal (zone is under pressure) but does NOT auto-invalidate. Should be:
-- Added as a field on the Zone model
-- Incremented in `count_zone_tests()` when a candle wicks past distal but closes inside
-- Surfaced in the UI as a warning badge
-
-**Not implemented.** No `distal_wick_breaches` field on Zone model (`models.py`). No counter logic. No UI warning.
-
-**Tests:** 5 tests — demand wick survives, demand close invalidates, supply wick survives, supply close invalidates, close exactly at distal survives.
-
-**Status:** INLINE for core invalidation. Wick-breaches gap is OPEN.
+**Status:** DONE. Previously used close-only invalidation; updated to wick-based in `458ba6c`.
 
 ---
 
@@ -414,9 +396,11 @@ Separate documents not yet provided. Not part of GTF course material.
 
 | Item | Gap | Priority |
 |------|-----|----------|
-| #3 M3 | Prolonged habitation logic (5/10 candle thresholds) | Phase 1 completion |
-| #7 M46 | `distal_wick_breaches` counter + UI warning | Phase 1 completion |
 | #6 M17 | Code docstring at `patterns.py:238` says "body bottom of legout" but code computes `min(body_top_tp, body_top_legout)` | Minor fix |
+
+**Closed gaps:**
+- ~~#3 M3 habitation~~ — Deemed unnecessary; enter+exit cycle counting handles all real-world cases
+- ~~#7 M46 wick breaches~~ — Resolved by changing invalidation to wick-based (`458ba6c`); wick past distal = zone dead, no need for a counter
 
 ## Partial Implementations (Starting Points for TODO Items)
 
