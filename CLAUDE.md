@@ -9,7 +9,7 @@ Market Lens is a Streamlit application for Indian equity market analysis (2,374 
 - **Charts:** Plotly (candlestick + volume subplots with zone/SMA/Fibonacci overlays)
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`) for watchlists, analysis results, alerts, notes; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (340 tests across 11 files)
+- **Tests:** pytest (342 tests across 11 files)
 
 ## Repo Structure
 
@@ -48,7 +48,7 @@ utils/
   export.py                     # Excel + PDF export
   market_hours.py               # NSE market hours, holidays, countdown
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
-tests/                          # 11 test files, 340 tests
+tests/                          # 11 test files, 342 tests
 ```
 
 ## Running Locally
@@ -106,7 +106,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 2. **Extended legout run:** `_extend_run()` walks forward from legout_start while candles are exciting+same direction, up to 6 candles. The `test_scan_start_idx` is `legout_end + 1` (the LAST candle of the extended run + 1), NOT `legout_idx + 1`. Getting this wrong breaks test counting.
 
-3. **M3 "perpetual zone":** If price enters a zone and never leaves (e.g., 16+ candles with High >= proximal), the test count is 0 — because M3 requires a complete enter+exit cycle. The zone stays "fresh" despite price living inside it.
+3. **M3 "perpetual zone":** If price enters a zone and never leaves (e.g., 16+ candles with High >= proximal), the test count is 0 — because M3 requires a complete enter+exit cycle. The zone stays "fresh" despite price living inside it. Note: a candle that enters AND exits on the same bar counts as one complete test (same-bar enter+exit).
 
 4. **M46 strict inequality:** Wick or close exactly AT the distal means the zone survives. Any penetration strictly BEYOND the distal (wick or close) invalidates. This is intentional — the zone boundary is the decision point, not the invalidation point.
 
