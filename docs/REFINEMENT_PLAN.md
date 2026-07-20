@@ -9,7 +9,8 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 ### Resolved
 
 - ~~M3 Prolonged Habitation~~ — Deemed unnecessary (2026-07-20). Enter+exit cycle counting correctly handles all real-world cases (e.g., NHPC consecutive daily tests). No code change needed.
-- ~~M3 Same-Bar Enter+Exit~~ — Fixed (`7c96f2c`, 2026-07-20). A candle that enters AND exits the zone on the same bar now counts as one complete test. Discovered via SBILIFE DBR zone (Jul 16 candle). Entry and exit checks are separate `if` blocks instead of `if/elif`.
+- ~~M3 Same-Bar Enter+Exit~~ — Fixed (`7c96f2c`, 2026-07-20). A candle that enters AND exits the zone on the same bar now counts as one complete test. Entry and exit checks are separate `if` blocks instead of `if/elif`.
+- ~~M3 Close-Based Exit~~ — Fixed (`ba9e212`, 2026-07-20). Exit now requires candle to CLOSE outside the zone, not just wick. A wick that enters the zone but closes inside does not count as tested. Discovered via BAJFINANCE RBD zone (Jul 20 candle).
 - ~~M46 Distal Wick Breaches~~ — Resolved by changing M46 to wick-based invalidation (`458ba6c`, 2026-07-20). Any wick past distal now destroys the zone, so a "wick breaches" counter is unnecessary.
 
 ### Remaining

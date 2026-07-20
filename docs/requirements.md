@@ -49,21 +49,21 @@ Boundary at `<= 3` covers 0 (missing-base). All thresholds match.
 
 ### #3 M3 — Zone Test Counting / Freshness (DONE)
 
-**Spec:** A "test" = complete enter+exit wick cycle. Entry: wick touches/crosses proximal. Exit: wick moves back outside zone. Only full round-trips count — including same-bar enter+exit (a candle whose wick enters the zone and opposing wick exits on the same bar counts as one test). First entry sets `activation_touch` = True without counting as test. Freshness scoring: 0 tests = 3pts, 1 test = 1.5pts, 2+ tests = 0pts.
+**Spec:** A "test" = complete enter+exit cycle. Entry: wick touches/crosses proximal (wick-based). Exit: candle closes outside the zone (close-based). Only full round-trips count — including same-bar enter+exit (a candle whose wick enters the zone and closes outside on the same bar counts as one test). A wick that enters the zone but closes inside does NOT count as a test. First entry sets `activation_touch` = True without counting as test. Freshness scoring: 0 tests = 3pts, 1 test = 1.5pts, 2+ tests = 0pts.
 
-**Code:** `analysis/zone_engine/scoring.py:130-187` — `count_zone_tests()`
+**Code:** `analysis/zone_engine/scoring.py:130-193` — `count_zone_tests()`
 - Scans from `test_scan_start_idx = legout_end + 1`
 - Entry: `low <= proximal` (demand) or `high >= proximal` (supply) — wick-based
-- Exit: `high > proximal` (demand) or `low < proximal` (supply) — checked independently of entry so same-bar cycles count
+- Exit: `close > proximal` (demand) or `close < proximal` (supply) — close-based (`ba9e212`)
 - Invalidation: wick or close beyond distal (M46 integration)
 - `activation_touch` set on first entry without incrementing count
-- Same-bar enter+exit: entry and exit are two separate `if` blocks (not `if/elif`), so a candle that enters AND exits in one bar increments `tests` by 1 (`7c96f2c`)
+- Same-bar enter+exit: entry and exit are two separate `if` blocks (not `if/elif`), so a candle that enters AND closes outside in one bar increments `tests` by 1
 
-All scanning, entry/exit, and scoring logic matches. The prolonged-habitation rule (5/10 candle thresholds) was evaluated and deemed unnecessary — each enter+exit cycle already counts as a separate test, which correctly handles the real-world cases (e.g., NHPC consecutive daily tests, SBILIFE same-bar test on Jul 16 2026).
+All scanning, entry/exit, and scoring logic matches. The prolonged-habitation rule (5/10 candle thresholds) was evaluated and deemed unnecessary — each enter+exit cycle already counts as a separate test, which correctly handles the real-world cases (e.g., NHPC consecutive daily tests, BAJFINANCE Jul 20 2026 wick-entry with close-inside correctly not counted).
 
-**Tests:** 7 tests covering fresh, one-cycle, two-cycles, activation-touch, no-trade, same-bar demand, same-bar supply.
+**Tests:** 9 tests covering fresh, one-cycle, two-cycles, activation-touch, no-trade, same-bar demand, same-bar supply, wick-inside-no-test, close-outside-counts.
 
-**Status:** DONE (`7c96f2c`). No open gaps.
+**Status:** DONE (`ba9e212`). No open gaps.
 
 ---
 
