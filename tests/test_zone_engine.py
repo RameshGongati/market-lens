@@ -505,14 +505,15 @@ def test_m46_wick_exactly_at_distal_survives():
 
 def test_m3_activation_touch_without_complete_cycle():
     """GTF M3: price enters zone but data ends before exit -> activation_touch
-    True, times_tested 0 (no complete cycle)."""
+    True, times_tested 0 (no complete cycle).  The candle must stay fully
+    inside the zone (high <= proximal) to avoid a same-bar exit."""
     rows = [
         (120, 121, 110, 111),   # 0: legin (bearish, exciting)
         (111, 114, 109, 112),   # 1: base candle 1 (boring)
-        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
         (114, 125, 113, 124),   # 3: legout (bullish, exciting)
         (124, 128, 120, 126),   # 4: away from zone
-        (118, 120, 111, 119),   # 5: enters zone (low=111 <= 113), data ends while inside
+        (113, 114, 111, 112),   # 5: enters zone (low=111 <= 115), stays inside (high=114 <= 115)
     ]
     df = _make_df(rows)
     zones = detect_zones(df)
@@ -524,6 +525,53 @@ def test_m3_activation_touch_without_complete_cycle():
     assert zone.is_fresh is True
     assert zone.activation_touch is True
     assert zone.freshness_points == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# M3: same-bar enter+exit counts as one complete test
+# ---------------------------------------------------------------------------
+
+def test_m3_same_bar_enter_exit_counts_as_test():
+    """GTF M3: a candle whose wick enters the zone (low <= proximal) and
+    exits on the same bar (high > proximal) counts as one complete test."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (118, 120, 111, 119),   # 5: enters AND exits zone (low=111 <= 115, high=120 > 115) → test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
+    assert zone.times_tested == 1
+    assert zone.is_fresh is False
+    assert zone.activation_touch is True
+    assert zone.freshness_points == pytest.approx(1.5)
+
+
+def test_m3_same_bar_supply_zone_enter_exit():
+    """GTF M3: supply zone same-bar test — high >= proximal AND low < proximal."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 108, 100, 103),   # 5: enters AND exits (high=108 >= 107, low=100 < 107) → test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 1
+    assert zone.activation_touch is True
 
 
 # ---------------------------------------------------------------------------

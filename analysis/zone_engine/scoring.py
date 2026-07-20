@@ -134,6 +134,8 @@ def count_zone_tests(
 
     A test cycle is one complete round-trip: price enters the zone
     (crosses proximal via wick) AND exits back through the proximal line.
+    A single candle can complete a full cycle if its wick enters the
+    zone AND exits on the same bar (same-bar test).
     ``activation_touch`` is a boolean — True when price has entered the
     zone at least once.  Zone invalidation (M46) occurs when price
     breaches the distal line via wick OR close — any penetration past
@@ -159,17 +161,19 @@ def count_zone_tests(
     for idx in range(max(start_idx, 0), n):
         low = float(df["Low"].iloc[idx])
         high = float(df["High"].iloc[idx])
-        close = float(df["Close"].iloc[idx])
 
-        # M46: test-counting uses the WICK (low/high) because a wick
-        # into the zone means the zone was probed.  Invalidation also
-        # uses the WICK — any penetration past the distal destroys the
-        # zone.  Strict inequality: wick exactly AT distal = held.
+        # M46: invalidation uses the WICK — any penetration past the
+        # distal destroys the zone.  Strict inequality: exactly AT = held.
+        # M3: entry uses the wick (low/high touches proximal), exit uses
+        # the opposing wick (high/low clears proximal).  A candle that
+        # enters AND exits on the same bar counts as one complete test.
         if category == "demand":
             in_zone = low <= proximal
+            exited_zone = high > proximal
             breached = low < distal
         else:
             in_zone = high >= proximal
+            exited_zone = low < proximal
             breached = high > distal
 
         if breached:
@@ -180,7 +184,8 @@ def count_zone_tests(
         if in_zone and not inside:
             inside = True
             activation_touch = True
-        elif not in_zone and inside:
+
+        if inside and exited_zone:
             inside = False
             tests += 1
 
