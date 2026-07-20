@@ -51,19 +51,20 @@ Boundary at `<= 3` covers 0 (missing-base). All thresholds match.
 
 **Spec:** A "test" = complete enter+exit cycle. Entry: wick touches/crosses proximal (wick-based). Exit: candle closes outside the zone (close-based). Only full round-trips count — including same-bar enter+exit (a candle whose wick enters the zone and closes outside on the same bar counts as one test). A wick that enters the zone but closes inside does NOT count as a test. First entry sets `activation_touch` = True without counting as test. Freshness scoring: 0 tests = 3pts, 1 test = 1.5pts, 2+ tests = 0pts.
 
-**Code:** `analysis/zone_engine/scoring.py:130-193` — `count_zone_tests()`
+**Code:** `analysis/zone_engine/scoring.py:135-203` — `count_zone_tests()`
 - Scans from `test_scan_start_idx = legout_end + 1`
 - Entry: `low <= proximal` (demand) or `high >= proximal` (supply) — wick-based
 - Exit: `close > proximal` (demand) or `close < proximal` (supply) — close-based (`ba9e212`)
 - Invalidation: wick or close beyond distal (M46 integration)
+- **Persistent habitation:** once inside, if 4 consecutive candles all close inside the zone, the zone is invalidated — the institutional imbalance is exhausted (`144a0bc`). Counter resets on any close outside (exit). Constant: `_HABITATION_LIMIT = 4`.
 - `activation_touch` set on first entry without incrementing count
 - Same-bar enter+exit: entry and exit are two separate `if` blocks (not `if/elif`), so a candle that enters AND closes outside in one bar increments `tests` by 1
 
-All scanning, entry/exit, and scoring logic matches. The prolonged-habitation rule (5/10 candle thresholds) was evaluated and deemed unnecessary — each enter+exit cycle already counts as a separate test, which correctly handles the real-world cases (e.g., NHPC consecutive daily tests, BAJFINANCE Jul 20 2026 wick-entry with close-inside correctly not counted).
+All scanning, entry/exit, and scoring logic matches. Discovered via ADANIPORTS DBR zone (Jun 30 – Jul 1 2026) where price re-entered and sat inside for 14+ candles without departing.
 
-**Tests:** 9 tests covering fresh, one-cycle, two-cycles, activation-touch, no-trade, same-bar demand, same-bar supply, wick-inside-no-test, close-outside-counts.
+**Tests:** 13 tests covering fresh, one-cycle, two-cycles, activation-touch, no-trade, same-bar demand, same-bar supply, wick-inside-no-test, close-outside-counts, habitation demand, habitation supply, habitation reset, habitation boundary.
 
-**Status:** DONE (`ba9e212`). No open gaps.
+**Status:** DONE (`144a0bc`). No open gaps.
 
 ---
 

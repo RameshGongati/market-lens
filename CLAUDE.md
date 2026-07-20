@@ -9,7 +9,7 @@ Market Lens is a Streamlit application for Indian equity market analysis (2,374 
 - **Charts:** Plotly (candlestick + volume subplots with zone/SMA/Fibonacci overlays)
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`) for watchlists, analysis results, alerts, notes; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (344 tests across 11 files)
+- **Tests:** pytest (348 tests across 11 files)
 
 ## Repo Structure
 
@@ -48,7 +48,7 @@ utils/
   export.py                     # Excel + PDF export
   market_hours.py               # NSE market hours, holidays, countdown
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
-tests/                          # 11 test files, 344 tests
+tests/                          # 11 test files, 348 tests
 ```
 
 ## Running Locally
@@ -82,7 +82,7 @@ python -m pytest tests/ -v
 | Rule | What It Does |
 |------|-------------|
 | M2   | Auto-exceptional distal when leg wick exceeds base wick |
-| M3   | Zone test counting: wick-entry + close-exit cycles |
+| M3   | Zone test counting: wick-entry + close-exit cycles + persistent habitation (4 closes inside = dead) |
 | M5   | Exciting candle: body >= 50% of range AND body >= 1.3% of price |
 | M8   | Closing concept: legout closes beyond opposing zone? strong/weak/unchecked |
 | M13  | Proximal marking: WTW vs BTW via priority chain (P1 explosive, P2 doji, P3 ratio) |
