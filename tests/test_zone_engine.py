@@ -500,6 +500,99 @@ def test_m46_wick_exactly_at_distal_survives():
 
 
 # ---------------------------------------------------------------------------
+# Persistent habitation: 4 consecutive closes inside zone = invalidated
+# ---------------------------------------------------------------------------
+
+def test_persistent_habitation_demand_zone_invalidated():
+    """Persistent habitation: price enters a demand zone and 4 consecutive
+    candles close inside (between proximal and distal) — zone is dead."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone (L=110 <= 115), closes inside (C=112 < 115) — hab=1
+        (111, 114, 109, 113),   # 6: inside, closes inside (C=113 < 115) — hab=2
+        (112, 114, 110, 111),   # 7: inside, closes inside (C=111 < 115) — hab=3
+        (111, 113, 109, 112),   # 8: inside, closes inside (C=112 < 115) — hab=4 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0, "zone invalidated by persistent habitation"
+
+
+def test_persistent_habitation_supply_zone_invalidated():
+    """Persistent habitation: supply zone with 4 consecutive closes inside."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (104, 106, 103, 106),   # 5: enters (H=106 >= 105), closes inside (C=106, 105 < 106 < 112) — hab=1
+        (106, 108, 104, 107),   # 6: inside, closes inside (C=107) — hab=2
+        (107, 109, 105, 108),   # 7: inside, closes inside (C=108) — hab=3
+        (108, 110, 106, 109),   # 8: inside, closes inside (C=109) — hab=4 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 0, "zone invalidated by persistent habitation"
+
+
+def test_persistent_habitation_resets_on_exit():
+    """Persistent habitation counter resets when a candle closes outside
+    the zone (completing a test cycle).  3 inside + exit + 3 inside = OK."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone, closes inside — hab=1
+        (111, 114, 109, 113),   # 6: closes inside — hab=2
+        (112, 114, 110, 111),   # 7: closes inside — hab=3
+        (112, 118, 110, 116),   # 8: closes OUTSIDE (C=116 > 115) → test #1, hab resets to 0
+        (114, 115, 111, 113),   # 9: re-enters, closes inside — hab=1
+        (112, 114, 109, 112),   # 10: closes inside — hab=2
+        (111, 113, 110, 112),   # 11: closes inside — hab=3 (still below 4, survives)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — habitation counter reset by exit"
+    zone = dbr[0]
+    assert zone.times_tested == 1
+
+
+def test_persistent_habitation_exactly_3_survives():
+    """3 consecutive closes inside the zone is below the limit — zone survives."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone, closes inside — hab=1
+        (111, 114, 109, 113),   # 6: closes inside — hab=2
+        (112, 114, 110, 111),   # 7: closes inside — hab=3 (below limit, survives)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — only 3 consecutive closes inside"
+    zone = dbr[0]
+    assert zone.times_tested == 0
+    assert zone.activation_touch is True
+
+
+# ---------------------------------------------------------------------------
 # M3: activation touch true when zone entered but no exit yet
 # ---------------------------------------------------------------------------
 

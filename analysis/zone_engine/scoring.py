@@ -127,21 +127,32 @@ def zone_strength_label(legout_candles: Sequence[CandleInfo]) -> str:
     return "Normal"
 
 
+# Persistent habitation: if price re-enters the zone and N consecutive
+# candles all close inside (between proximal and distal), the zone's
+# institutional imbalance is exhausted and the zone is invalidated.
+_HABITATION_LIMIT = 4
+
+
 def count_zone_tests(
     df: pd.DataFrame, category: str, proximal: float, distal: float, start_idx: int,
 ) -> tuple[int, bool, bool]:
-    """Rule: Count complete test cycles and detect zone invalidation (GTF M3 + M46).
+    """Rule: Count test cycles and detect zone invalidation (M3 + M46 + habitation).
 
     A test cycle is one complete round-trip: price enters the zone
     (wick touches proximal) AND exits (candle closes outside the zone).
     Entry is wick-based, exit is close-based.  A single candle can
     complete a full cycle if its wick enters the zone AND it closes
     outside the zone on the same bar (same-bar test).
-    ``activation_touch`` is a boolean — True when price has entered the
-    zone at least once.  Zone invalidation (M46) occurs when price
-    breaches the distal line via wick OR close — any penetration past
-    the distal destroys the zone.  Strict inequality: touching exactly
-    at the distal means the level held.
+
+    ``activation_touch`` is True when price has entered the zone at
+    least once.
+
+    Zone invalidation occurs on any of:
+    - **M46 distal breach:** wick or close past the distal (strict >).
+    - **Persistent habitation:** once inside, if ``_HABITATION_LIMIT``
+      consecutive candles all close inside the zone, the imbalance is
+      exhausted and the zone is dead.  The counter resets whenever a
+      candle closes outside the zone (completing a test cycle).
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
@@ -157,6 +168,7 @@ def count_zone_tests(
     activation_touch = False
     is_invalidated = False
     inside = False
+    consecutive_closes_inside = 0
     n = len(df)
 
     for idx in range(max(start_idx, 0), n):
@@ -164,10 +176,8 @@ def count_zone_tests(
         high = float(df["High"].iloc[idx])
         close = float(df["Close"].iloc[idx])
 
-        # M46: invalidation uses the WICK — any penetration past the
-        # distal destroys the zone.  Strict inequality: exactly AT = held.
-        # M3: entry uses the wick (low/high touches proximal), exit uses
-        # the CLOSE (candle must close outside the zone to complete a test).
+        # M46: distal breach via wick — strict inequality (exactly AT = held)
+        # M3: wick-based entry, close-based exit
         if category == "demand":
             in_zone = low <= proximal
             exited_zone = close > proximal
@@ -188,7 +198,16 @@ def count_zone_tests(
 
         if inside and exited_zone:
             inside = False
+            consecutive_closes_inside = 0
             tests += 1
+
+        # Persistent habitation: count consecutive candles closing inside
+        # the zone.  Resets on any close outside (exit branch above).
+        if inside and not exited_zone:
+            consecutive_closes_inside += 1
+            if consecutive_closes_inside >= _HABITATION_LIMIT:
+                is_invalidated = True
+                break
 
     return tests, activation_touch, is_invalidated
 
