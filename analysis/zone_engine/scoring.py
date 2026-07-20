@@ -133,9 +133,10 @@ def count_zone_tests(
     """Rule: Count complete test cycles and detect zone invalidation (GTF M3 + M46).
 
     A test cycle is one complete round-trip: price enters the zone
-    (crosses proximal via wick) AND exits back through the proximal line.
-    A single candle can complete a full cycle if its wick enters the
-    zone AND exits on the same bar (same-bar test).
+    (wick touches proximal) AND exits (candle closes outside the zone).
+    Entry is wick-based, exit is close-based.  A single candle can
+    complete a full cycle if its wick enters the zone AND it closes
+    outside the zone on the same bar (same-bar test).
     ``activation_touch`` is a boolean — True when price has entered the
     zone at least once.  Zone invalidation (M46) occurs when price
     breaches the distal line via wick OR close — any penetration past
@@ -161,19 +162,19 @@ def count_zone_tests(
     for idx in range(max(start_idx, 0), n):
         low = float(df["Low"].iloc[idx])
         high = float(df["High"].iloc[idx])
+        close = float(df["Close"].iloc[idx])
 
         # M46: invalidation uses the WICK — any penetration past the
         # distal destroys the zone.  Strict inequality: exactly AT = held.
         # M3: entry uses the wick (low/high touches proximal), exit uses
-        # the opposing wick (high/low clears proximal).  A candle that
-        # enters AND exits on the same bar counts as one complete test.
+        # the CLOSE (candle must close outside the zone to complete a test).
         if category == "demand":
             in_zone = low <= proximal
-            exited_zone = high > proximal
+            exited_zone = close > proximal
             breached = low < distal
         else:
             in_zone = high >= proximal
-            exited_zone = low < proximal
+            exited_zone = close < proximal
             breached = high > distal
 
         if breached:

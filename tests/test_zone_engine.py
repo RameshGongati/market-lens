@@ -533,14 +533,14 @@ def test_m3_activation_touch_without_complete_cycle():
 
 def test_m3_same_bar_enter_exit_counts_as_test():
     """GTF M3: a candle whose wick enters the zone (low <= proximal) and
-    exits on the same bar (high > proximal) counts as one complete test."""
+    closes outside (close > proximal) on the same bar counts as one test."""
     rows = [
         (120, 121, 110, 111),   # 0: legin (bearish, exciting)
         (111, 114, 109, 112),   # 1: base candle 1 (boring)
         (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
         (114, 125, 113, 124),   # 3: legout (bullish, exciting)
         (124, 128, 120, 126),   # 4: away from zone
-        (118, 120, 111, 119),   # 5: enters AND exits zone (low=111 <= 115, high=120 > 115) → test #1
+        (118, 120, 111, 119),   # 5: enters AND exits zone (low=111 <= 115, close=119 > 115) → test #1
     ]
     df = _make_df(rows)
     zones = detect_zones(df)
@@ -555,14 +555,58 @@ def test_m3_same_bar_enter_exit_counts_as_test():
 
 
 def test_m3_same_bar_supply_zone_enter_exit():
-    """GTF M3: supply zone same-bar test — high >= proximal AND low < proximal."""
+    """GTF M3: supply zone same-bar test — high >= proximal AND close < proximal."""
     rows = [
         (100, 109, 99, 108),    # 0: legin (bullish, exciting)
         (108, 111, 106, 107),   # 1: base candle 1 (boring)
         (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
         (106, 107, 95, 96),     # 3: legout (bearish, exciting)
         (96, 98, 90, 92),       # 4: away from zone
-        (102, 108, 100, 103),   # 5: enters AND exits (high=108 >= 107, low=100 < 107) → test #1
+        (102, 108, 100, 103),   # 5: enters AND exits (high=108 >= 107, close=103 < 107) → test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 1
+    assert zone.activation_touch is True
+
+
+def test_m3_wick_enters_but_close_inside_no_test():
+    """GTF M3: wick enters zone but close stays inside → not tested.
+    Exit requires CLOSE outside the zone, not just wick."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 106, 100, 106),   # 5: wick enters (H=106 >= 105) but close=106 >= 105 → still inside
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 0
+    assert zone.is_fresh is True
+    assert zone.activation_touch is True
+
+
+def test_m3_close_outside_after_wick_entry_counts():
+    """GTF M3: wick enters zone, close inside on bar 1, next bar closes
+    outside → test counted on bar 2 (close-based exit)."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 106, 100, 106),   # 5: wick enters (H=106 >= 105), close=106 >= 105 → inside zone
+        (105, 106, 100, 104),   # 6: close=104 < 105 → exits zone, test #1
     ]
     df = _make_df(rows)
     zones = detect_zones(df)
