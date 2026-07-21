@@ -27,6 +27,7 @@ from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
 from utils.helpers import format_timestamp
 from utils.market_hours import get_current_ist_time, get_market_countdown, is_market_open, is_trading_day
+from data.nse_indices import refresh_all_watchlists
 from utils.helpers import get_nse_stock_batches, load_predefined_watchlists
 from watchlist.manager import get_all_watchlists
 
@@ -259,6 +260,34 @@ def render_sidebar() -> None:
                 st.session_state["selected_predefined_watchlist"] = selected_pd
                 wl_data = predefined[pd_names.index(selected_pd)]
                 st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
+
+                if st.button("🔄 Refresh Index Lists from NSE", key="refresh_nse_indices",
+                             use_container_width=True):
+                    with st.spinner("Fetching latest lists from NSE..."):
+                        result = refresh_all_watchlists()
+
+                    # Show per-list change details: added/removed stocks
+                    for name in result["updated"]:
+                        changes = result["changes"][name]
+                        parts = []
+                        if changes["added"]:
+                            parts.append(f"Added: {', '.join(changes['added'])}")
+                        if changes["removed"]:
+                            parts.append(f"Removed: {', '.join(changes['removed'])}")
+                        st.success(f"**{name}** ({result['total_symbols'][name]} stocks) — {'; '.join(parts)}")
+
+                    # Lists fetched successfully but no changes detected
+                    if result["unchanged"]:
+                        st.info(
+                            f"Already up to date: {', '.join(result['unchanged'])}"
+                        )
+
+                    # Lists that failed with reason
+                    for fail_msg in result["failed"]:
+                        st.error(f"Failed — {fail_msg}")
+
+                    if result["updated"]:
+                        st.rerun()
             else:
                 st.caption("No predefined watchlists available.")
         else:
