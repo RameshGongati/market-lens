@@ -10,6 +10,7 @@ MAX_STOCKS_PER_WATCHLIST: int = 10
 
 SUPPORTED_DATA_SOURCES: list[str] = [
     "Yahoo Finance",
+    "Jugaad Data (NSE)",
     "NSE India",
     "Zerodha Kite Connect",
     "Upstox API",
@@ -32,6 +33,7 @@ AUTO_REFRESH_INTERVAL: int = 300  # 5 minutes
 # Credentials required per data source
 CREDENTIALS_REQUIRED: dict[str, list[str]] = {
     "Yahoo Finance": [],
+    "Jugaad Data (NSE)": [],
     "NSE India": [],
     "Zerodha Kite Connect": ["api_key", "api_secret", "access_token"],
     "Upstox API": ["api_key", "api_secret", "access_token"],
