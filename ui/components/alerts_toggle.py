@@ -9,13 +9,8 @@ def render_alerts_toggle() -> None:
     Updates ``st.session_state.alerts_on`` on every interaction.
     """
     current = st.session_state.get("alerts_on", False)
-    label = "🔔 Alerts: ON" if current else "🔕 Alerts: OFF"
-    color = "green" if current else "gray"
-
-    st.markdown(
-        f"<span style='color:{color}; font-weight:bold;'>{label}</span>",
-        unsafe_allow_html=True,
-    )
+    # Render the toggle first so its returned value drives the label —
+    # reading session state before the widget renders shows stale state.
     toggled = st.toggle(
         "Enable alerts",
         value=current,
@@ -23,3 +18,10 @@ def render_alerts_toggle() -> None:
         help="When enabled, Market Lens will save alerts for bullish/bearish signals.",
     )
     st.session_state.alerts_on = toggled
+
+    label = "🔔 Alerts: ON" if toggled else "🔕 Alerts: OFF"
+    color = "green" if toggled else "gray"
+    st.markdown(
+        f"<span style='color:{color}; font-weight:bold;'>{label}</span>",
+        unsafe_allow_html=True,
+    )

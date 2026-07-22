@@ -6,6 +6,7 @@ from config.credentials import clear_credentials
 from config.preferences import load_preferences, reset_preferences, save_preferences
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
 from storage.database import clear_all_analysis_history, clear_all_notes, db_path
+from ui.components.alerts_toggle import render_alerts_toggle
 from utils.export import exports_dir
 
 
@@ -78,6 +79,17 @@ def render_settings() -> None:
     if show_tooltip != prefs.get("show_candle_tooltip", True):
         save_preferences({"show_candle_tooltip": show_tooltip})
         st.rerun()
+
+    st.markdown("---")
+
+    # ---------- Alert Settings ----------
+    st.markdown("### 🔔 Alert Settings")
+    with st.container(border=True):
+        render_alerts_toggle()
+        st.caption(
+            "When enabled, Market Lens saves alerts for bullish and bearish "
+            "signals detected during analysis. More alert options coming soon."
+        )
 
     st.markdown("---")
 

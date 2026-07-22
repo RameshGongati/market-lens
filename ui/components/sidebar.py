@@ -22,7 +22,6 @@ from config.trading_config import (
     get_available_primaries,
     get_defaults,
 )
-from ui.components.alerts_toggle import render_alerts_toggle
 from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
 from utils.helpers import format_timestamp
@@ -444,11 +443,6 @@ def render_sidebar() -> None:
                     st.rerun()
                 else:
                     st.warning("Select a watchlist first.")
-
-        st.markdown("---")
-
-        # ---------- Alerts Toggle ----------
-        render_alerts_toggle()
 
         st.markdown("---")
 
