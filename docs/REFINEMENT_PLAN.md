@@ -134,6 +134,17 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ---
 
+## Completed Features (Non-GTF)
+
+### Telegram Alert System (DONE — `55922c9`..`75b2094`, 2026-07-22)
+- Config UI on Settings page with bot token, recipients, conditions
+- Telegram delivery module with HTML-formatted zone proximity messages
+- In-app dashboard alert banner showing stocks near zones
+- Background monitor script (`alert_monitor.py`) for market-hours scanning
+- Three cooldown modes: once-per-zone-per-day, every-approach, once-per-zone-ever
+
+---
+
 ## Implementation Notes
 
 - **No Python code changes** were made during this cross-check. This plan is documentation only.

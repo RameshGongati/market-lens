@@ -404,6 +404,37 @@ Separate documents not yet provided. Not part of GTF course material.
 - ~~#3 M3 habitation~~ — Deemed unnecessary; enter+exit cycle counting handles all real-world cases
 - ~~#7 M46 wick breaches~~ — Resolved by changing invalidation to wick-based (`458ba6c`); wick past distal = zone dead, no need for a counter
 
+---
+
+## Alerts — Telegram Zone Proximity Notifications (DONE — `55922c9`..`75b2094`)
+
+### Alert Configuration (DONE)
+- **Config file:** `config/alert_config.json` (gitignored — contains bot token)
+- **Example:** `config/alert_config.example.json` committed for reference
+- **Settings UI:** Full Telegram alert config on Settings page — master toggle, bot token (masked), recipients table with add/delete, alert conditions (stocks source, proximity threshold, min score, zone type, cooldown)
+- **Persistence:** `config/alert_settings.py` with `load_alert_config()` / `save_alert_config()`
+
+### Telegram Delivery (DONE)
+- **Module:** `alerts/telegram.py`
+- **Functions:** `send_telegram_message()`, `send_to_all_recipients()`, `format_zone_alert()`, `format_test_message()`
+- **Format:** HTML-formatted messages with 📈/📉 icons, price, zone type, score, closing quality, proximal/distal, trend, IST timestamp
+- **Test button:** Settings page has "Send Test Message" to verify bot connectivity
+
+### In-App Alert Badges (DONE)
+- **Module:** `alerts/zone_alert_checker.py`
+- **AlertMatch dataclass:** symbol, current_price, zone, distance_pct, trend
+- **Dashboard banner:** Expandable "🔔 N stocks near zones" at top of results grid — uses cached analysis results, no extra data fetching
+- **Conditions:** Respects configured proximity threshold, min score, and zone type filter
+
+### Background Monitor (DONE)
+- **Script:** `alert_monitor.py` (standalone, not inside Streamlit)
+- **Schedule:** Every 5 minutes during market hours (9:15 AM – 3:30 PM IST, Mon–Fri)
+- **Cooldown:** once-per-zone-per-day, every-approach, or once-per-zone-ever — persisted in alert_history
+- **Code reuse:** Uses same `DemandSupplyAnalysis`, `detect_zones`, `filter_zones` — no duplication
+- **Graceful shutdown:** Handles SIGINT/SIGTERM, saves state before exit
+
+---
+
 ## Partial Implementations (Starting Points for TODO Items)
 
 | Item | What Exists | What's Missing |
