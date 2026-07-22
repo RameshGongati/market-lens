@@ -2,6 +2,7 @@
 
 import streamlit as st
 
+from alerts.telegram import format_test_message, send_to_all_recipients
 from config.alert_settings import load_alert_config, save_alert_config
 from config.credentials import clear_credentials
 from config.preferences import load_preferences, reset_preferences, save_preferences
@@ -365,3 +366,18 @@ def _render_telegram_alert_settings() -> None:
         cfg["conditions"]["cooldown"] = _COOLDOWN_OPTIONS[cooldown]
         save_alert_config(cfg)
         st.success("Alert settings saved.")
+
+    # -- Test message button --
+    st.markdown("#### Test Connection")
+    if st.button("📤 Send Test Message", use_container_width=True):
+        if not bot_token.strip():
+            st.warning("Enter a bot token first.")
+        elif not recipients:
+            st.warning("Add at least one recipient first.")
+        else:
+            msg = format_test_message()
+            result = send_to_all_recipients(bot_token, recipients, msg)
+            for label in result["sent"]:
+                st.success(f"✅ Sent to {label}")
+            for label in result["failed"]:
+                st.error(f"❌ Failed to send to {label}")
