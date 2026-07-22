@@ -7,9 +7,11 @@ import yfinance as yf
 import streamlit as st
 
 from alerts.manager import check_and_trigger_alerts
+from alerts.zone_alert_checker import check_zone_alerts
 from analysis.base import BaseAnalysis
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from config.alert_settings import load_alert_config
 from config.trading_config import get_timeframe
 from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
 from storage.database import get_all_alerts, save_analysis_result
@@ -333,6 +335,28 @@ def _render_filter_sort_bar(
             f"  Affected: {', '.join(_fallback[:5])}"
             + (" …" if len(_fallback) > 5 else "")
         )
+
+    # -- Zone proximity alert banner --
+    try:
+        _alert_cfg = load_alert_config()
+        if _alert_cfg.get("enabled"):
+            _matches = check_zone_alerts(results, _alert_cfg)
+            if _matches:
+                with st.expander(
+                    f"🔔 {len(_matches)} stock{'s' if len(_matches) != 1 else ''} near zones",
+                    expanded=False,
+                ):
+                    for m in _matches:
+                        _cat = m.zone.get("category", "demand")
+                        _icon = "📈" if _cat == "demand" else "📉"
+                        _score = m.zone.get("odd_score", 0)
+                        st.markdown(
+                            f"{_icon} **{m.symbol}** ₹{m.current_price:,.2f} — "
+                            f"{m.distance_pct:.1f}% from {_cat} "
+                            f"(Score {_score})"
+                        )
+    except Exception as exc:
+        logger.warning("Alert banner check failed: %s", exc)
 
     # Initialise filter/sort state with defaults
     st.session_state.setdefault("dash_status_filter", [])
