@@ -145,8 +145,15 @@ class JugaadDataSource(DataSource):
                 "DATE": "Date",
             })
 
-            # Set Date as index (sorted ascending) to match yfinance format
-            df["Date"] = pd.to_datetime(df["Date"])
+            # NSE reports timestamps in UTC (18:30 UTC = midnight IST next day),
+            # so .date() returns the previous calendar day. Convert to IST
+            # and normalize to midnight so dates align with actual trading days.
+            df["Date"] = (
+                pd.to_datetime(df["Date"])
+                .dt.tz_localize("UTC")
+                .dt.tz_convert("Asia/Kolkata")
+                .dt.normalize()
+            )
             df = df.sort_values("Date")
             df = df.set_index("Date")
             df = df[["Open", "High", "Low", "Close", "Volume"]]
