@@ -381,3 +381,21 @@ def _render_telegram_alert_settings() -> None:
                 st.success(f"✅ Sent to {label}")
             for label in result["failed"]:
                 st.error(f"❌ Failed to send to {label}")
+
+    # -- Background monitor instructions --
+    st.markdown("#### Background Monitor")
+    with st.container(border=True):
+        st.markdown(
+            "To run alerts in the background (works when app is closed):"
+        )
+        st.code(
+            "cd /home/gongati/projects/market-lens\n"
+            "source venv/bin/activate\n"
+            "python alert_monitor.py",
+            language="bash",
+        )
+        st.caption(
+            "The monitor checks every 5 minutes during market hours "
+            "(9:15 AM – 3:30 PM IST, Mon–Fri). "
+            "It sleeps automatically outside market hours."
+        )
