@@ -2,11 +2,11 @@
 
 import streamlit as st
 
+from config.alert_settings import load_alert_config, save_alert_config
 from config.credentials import clear_credentials
 from config.preferences import load_preferences, reset_preferences, save_preferences
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
 from storage.database import clear_all_analysis_history, clear_all_notes, db_path
-from ui.components.alerts_toggle import render_alerts_toggle
 from utils.export import exports_dir
 
 
@@ -82,14 +82,9 @@ def render_settings() -> None:
 
     st.markdown("---")
 
-    # ---------- Alert Settings ----------
+    # ---------- Telegram Alert Settings ----------
     st.markdown("### 🔔 Alert Settings")
-    with st.container(border=True):
-        render_alerts_toggle()
-        st.caption(
-            "When enabled, Market Lens saves alerts for bullish and bearish "
-            "signals detected during analysis. More alert options coming soon."
-        )
+    _render_telegram_alert_settings()
 
     st.markdown("---")
 
@@ -157,7 +152,6 @@ def render_settings() -> None:
     st.markdown("### Pending Features Roadmap")
     roadmap = [
         "Dark theme toggle",
-        "Telegram alert notifications",
         "Email alert notifications",
         "Live market news feed",
         "Multi-exchange global support (NYSE, NASDAQ, LSE)",
@@ -177,3 +171,197 @@ def render_settings() -> None:
     ]
     for item in roadmap:
         st.markdown(f"- {item}")
+
+
+# ---------------------------------------------------------------------------
+# Telegram Alert Settings — full config UI
+# ---------------------------------------------------------------------------
+
+_PROXIMITY_OPTIONS = {"0.5%": 0.5, "1%": 1.0, "2%": 2.0, "3%": 3.0}
+_SCORE_OPTIONS = [5.0, 5.5, 6.0, 6.5, 7.0]
+_ZONE_TYPE_OPTIONS = {"Both": "both", "Demand only": "demand", "Supply only": "supply"}
+_COOLDOWN_OPTIONS = {
+    "Once per zone per day": "once_per_zone_per_day",
+    "Every approach": "every_approach",
+    "Once per zone ever": "once_per_zone_ever",
+}
+_STOCKS_SOURCE_OPTIONS = ["Watchlist", "F&O", "All NSE", "Custom"]
+_STOCKS_SOURCE_MAP = {
+    "Watchlist": "watchlist",
+    "F&O": "fno",
+    "All NSE": "all_nse",
+    "Custom": "custom",
+}
+_STOCKS_SOURCE_REVERSE = {v: k for k, v in _STOCKS_SOURCE_MAP.items()}
+
+
+def _render_telegram_alert_settings() -> None:
+    """Render the full Telegram alert configuration UI."""
+    cfg = load_alert_config()
+    tg = cfg.get("telegram", {})
+    cond = cfg.get("conditions", {})
+
+    # -- Master toggle --
+    with st.container(border=True):
+        enabled = st.toggle(
+            "Enable Telegram Alerts",
+            value=cfg.get("enabled", False),
+            key="alert_enabled_toggle",
+            help="When ON, the background monitor sends Telegram messages "
+                 "when stocks approach demand/supply zones.",
+        )
+
+    # -- Telegram bot setup --
+    st.markdown("#### Telegram Setup")
+    with st.expander("How to set up Telegram alerts", expanded=False):
+        st.markdown(
+            "1. Open Telegram, search for **@BotFather**\n"
+            "2. Send `/newbot` and follow the prompts\n"
+            "3. Copy the bot token (looks like `123456:ABC-DEF1234...`)\n"
+            "4. Create a group or channel, add your bot to it\n"
+            "5. Send a message in the group, then visit:\n"
+            "   `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`\n"
+            "   to find your `chat_id`\n"
+            "6. For multiple recipients, add each `chat_id` separately below."
+        )
+
+    with st.container(border=True):
+        bot_token = st.text_input(
+            "Bot Token",
+            value=tg.get("bot_token", ""),
+            type="password",
+            key="alert_bot_token",
+            help="Paste the token from @BotFather. Stored locally, never uploaded.",
+        )
+
+        # -- Recipients table --
+        st.markdown("**Recipients**")
+        recipients: list[dict] = list(tg.get("recipients", []))
+
+        if recipients:
+            for i, recip in enumerate(recipients):
+                rc1, rc2, rc3 = st.columns([3, 4, 1])
+                with rc1:
+                    st.text(recip.get("chat_id", ""))
+                with rc2:
+                    st.text(recip.get("label", ""))
+                with rc3:
+                    if st.button("✕", key=f"del_recip_{i}"):
+                        recipients.pop(i)
+                        cfg["telegram"]["recipients"] = recipients
+                        save_alert_config(cfg)
+                        st.rerun()
+        else:
+            st.caption("No recipients added yet.")
+
+        # Add recipient form
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            new_chat_id = st.text_input(
+                "Chat ID", key="new_chat_id", placeholder="e.g. -1001234567890"
+            )
+        with ac2:
+            new_label = st.text_input(
+                "Label", key="new_label", placeholder="e.g. My Trading Group"
+            )
+        if st.button("Add Recipient", key="add_recipient"):
+            if new_chat_id.strip():
+                recipients.append({
+                    "chat_id": new_chat_id.strip(),
+                    "label": new_label.strip() or new_chat_id.strip(),
+                })
+                cfg["telegram"]["recipients"] = recipients
+                cfg["telegram"]["bot_token"] = bot_token
+                save_alert_config(cfg)
+                st.success(f"Added recipient: {new_label.strip() or new_chat_id.strip()}")
+                st.rerun()
+            else:
+                st.warning("Enter a chat ID first.")
+
+    # -- Alert conditions --
+    st.markdown("#### Alert Conditions")
+    with st.container(border=True):
+        source_label = _STOCKS_SOURCE_REVERSE.get(
+            cond.get("stocks_source", "watchlist"), "Watchlist"
+        )
+        stocks_source = st.selectbox(
+            "Stocks to monitor",
+            options=_STOCKS_SOURCE_OPTIONS,
+            index=_STOCKS_SOURCE_OPTIONS.index(source_label),
+            key="alert_stocks_source",
+        )
+
+        custom_stocks_text = ""
+        if stocks_source == "Custom":
+            custom_stocks_text = st.text_area(
+                "Custom symbols (comma-separated)",
+                value=", ".join(cond.get("custom_stocks", [])),
+                key="alert_custom_stocks",
+                placeholder="RELIANCE, INFY, TCS",
+            )
+
+        prox_labels = list(_PROXIMITY_OPTIONS.keys())
+        prox_current = f"{cond.get('proximity_pct', 1.0)}%"
+        prox_idx = prox_labels.index(prox_current) if prox_current in prox_labels else 1
+        proximity = st.selectbox(
+            "Zone proximity threshold",
+            options=prox_labels,
+            index=prox_idx,
+            key="alert_proximity",
+            help="Alert when CMP is within this distance of a zone's proximal.",
+        )
+
+        score_current = cond.get("min_score", 6.0)
+        score_idx = _SCORE_OPTIONS.index(score_current) if score_current in _SCORE_OPTIONS else 2
+        min_score = st.selectbox(
+            "Minimum ODD score",
+            options=_SCORE_OPTIONS,
+            index=score_idx,
+            key="alert_min_score",
+            format_func=lambda x: str(x),
+        )
+
+        zt_labels = list(_ZONE_TYPE_OPTIONS.keys())
+        zt_current = cond.get("zone_type", "both")
+        zt_label = next((k for k, v in _ZONE_TYPE_OPTIONS.items() if v == zt_current), "Both")
+        zone_type = st.selectbox(
+            "Zone type",
+            options=zt_labels,
+            index=zt_labels.index(zt_label),
+            key="alert_zone_type",
+        )
+
+        cd_labels = list(_COOLDOWN_OPTIONS.keys())
+        cd_current = cond.get("cooldown", "once_per_zone_per_day")
+        cd_label = next(
+            (k for k, v in _COOLDOWN_OPTIONS.items() if v == cd_current),
+            "Once per zone per day",
+        )
+        cooldown = st.selectbox(
+            "Alert cooldown",
+            options=cd_labels,
+            index=cd_labels.index(cd_label),
+            key="alert_cooldown",
+            help="Controls how often you get re-alerted for the same zone.",
+        )
+
+    # -- Save button --
+    if st.button("💾 Save Alert Settings", type="primary", use_container_width=True):
+        cfg["enabled"] = enabled
+        cfg["telegram"]["bot_token"] = bot_token
+        cfg["telegram"]["recipients"] = recipients
+        cfg["conditions"]["stocks_source"] = _STOCKS_SOURCE_MAP.get(
+            stocks_source, "watchlist"
+        )
+        if stocks_source == "Custom" and custom_stocks_text:
+            cfg["conditions"]["custom_stocks"] = [
+                s.strip().upper() for s in custom_stocks_text.split(",") if s.strip()
+            ]
+        else:
+            cfg["conditions"]["custom_stocks"] = []
+        cfg["conditions"]["proximity_pct"] = _PROXIMITY_OPTIONS[proximity]
+        cfg["conditions"]["min_score"] = min_score
+        cfg["conditions"]["zone_type"] = _ZONE_TYPE_OPTIONS[zone_type]
+        cfg["conditions"]["cooldown"] = _COOLDOWN_OPTIONS[cooldown]
+        save_alert_config(cfg)
+        st.success("Alert settings saved.")

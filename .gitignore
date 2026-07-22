@@ -223,3 +223,4 @@ __marimo__/
 *.db-journal
 credentials.json
 .market-lens/
+config/alert_config.json
