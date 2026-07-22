@@ -302,8 +302,12 @@ def _render_telegram_alert_settings() -> None:
             )
 
         prox_labels = list(_PROXIMITY_OPTIONS.keys())
-        prox_current = f"{cond.get('proximity_pct', 1.0)}%"
-        prox_idx = prox_labels.index(prox_current) if prox_current in prox_labels else 1
+        # Match saved value to its display label (avoids float formatting mismatch)
+        prox_val = cond.get("proximity_pct", 1.0)
+        prox_label = next(
+            (k for k, v in _PROXIMITY_OPTIONS.items() if v == prox_val), "1%"
+        )
+        prox_idx = prox_labels.index(prox_label)
         proximity = st.selectbox(
             "Zone proximity threshold",
             options=prox_labels,
@@ -312,7 +316,8 @@ def _render_telegram_alert_settings() -> None:
             help="Alert when CMP is within this distance of a zone's proximal.",
         )
 
-        score_current = cond.get("min_score", 6.0)
+        # Cast to float so JSON int (e.g. 6) matches the float options list
+        score_current = float(cond.get("min_score", 6.0))
         score_idx = _SCORE_OPTIONS.index(score_current) if score_current in _SCORE_OPTIONS else 2
         min_score = st.selectbox(
             "Minimum ODD score",
