@@ -3,9 +3,9 @@
 Implements the institutional "boring vs exciting" candle taxonomy that
 underpins legin/base/legout pattern detection:
 
-  * BORING / BASE candle   : body_pct < 0.50            (consolidation)
-  * EXCITING candle        : body_pct >= 0.50           (directional momentum)
-  * STRONG EXCITING candle : body_pct >= 0.80           (very strong momentum)
+  * BORING / BASE candle   : fails either threshold      (consolidation)
+  * EXCITING candle        : body/price >= 1.3% AND body_pct >= 0.50
+  * STRONG EXCITING candle : exciting AND body_pct >= 0.80
 
 where ``body_pct = abs(close - open) / (high - low)``.
 
@@ -27,6 +27,7 @@ from typing import TypedDict
 # exciting. Retune here after real-world testing.
 _EXCITING_THRESHOLD = 0.50   # body_pct >= 0.50 -> exciting
 _STRONG_THRESHOLD = 0.80     # body_pct >= 0.80 -> strong exciting
+_MIN_BODY_PCT_OF_PRICE = 0.013  # body/price >= 1.3% for exciting
 
 
 class CandleInfo(TypedDict):
@@ -68,9 +69,16 @@ def classify_candle(open_: float, high: float, low: float, close: float) -> Cand
     else:
         direction = "doji"  # DOJI candles carry no conviction -> boring
 
-    # Rule: Candle Classification thresholds (see module docstring).
-    is_exciting = body_pct >= _EXCITING_THRESHOLD
-    is_strong = body_pct >= _STRONG_THRESHOLD
+    # Rule: Minimum absolute body size — small candles lack institutional
+    # conviction regardless of body-to-range ratio.
+    price = close if close > 0 else open_
+    body_pct_of_price = (body / price) if price > 0 else 0.0
+
+    is_exciting = (
+        body_pct_of_price >= _MIN_BODY_PCT_OF_PRICE
+        and body_pct >= _EXCITING_THRESHOLD
+    )
+    is_strong = is_exciting and body_pct >= _STRONG_THRESHOLD
     is_boring = not is_exciting
 
     return CandleInfo(

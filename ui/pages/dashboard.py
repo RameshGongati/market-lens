@@ -142,7 +142,7 @@ def render_dashboard() -> None:
     # Stage D — read the two-axis selections; analysis_type IS primary_strategy
     # now that the Stage B temporary bridge is removed and real routing is live.
     # Stage C keeps driving timeframe via get_timeframe(trading_type).
-    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    trading_type = st.session_state.get("trading_type", "Options Trading")
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
     enhancers: list[str] = st.session_state.get("enhancers", [])
     analysis_type = primary_strategy  # "Demand/Supply Zones" or "Trend Following (SMA50/EMA20)"
@@ -490,6 +490,75 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
             )
 
 
+def _run_single_stock_analysis(symbol: str) -> dict:
+    """Run analysis for a single stock (new-tab / deep-link scenario).
+
+    When the user opens a stock in a new browser tab via ?stock=SYMBOL there
+    are no cached analysis results.  This fetches data and runs the configured
+    analysis strategy so the detail view renders correctly.
+    """
+    exchange = st.session_state.get("_qp_exchange", "NSE")
+    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    trading_type = st.session_state.get("trading_type", "Options Trading")
+    primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
+
+    full_symbol = _make_symbol(symbol, exchange, source_name)
+    ds_manager = DataSourceManager()
+    creds = st.session_state.get("credentials", {}).get(source_name, {})
+    try:
+        if creds:
+            ds_manager.switch_source(source_name, creds)
+        else:
+            ds_manager.switch_source(source_name)
+    except Exception as exc:
+        logger.error("Data source init failed for %s: %s", symbol, exc)
+        return {}
+
+    try:
+        quote = ds_manager.get_quote(full_symbol)
+        hist, _meta = fetch_for_trading_type(
+            full_symbol, trading_type, fetch_fn=ds_manager.get_history
+        )
+        if hist is None:
+            hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+        analyser = get_analyzer_for_primary(primary_strategy)
+        if isinstance(analyser, DemandSupplyAnalysis):
+            result = analyser.analyse(
+                full_symbol, hist,
+                use_fibonacci=st.session_state.get("use_fibonacci", False),
+            )
+        else:
+            result = analyser.analyse(full_symbol, hist)
+
+        _quote_p = _valid_price(quote.get("current_price"))
+        _result_p = _valid_price(result.get("current_price"))
+        current_price = _quote_p if _quote_p is not None else (_result_p or 0.0)
+        change_pct = float(quote.get("change_pct") or 0.0)
+        change = round(current_price * change_pct / 100, 2)
+        result.update({
+            "current_price": current_price,
+            "change_pct": change_pct,
+            "change": change,
+            "stock_id": 0,
+            "exchange": exchange,
+        })
+        return result
+    except Exception as exc:
+        logger.error("Single-stock analysis error for %s: %s", symbol, exc)
+        return {
+            "symbol": symbol,
+            "exchange": exchange,
+            "status": "neutral",
+            "summary": f"Error: {exc}",
+            "current_price": 0.0,
+            "change_pct": 0.0,
+            "change": 0.0,
+            "strength": "Weak",
+            "stock_id": 0,
+        }
+
+
 def _render_detail_view() -> None:
     """Render the detail view for the selected stock."""
     symbol = st.session_state.get("selected_stock_symbol")
@@ -500,16 +569,25 @@ def _render_detail_view() -> None:
 
     results = st.session_state.get("analysis_results", {})
     result = results.get(symbol, {})
+
+    # New-tab support: when opened via ?stock=SYMBOL there are no cached
+    # analysis results.  Run analysis on-the-fly for this single stock.
+    if not result:
+        result = _run_single_stock_analysis(symbol)
+        if result:
+            results[symbol] = result
+            st.session_state.analysis_results = results
+
     # Stage D: analysis_type IS primary_strategy (bridge removed)
     primary_strategy = st.session_state.get("primary_strategy", "Demand/Supply Zones")
     analysis_type = primary_strategy
-    exchange = result.get("exchange", "NSE")
+    exchange = result.get("exchange") or st.session_state.get("_qp_exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
     # Stage C: the chart data must match the analysis timeframe so that zone
     # overlays and Fibonacci lines land on the same bars as the analysis.
     # Cache key includes trading_type so switching type invalidates old cache.
-    trading_type = st.session_state.get("trading_type", "Short-term Trading")
+    trading_type = st.session_state.get("trading_type", "Options Trading")
     cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
     history_df = st.session_state.get(cache_key)
 

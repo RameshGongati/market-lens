@@ -16,6 +16,7 @@ import pandas as pd
 
 from config.trading_config import get_timeframe
 from data.sources.base import DataSource
+from data.sources.jugaad import JugaadDataSource
 from data.sources.nse_india import NSEIndiaSource
 from data.sources.tradingview import TradingViewSource
 from data.sources.upstox import UpstoxSource
@@ -441,6 +442,7 @@ def fetch_by_interval(
 
 _SOURCE_REGISTRY: dict[str, type[DataSource]] = {
     "Yahoo Finance": YahooFinanceSource,
+    "Jugaad Data (NSE)": JugaadDataSource,
     "NSE India": NSEIndiaSource,
     "Zerodha Kite Connect": ZerodhaSource,
     "Upstox API": UpstoxSource,

@@ -21,7 +21,7 @@ def init_session_state() -> None:
         # Two-axis analysis model (Trading Type + Primary Strategy + Enhancers).
         # The sidebar seeds these from saved preferences via _init_two_axis_state;
         # they are listed here so the keys always exist before any page reads them.
-        "trading_type": "Short-term Trading",
+        "trading_type": "Options Trading",
         "primary_strategy": "Demand/Supply Zones",
         "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
         "selected_data_source": "Yahoo Finance",
@@ -63,6 +63,17 @@ def main() -> None:
     )
 
     init_session_state()
+
+    # Open-in-new-tab support: if URL has ?stock=SYMBOL, jump straight to
+    # stock detail view so a new browser tab shows the chart directly.
+    _qp_stock = st.query_params.get("stock")
+    if _qp_stock and not st.session_state.get("_qp_handled"):
+        st.session_state.selected_stock_symbol = _qp_stock
+        st.session_state.selected_stock_id = 0
+        st.session_state.active_page = "stock_detail"
+        _qp_exchange = st.query_params.get("exchange", "NSE")
+        st.session_state["_qp_exchange"] = _qp_exchange
+        st.session_state["_qp_handled"] = True
 
     try:
         init_db()

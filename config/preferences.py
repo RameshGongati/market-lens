@@ -40,7 +40,7 @@ _DEFAULTS: dict[str, Any] = {
     "alerts_on": False,
     "last_analysis_timestamp": None,
     # Two-axis trading-type model (the only analysis model after Stage F).
-    "trading_type": "Short-term Trading",
+    "trading_type": "Options Trading",
     "primary_strategy": "Demand/Supply Zones",
     "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
     # Chart display preferences.

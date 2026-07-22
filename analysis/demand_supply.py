@@ -42,6 +42,8 @@ alias keys (``mid``, ``top``, ``bottom``, ``touches``, ``bar_index``), and
 ``get_strength()``/``result["strength"]``.
 """
 
+import datetime as dt
+import zoneinfo
 from dataclasses import replace
 from typing import Any
 
@@ -53,7 +55,7 @@ from analysis.zone_engine.fibonacci import calculate_fib_levels, fib_confluence,
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import confluence_rating
+from analysis.zone_engine.scoring import assess_closing_quality, confluence_rating
 from analysis.zone_engine.trend import detect_trend
 from utils.logger import get_logger
 
@@ -201,7 +203,23 @@ class DemandSupplyAnalysis(BaseAnalysis):
             # subset (fresh + scoring >=5, overlaps merged, nearest 3 per
             # side) that everything below — display, nearest zones, status —
             # is derived from. See analysis.zone_engine.filters.filter_zones.
-            zones = detect_zones(data)
+            # Drop today's candle while the market is still open — its
+            # OHLC values change intraday, so zone detection on an
+            # incomplete candle produces unreliable zones.  After NSE
+            # close (3:30 PM IST + 30 min buffer) the candle is final
+            # and safe to use.  current_price above still uses the live
+            # close for display regardless.
+            zone_data = data
+            if isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                if data.index[-1].date() >= dt.date.today():
+                    ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+                    if dt.datetime.now(ist).hour < 16:
+                        zone_data = data.iloc[:-1]
+            zones = detect_zones(zone_data)
+            # M8: assess closing quality before filtering — each zone's
+            # leg-out is checked against the nearest opposing zone's
+            # proximal to flag strong vs. weak departures.
+            assess_closing_quality(zones, zone_data)
             all_zones_count = len(zones)
             display_zones = filter_zones(zones, current_price)
 

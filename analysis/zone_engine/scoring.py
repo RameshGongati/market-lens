@@ -7,11 +7,14 @@ label derived from the legout candles. Each helper's docstring cites the
 exact rule it encodes.
 """
 
+from __future__ import annotations
+
 from typing import Sequence, TypedDict
 
 import pandas as pd
 
 from analysis.zone_engine.candles import CandleInfo
+from analysis.zone_engine.models import Zone
 
 # Rule: Freshness points — how many times has price re-tested the zone since
 # the legout completed?
@@ -86,9 +89,10 @@ def strength_points(has_gap: bool, num_legout_candles: int) -> float:
 
 
 def time_at_base_points(num_base_candles: int) -> float:
-    """Rule: Time at base — 1-3 candles = 2, 4-5 candles = 1,
-    more than 5 candles = 0 (GTF Episode 8 / M28)."""
-    if 1 <= num_base_candles <= 3:
+    """Rule: Time at base — 0-3 candles = 2, 4-5 candles = 1,
+    more than 5 candles = 0.  Zero base candles = missing-base
+    (M17 instant reversal) — maximum speed, maximum score."""
+    if num_base_candles <= 3:
         return _SHORT_BASE_POINTS
     if 4 <= num_base_candles <= 5:
         return _MEDIUM_BASE_POINTS
@@ -123,16 +127,32 @@ def zone_strength_label(legout_candles: Sequence[CandleInfo]) -> str:
     return "Normal"
 
 
+# Persistent habitation: if price re-enters the zone and N consecutive
+# candles all close inside (between proximal and distal), the zone's
+# institutional imbalance is exhausted and the zone is invalidated.
+_HABITATION_LIMIT = 4
+
+
 def count_zone_tests(
     df: pd.DataFrame, category: str, proximal: float, distal: float, start_idx: int,
 ) -> tuple[int, bool, bool]:
-    """Rule: Count complete test cycles and detect zone invalidation (GTF M3).
+    """Rule: Count test cycles and detect zone invalidation (M3 + M46 + habitation).
 
     A test cycle is one complete round-trip: price enters the zone
-    (crosses proximal) AND exits back through the proximal line.
-    ``activation_touch`` is a boolean — True when price has entered the
-    zone at least once.  Zone invalidation occurs when price crosses the
-    distal line at any point after the legout.
+    (wick touches proximal) AND exits (candle closes outside the zone).
+    Entry is wick-based, exit is close-based.  A single candle can
+    complete a full cycle if its wick enters the zone AND it closes
+    outside the zone on the same bar (same-bar test).
+
+    ``activation_touch`` is True when price has entered the zone at
+    least once.
+
+    Zone invalidation occurs on any of:
+    - **M46 distal breach:** wick or close past the distal (strict >).
+    - **Persistent habitation:** once inside, if ``_HABITATION_LIMIT``
+      consecutive candles all close inside the zone, the imbalance is
+      exhausted and the zone is dead.  The counter resets whenever a
+      candle closes outside the zone (completing a test cycle).
 
     Args:
         df: Full OHLCV DataFrame (chronological order).
@@ -148,17 +168,23 @@ def count_zone_tests(
     activation_touch = False
     is_invalidated = False
     inside = False
+    consecutive_closes_inside = 0
     n = len(df)
 
     for idx in range(max(start_idx, 0), n):
         low = float(df["Low"].iloc[idx])
         high = float(df["High"].iloc[idx])
+        close = float(df["Close"].iloc[idx])
 
+        # M46: distal breach via wick — strict inequality (exactly AT = held)
+        # M3: wick-based entry, close-based exit
         if category == "demand":
             in_zone = low <= proximal
+            exited_zone = close > proximal
             breached = low < distal
         else:
             in_zone = high >= proximal
+            exited_zone = close < proximal
             breached = high > distal
 
         if breached:
@@ -169,9 +195,19 @@ def count_zone_tests(
         if in_zone and not inside:
             inside = True
             activation_touch = True
-        elif not in_zone and inside:
+
+        if inside and exited_zone:
             inside = False
+            consecutive_closes_inside = 0
             tests += 1
+
+        # Persistent habitation: count consecutive candles closing inside
+        # the zone.  Resets on any close outside (exit branch above).
+        if inside and not exited_zone:
+            consecutive_closes_inside += 1
+            if consecutive_closes_inside >= _HABITATION_LIMIT:
+                is_invalidated = True
+                break
 
     return tests, activation_touch, is_invalidated
 
@@ -292,3 +328,132 @@ def confluence_rating(ema20_enhancer: bool, fib_result: dict) -> ConfluenceRatin
         label = "None"
 
     return ConfluenceRating(confluence_score=score, confluence_label=label, factors=factors)
+
+
+# ---------------------------------------------------------------------------
+# M8: Closing concept — leg-out quality vs. opposing zones
+# ---------------------------------------------------------------------------
+
+def assess_closing_quality(zones: list[Zone], df: pd.DataFrame) -> None:
+    """M8 (closing concept): for each zone, check whether its leg-out
+    CLOSED beyond the nearest opposing zone's proximal line.
+
+    A close beyond proves the opposing orders were absorbed (strong
+    departure).  A wick-only penetration or a close that fell short
+    means the departure is unconvincing (weak).  When no opposing zone
+    sits in the leg-out's path, the check is inapplicable (unchecked).
+
+    Mutates ``zone.closing_quality`` in place:
+      * ``"strong"``    — leg-out close cleared the opposing proximal
+      * ``"weak"``      — leg-out close did NOT clear
+      * ``"unchecked"`` — no opposing zone in the leg-out's path
+
+    This is a quality flag only — it does NOT change the ODD score.
+
+    Args:
+        zones: The full list of detected (non-invalidated) zones,
+               in chronological order (by ``created_at_index``).
+        df:    The OHLCV DataFrame used during detection.
+    """
+    for i, zone in enumerate(zones):
+        opposing = _find_nearest_opposing_zone(zone, zones[:i], df)
+        if opposing is None:
+            zone.closing_quality = "unchecked"
+            continue
+
+        legout_close = float(df["Close"].iloc[zone.legout_idx])
+
+        if zone.category == "demand":
+            # Demand leg-out rallies up — must close ABOVE opposing
+            # supply zone's proximal to prove strength.
+            zone.closing_quality = (
+                "strong" if legout_close > opposing.proximal else "weak"
+            )
+        else:
+            # Supply leg-out drops down — must close BELOW opposing
+            # demand zone's proximal to prove strength.
+            zone.closing_quality = (
+                "strong" if legout_close < opposing.proximal else "weak"
+            )
+
+
+def _find_nearest_opposing_zone(
+    zone: Zone,
+    prior_zones: list[Zone],
+    df: pd.DataFrame,
+) -> Zone | None:
+    """Find the nearest opposing zone whose proximal sits in the leg-out's
+    departure path — the first obstacle the leg-out encountered.
+
+    "Nearest" means closest to the base in price (the first obstacle),
+    not chronologically closest.
+
+    For a DEMAND zone (bullish leg-out):
+      Search for SUPPLY zones whose proximal is between the base top
+      and the leg-out's highest high.
+
+    For a SUPPLY zone (bearish leg-out):
+      Search for DEMAND zones whose proximal is between the base bottom
+      and the leg-out's lowest low.
+
+    Only zones that formed BEFORE this zone (``created_at_index`` <
+    this zone's) are considered — future zones can't be obstacles the
+    leg-out needed to overcome.  Invalidated zones are excluded because
+    they are already absent from the ``zones`` list.
+
+    Args:
+        zone:        The zone being assessed.
+        prior_zones: All zones with ``created_at_index`` < this zone's
+                     (the slice ``zones[:i]`` from the caller).
+        df:          The OHLCV DataFrame for reading leg-out extremes.
+
+    Returns:
+        The nearest opposing Zone, or None if no opposing zone sits
+        in the leg-out's path.
+    """
+    # Determine the leg-out's price range (the path it traversed).
+    legout_start = zone.legout_idx
+    # Find legout end: scan forward from legout_start for exciting
+    # candles in the same direction, bounded by created_at_index of
+    # the next zone or the end of the dataframe.
+    legout_end = legout_start
+    n = len(df)
+    for idx in range(legout_start + 1, n):
+        # Stop at a reasonable bound — legout runs are short.
+        if idx - legout_start > 6:
+            break
+        legout_end = idx
+
+    if zone.category == "demand":
+        # Bullish leg-out: path goes from base top up to leg-out high.
+        base_top = float(df["High"].iloc[zone.base_start_idx: zone.base_end_idx + 1].max())
+        legout_extreme = float(df["High"].iloc[legout_start: legout_end + 1].max())
+
+        # Find supply zones whose proximal is in the leg-out's path.
+        candidates = [
+            z for z in prior_zones
+            if z.category == "supply"
+            and z.created_at_index < zone.created_at_index
+            and base_top < z.proximal <= legout_extreme
+        ]
+        if not candidates:
+            return None
+        # Nearest to base = lowest proximal (first obstacle going up).
+        return min(candidates, key=lambda z: z.proximal)
+
+    else:
+        # Bearish leg-out: path goes from base bottom down to leg-out low.
+        base_bottom = float(df["Low"].iloc[zone.base_start_idx: zone.base_end_idx + 1].min())
+        legout_extreme = float(df["Low"].iloc[legout_start: legout_end + 1].min())
+
+        # Find demand zones whose proximal is in the leg-out's path.
+        candidates = [
+            z for z in prior_zones
+            if z.category == "demand"
+            and z.created_at_index < zone.created_at_index
+            and legout_extreme <= z.proximal < base_bottom
+        ]
+        if not candidates:
+            return None
+        # Nearest to base = highest proximal (first obstacle going down).
+        return max(candidates, key=lambda z: z.proximal)

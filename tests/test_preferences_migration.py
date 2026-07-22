@@ -100,7 +100,7 @@ def test_malformed_json_returns_defaults() -> None:
     prefs_mod._APP_DIR.mkdir(parents=True, exist_ok=True)
     prefs_mod._PREFS_FILE.write_text("{not valid json", encoding="utf-8")
     prefs = load_preferences()
-    assert prefs["trading_type"] == "Short-term Trading"
+    assert prefs["trading_type"] == "Options Trading"
     assert prefs["primary_strategy"] == "Demand/Supply Zones"
 
 
@@ -117,12 +117,12 @@ def test_non_dict_json_returns_defaults() -> None:
     prefs_mod._APP_DIR.mkdir(parents=True, exist_ok=True)
     prefs_mod._PREFS_FILE.write_text("[1, 2, 3]", encoding="utf-8")
     prefs = load_preferences()
-    assert prefs["trading_type"] == "Short-term Trading"
+    assert prefs["trading_type"] == "Options Trading"
 
 
 def test_no_file_returns_defaults() -> None:
     prefs = load_preferences()
-    assert prefs["trading_type"] == "Short-term Trading"
+    assert prefs["trading_type"] == "Options Trading"
     assert "selected_analysis_type" not in prefs
 
 

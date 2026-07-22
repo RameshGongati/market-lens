@@ -1,8 +1,10 @@
 """Individual stock status card component."""
 
+import html
 import math
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import streamlit as st
 
@@ -62,6 +64,9 @@ def render_stock_card(
     change_sign = "+" if change_pct >= 0 else ""
     change_color = "#28a745" if change_pct >= 0 else "#dc3545"
     company_name = get_company_name(symbol)
+    # HTML-escape symbol and company name so chars like & render correctly.
+    _esc_symbol = html.escape(symbol)
+    _esc_company = html.escape(company_name)
     strength_color = STRENGTH_COLORS.get(strength, "#721c24")
     strength_bg = STRENGTH_BG.get(strength, "#f8d7da")
     ts = format_timestamp(updated_at) if updated_at else ""
@@ -152,49 +157,57 @@ def render_stock_card(
                 )
                 break
 
-    card_html = f"""
-    <div style="
-        background:{cfg['bg']};
-        border-left:4px solid {cfg['border']};
-        border-radius:8px;
-        padding:14px 16px;
-        margin-bottom:10px;
-        cursor:pointer;
-    ">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-            <div>
-                <span style="font-weight:700;font-size:1.05rem;color:{cfg['text']};">
-                    {f"<span style='font-size:0.7rem;background:#6c757d;color:white;padding:1px 5px;border-radius:6px;margin-right:4px;font-weight:600;'>{serial_no}</span>" if serial_no is not None else ""}{icon} {symbol}
-                </span>
-                <div style="font-size:0.75rem;color:#666;margin-top:1px;">{company_name}</div>
-            </div>
-            <div style="text-align:right;">
-                {primary_badge_html}
-                &nbsp;
-                {strength_badge_html}
-            </div>
-        </div>{in_zone_badge}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-            <span style="font-size:1.1rem;font-weight:700;">{price_html}</span>
-            <span style="color:{change_color};font-weight:600;font-size:0.88rem;">
-                {change_html}
-            </span>
-        </div>
-        <div style="font-size:0.76rem;color:#555;margin-top:6px;line-height:1.4;">
-            {summary[:100]}{"…" if len(summary) > 100 else ""}
-        </div>
-        {"<div style='font-size:0.68rem;color:#999;margin-top:4px;'>Updated: " + ts + "</div>" if ts else ""}
-    </div>
-    """
+    # Build summary and timestamp HTML only when content exists —
+    # Streamlit's markdown parser mishandles empty <div></div> tags
+    # and renders the closing tag as literal text.
+    _escaped_summary = html.escape(summary[:100]) + ("…" if len(summary) > 100 else "") if summary else ""
+    _summary_html = (
+        f"<div style='font-size:0.76rem;color:#555;margin-top:6px;line-height:1.4;'>{_escaped_summary}</div>"
+        if _escaped_summary else ""
+    )
+    _ts_html = (
+        f"<div style='font-size:0.68rem;color:#999;margin-top:4px;'>Updated: {ts}</div>"
+        if ts else ""
+    )
+
+    card_html = (
+        f"<div style='background:{cfg['bg']};border-left:4px solid {cfg['border']};"
+        f"border-radius:8px;padding:14px 16px;margin-bottom:10px;cursor:pointer;'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:flex-start;'>"
+        f"<div>"
+        f"<span style='font-weight:700;font-size:1.05rem;color:{cfg['text']};'>"
+        f"{f'<span style=\"font-size:0.7rem;background:#6c757d;color:white;padding:1px 5px;border-radius:6px;margin-right:4px;font-weight:600;\">{serial_no}</span>' if serial_no is not None else ''}"
+        f"{icon} {_esc_symbol}</span>"
+        f"<div style='font-size:0.75rem;color:#666;margin-top:1px;'>{_esc_company}</div>"
+        f"</div>"
+        f"<div style='text-align:right;'>{primary_badge_html}&nbsp;{strength_badge_html}</div>"
+        f"</div>"
+        f"{in_zone_badge}"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-top:8px;'>"
+        f"<span style='font-size:1.1rem;font-weight:700;'>{price_html}</span>"
+        f"<span style='color:{change_color};font-weight:600;font-size:0.88rem;'>{change_html}</span>"
+        f"</div>"
+        f"{_summary_html}"
+        f"{_ts_html}"
+        f"</div>"
+    )
     st.markdown(card_html, unsafe_allow_html=True)
 
-    if st.button(
-        f"View {symbol} →",
-        key=f"card_btn_{symbol}_{stock_id}",
-        use_container_width=True,
-        type="secondary",
-    ):
-        st.session_state.selected_stock_symbol = symbol
-        st.session_state.selected_stock_id = stock_id
-        st.session_state.active_page = "stock_detail"
-        st.rerun()
+    # Open stock detail in a new browser tab via query-param deep link.
+    # URL-encode params so symbols with special chars (e.g. M&M) work correctly.
+    _detail_url = "?" + urlencode({"stock": symbol, "exchange": exchange})
+    st.markdown(
+        f"""
+        <a href="{_detail_url}" target="_blank" style="
+            display:block;width:100%;padding:6px 0;
+            text-align:center;font-size:0.85rem;font-weight:600;
+            color:#555;background:#f0f2f6;border:1px solid #ddd;
+            border-radius:6px;text-decoration:none;
+            margin-top:4px;cursor:pointer;
+        " onmouseover="this.style.background='#e0e3ea'"
+          onmouseout="this.style.background='#f0f2f6'">
+            View {_esc_symbol} →
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )

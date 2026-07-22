@@ -6,6 +6,7 @@ from config.credentials import clear_credentials
 from config.preferences import load_preferences, reset_preferences, save_preferences
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
 from storage.database import clear_all_analysis_history, clear_all_notes, db_path
+from ui.components.alerts_toggle import render_alerts_toggle
 from utils.export import exports_dir
 
 
@@ -45,7 +46,7 @@ def render_settings() -> None:
         p1, p2 = st.columns(2)
         with p1:
             st.markdown(f"**Data Source:** {prefs.get('selected_data_source', 'Yahoo Finance')}")
-            st.markdown(f"**Trading Type:** {prefs.get('trading_type', 'Short-term Trading')}")
+            st.markdown(f"**Trading Type:** {prefs.get('trading_type', 'Options Trading')}")
             st.markdown(f"**Primary Strategy:** {prefs.get('primary_strategy', 'Demand/Supply Zones')}")
         with p2:
             _enh = prefs.get("enhancers") or []
@@ -78,6 +79,17 @@ def render_settings() -> None:
     if show_tooltip != prefs.get("show_candle_tooltip", True):
         save_preferences({"show_candle_tooltip": show_tooltip})
         st.rerun()
+
+    st.markdown("---")
+
+    # ---------- Alert Settings ----------
+    st.markdown("### 🔔 Alert Settings")
+    with st.container(border=True):
+        render_alerts_toggle()
+        st.caption(
+            "When enabled, Market Lens saves alerts for bullish and bearish "
+            "signals detected during analysis. More alert options coming soon."
+        )
 
     st.markdown("---")
 

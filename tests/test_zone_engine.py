@@ -26,7 +26,12 @@ from analysis.zone_engine.fibonacci import (
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
-from analysis.zone_engine.scoring import confluence_rating, entry_recommendation, time_at_base_points
+from analysis.zone_engine.scoring import (
+    assess_closing_quality,
+    confluence_rating,
+    entry_recommendation,
+    time_at_base_points,
+)
 from analysis.zone_engine.trend import detect_trend
 
 
@@ -190,11 +195,12 @@ def test_clean_dbr_demand_zone_detected_with_correct_proximal_distal():
     assert zone.zone_type == "DBR"
     assert zone.category == "demand"
 
-    # Rule: DEMAND NORMAL marking —
-    #   proximal = highest BODY top of the base = max(max(111,112), max(112,113)) = 113
-    #   distal   = lowest WICK (lowest low) of the base = min(109, 108) = 108
-    assert zone.proximal == pytest.approx(113)
+    # Rule: M13 wick-to-wick marking (clean narrow base, ratio < 1.5) —
+    #   proximal = highest HIGH of the base = max(114, 115) = 115
+    #   distal   = lowest LOW of the base = min(109, 108) = 108
+    assert zone.proximal == pytest.approx(115)
     assert zone.distal == pytest.approx(108)
+    assert zone.proximal_marking == "Wick-to-Wick"
     assert zone.base_start_idx == 1
     assert zone.base_end_idx == 2
     assert zone.num_base_candles == 2
@@ -226,11 +232,12 @@ def test_clean_rbd_supply_zone_detected_with_correct_proximal_distal():
     assert zone.zone_type == "RBD"
     assert zone.category == "supply"
 
-    # Rule: SUPPLY NORMAL marking —
-    #   proximal = lowest BODY bottom of the base = min(min(111,110), min(110,109)) = 109
-    #   distal   = highest WICK (highest high) of the base = max(113, 112) = 113
-    assert zone.proximal == pytest.approx(109)
+    # Rule: M13 wick-to-wick marking (clean narrow base, ratio 1.5 = not > 1.5) —
+    #   proximal = lowest LOW of the base = min(108, 107) = 107
+    #   distal   = highest HIGH of the base = max(113, 112) = 113
+    assert zone.proximal == pytest.approx(107)
     assert zone.distal == pytest.approx(113)
+    assert zone.proximal_marking == "Wick-to-Wick"
     assert zone.base_start_idx == 1
     assert zone.base_end_idx == 2
     assert zone.num_base_candles == 2
@@ -274,17 +281,17 @@ def test_odd_score_fresh_zone_two_base_candles_gap_legout_scores_seven():
 # M3: one complete enter+exit cycle = 1 test
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113, distal = 108) followed by
+# Same clean DBR structure (WTW proximal = 115, distal = 108) followed by
 # candles where price enters and exits the zone once (one complete cycle).
 _DBR_ONE_CYCLE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap, single candle
-    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 113)
-    (118, 120, 111, 119),   # 5: enters zone      (low=111 <= 113 -> activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal   (low=115 > 113 -> test #1)
-    (118, 122, 116, 121),   # 7: stays away       (low=116 > 113)
+    (124, 128, 120, 126),   # 4: away from zone   (low=120 > 115)
+    (118, 120, 111, 119),   # 5: enters zone      (low=111 <= 115 -> activation touch)
+    (119, 123, 116, 122),   # 6: exits proximal   (low=116 > 115 -> test #1)
+    (118, 122, 117, 121),   # 7: stays away       (low=117 > 115)
 ]
 
 
@@ -294,10 +301,11 @@ def test_m3_single_cycle_counts_as_one_test():
     df = _make_df(_DBR_ONE_CYCLE_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
 
-    assert zone.proximal == pytest.approx(113)
+    assert zone.proximal == pytest.approx(115)
     assert zone.times_tested == 1
     assert zone.is_fresh is False
     assert zone.freshness_points == pytest.approx(1.5)
@@ -308,22 +316,22 @@ def test_m3_single_cycle_counts_as_one_test():
 # "No Trade" recommendation when the total ODD score is below 5
 # ---------------------------------------------------------------------------
 
-# Same clean DBR structure (proximal = 113, distal = 108), but the legout
+# Same clean DBR structure (WTW proximal = 115, distal = 108), but the legout
 # is a single, non-gapping exciting candle (strength = 1) and price
 # completes three enter+exit cycles (M3: tests = 3, freshness = 0).
 # 0 (freshness) + 1 (strength) + 2 (time) = 3.
 _DBR_NO_TRADE_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (113, 126, 112, 125),   # 3: legout opens at 113 (<= base high 114 -> no gap)
-    (124, 128, 120, 126),   # 4: away from zone (low=120 > 113)
+    (124, 128, 120, 126),   # 4: away from zone (low=120 > 115)
     (118, 120, 111, 119),   # 5: enters zone (activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal (test #1)
-    (116, 119, 109, 117),   # 7: enters zone
-    (117, 122, 114, 120),   # 8: exits proximal (test #2)
-    (116, 118, 110, 115),   # 9: enters zone
-    (115, 121, 114, 120),   # 10: exits proximal (test #3)
+    (119, 123, 116, 122),   # 6: exits proximal (test #1)
+    (117, 119, 109, 118),   # 7: enters zone
+    (118, 122, 116, 120),   # 8: exits proximal (test #2)
+    (117, 118, 110, 116),   # 9: enters zone
+    (116, 121, 116, 120),   # 10: exits proximal (test #3)
 ]
 
 
@@ -331,8 +339,9 @@ def test_no_trade_recommendation_when_score_below_five():
     df = _make_df(_DBR_NO_TRADE_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
 
     assert zone.times_tested == 3
     assert zone.freshness_points == pytest.approx(0.0)
@@ -350,13 +359,13 @@ def test_no_trade_recommendation_when_score_below_five():
 _DBR_TWO_CYCLES_ROWS = [
     (120, 121, 110, 111),   # 0: legin (bearish, exciting)
     (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
+    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
     (114, 125, 113, 124),   # 3: legout (bullish, exciting), no gap
     (124, 128, 120, 126),   # 4: away from zone
     (118, 120, 111, 119),   # 5: enters zone (activation touch)
-    (119, 123, 115, 122),   # 6: exits proximal (test #1)
-    (116, 119, 109, 117),   # 7: enters zone
-    (117, 122, 114, 120),   # 8: exits proximal (test #2)
+    (119, 123, 116, 122),   # 6: exits proximal (test #1)
+    (117, 119, 109, 118),   # 7: enters zone
+    (118, 122, 116, 120),   # 8: exits proximal (test #2)
 ]
 
 
@@ -365,8 +374,9 @@ def test_m3_two_cycles_count_as_two_tests():
     df = _make_df(_DBR_TWO_CYCLES_ROWS)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
     assert zone.times_tested == 2
     assert zone.is_fresh is False
     assert zone.freshness_points == pytest.approx(0.0)
@@ -397,26 +407,189 @@ def test_m3_zero_returns_stays_fresh():
 
 
 # ---------------------------------------------------------------------------
-# M3: zone invalidated when price breaches the distal line
+# M3 + M46: zone invalidation — wick OR close beyond distal
 # ---------------------------------------------------------------------------
 
-_DBR_INVALIDATED_ROWS = [
-    (120, 121, 110, 111),   # 0: legin (bearish, exciting)
-    (111, 114, 109, 112),   # 1: base candle 1 (boring)
-    (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113, distal = 108
-    (114, 125, 113, 124),   # 3: legout (bullish, exciting)
-    (124, 128, 120, 126),   # 4: away from zone
-    (118, 120, 107, 119),   # 5: low=107 < distal=108 -> zone invalidated
-]
-
-
-def test_m3_zone_invalidated_when_distal_breached():
-    """GTF M3: if price crosses the distal line the zone is dead and must
-    not appear in the detected zones list."""
-    df = _make_df(_DBR_INVALIDATED_ROWS)
+def test_m46_demand_wick_below_distal_invalidated():
+    """GTF M46: a demand zone whose distal is wicked through is invalidated —
+    any penetration past the distal destroys the zone."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (118, 120, 107, 119),   # 5: low=107 < distal=108 → invalidated (wick breach)
+    ]
+    df = _make_df(rows)
     zones = detect_zones(df)
 
-    assert len(zones) == 0
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0, "zone invalidated — wick below distal"
+
+
+def test_m46_demand_close_below_distal_invalidated():
+    """GTF M46: a demand zone where price CLOSES below the distal line
+    is invalidated."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (110, 112, 106, 107),   # 5: close=107 < distal=108 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0, "zone invalidated — close below distal"
+
+
+def test_m46_supply_wick_above_distal_invalidated():
+    """GTF M46: a supply zone whose distal is wicked through is invalidated."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (100, 113, 99, 111),    # 5: high=113 > distal=112 → invalidated (wick breach)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 0, "zone invalidated — wick above distal"
+
+
+def test_m46_supply_close_above_distal_invalidated():
+    """GTF M46: a supply zone where price CLOSES above the distal line
+    is invalidated."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (100, 114, 99, 113),    # 5: close=113 > distal=112 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 0, "zone invalidated — close above distal"
+
+
+def test_m46_wick_exactly_at_distal_survives():
+    """GTF M46: wick exactly at the distal line means the level held —
+    strict inequality required for invalidation."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal=113, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (110, 112, 108, 111),   # 5: low=108 == distal=108 → survives (held the line)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — wick at distal means level held"
+
+
+# ---------------------------------------------------------------------------
+# Persistent habitation: 4 consecutive closes inside zone = invalidated
+# ---------------------------------------------------------------------------
+
+def test_persistent_habitation_demand_zone_invalidated():
+    """Persistent habitation: price enters a demand zone and 4 consecutive
+    candles close inside (between proximal and distal) — zone is dead."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone (L=110 <= 115), closes inside (C=112 < 115) — hab=1
+        (111, 114, 109, 113),   # 6: inside, closes inside (C=113 < 115) — hab=2
+        (112, 114, 110, 111),   # 7: inside, closes inside (C=111 < 115) — hab=3
+        (111, 113, 109, 112),   # 8: inside, closes inside (C=112 < 115) — hab=4 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0, "zone invalidated by persistent habitation"
+
+
+def test_persistent_habitation_supply_zone_invalidated():
+    """Persistent habitation: supply zone with 4 consecutive closes inside."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (104, 106, 103, 106),   # 5: enters (H=106 >= 105), closes inside (C=106, 105 < 106 < 112) — hab=1
+        (106, 108, 104, 107),   # 6: inside, closes inside (C=107) — hab=2
+        (107, 109, 105, 108),   # 7: inside, closes inside (C=108) — hab=3
+        (108, 110, 106, 109),   # 8: inside, closes inside (C=109) — hab=4 → invalidated
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 0, "zone invalidated by persistent habitation"
+
+
+def test_persistent_habitation_resets_on_exit():
+    """Persistent habitation counter resets when a candle closes outside
+    the zone (completing a test cycle).  3 inside + exit + 3 inside = OK."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone, closes inside — hab=1
+        (111, 114, 109, 113),   # 6: closes inside — hab=2
+        (112, 114, 110, 111),   # 7: closes inside — hab=3
+        (112, 118, 110, 116),   # 8: closes OUTSIDE (C=116 > 115) → test #1, hab resets to 0
+        (114, 115, 111, 113),   # 9: re-enters, closes inside — hab=1
+        (112, 114, 109, 112),   # 10: closes inside — hab=2
+        (111, 113, 110, 112),   # 11: closes inside — hab=3 (still below 4, survives)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — habitation counter reset by exit"
+    zone = dbr[0]
+    assert zone.times_tested == 1
+
+
+def test_persistent_habitation_exactly_3_survives():
+    """3 consecutive closes inside the zone is below the limit — zone survives."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal=115, distal=108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (114, 115, 110, 112),   # 5: enters zone, closes inside — hab=1
+        (111, 114, 109, 113),   # 6: closes inside — hab=2
+        (112, 114, 110, 111),   # 7: closes inside — hab=3 (below limit, survives)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1, "zone survives — only 3 consecutive closes inside"
+    zone = dbr[0]
+    assert zone.times_tested == 0
+    assert zone.activation_touch is True
 
 
 # ---------------------------------------------------------------------------
@@ -425,24 +598,117 @@ def test_m3_zone_invalidated_when_distal_breached():
 
 def test_m3_activation_touch_without_complete_cycle():
     """GTF M3: price enters zone but data ends before exit -> activation_touch
-    True, times_tested 0 (no complete cycle)."""
+    True, times_tested 0 (no complete cycle).  The candle must stay fully
+    inside the zone (high <= proximal) to avoid a same-bar exit."""
     rows = [
         (120, 121, 110, 111),   # 0: legin (bearish, exciting)
         (111, 114, 109, 112),   # 1: base candle 1 (boring)
-        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> proximal = 113
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
         (114, 125, 113, 124),   # 3: legout (bullish, exciting)
         (124, 128, 120, 126),   # 4: away from zone
-        (118, 120, 111, 119),   # 5: enters zone (low=111 <= 113), data ends while inside
+        (113, 114, 111, 112),   # 5: enters zone (low=111 <= 115), stays inside (high=114 <= 115)
     ]
     df = _make_df(rows)
     zones = detect_zones(df)
 
-    assert len(zones) == 1
-    zone = zones[0]
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
     assert zone.times_tested == 0
     assert zone.is_fresh is True
     assert zone.activation_touch is True
     assert zone.freshness_points == pytest.approx(3.0)
+
+
+# ---------------------------------------------------------------------------
+# M3: same-bar enter+exit counts as one complete test
+# ---------------------------------------------------------------------------
+
+def test_m3_same_bar_enter_exit_counts_as_test():
+    """GTF M3: a candle whose wick enters the zone (low <= proximal) and
+    closes outside (close > proximal) on the same bar counts as one test."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base candle 1 (boring)
+        (112, 115, 108, 113),   # 2: base candle 2 (boring) -> WTW proximal = 115, distal = 108
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+        (124, 128, 120, 126),   # 4: away from zone
+        (118, 120, 111, 119),   # 5: enters AND exits zone (low=111 <= 115, close=119 > 115) → test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    zone = dbr[0]
+    assert zone.times_tested == 1
+    assert zone.is_fresh is False
+    assert zone.activation_touch is True
+    assert zone.freshness_points == pytest.approx(1.5)
+
+
+def test_m3_same_bar_supply_zone_enter_exit():
+    """GTF M3: supply zone same-bar test — high >= proximal AND close < proximal."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> proximal=107, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 108, 100, 103),   # 5: enters AND exits (high=108 >= 107, close=103 < 107) → test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 1
+    assert zone.activation_touch is True
+
+
+def test_m3_wick_enters_but_close_inside_no_test():
+    """GTF M3: wick enters zone but close stays inside → not tested.
+    Exit requires CLOSE outside the zone, not just wick."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 106, 100, 106),   # 5: wick enters (H=106 >= 105) but close=106 >= 105 → still inside
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 0
+    assert zone.is_fresh is True
+    assert zone.activation_touch is True
+
+
+def test_m3_close_outside_after_wick_entry_counts():
+    """GTF M3: wick enters zone, close inside on bar 1, next bar closes
+    outside → test counted on bar 2 (close-based exit)."""
+    rows = [
+        (100, 109, 99, 108),    # 0: legin (bullish, exciting)
+        (108, 111, 106, 107),   # 1: base candle 1 (boring)
+        (107, 112, 105, 109),   # 2: base candle 2 (boring) -> WTW proximal=105, distal=112
+        (106, 107, 95, 96),     # 3: legout (bearish, exciting)
+        (96, 98, 90, 92),       # 4: away from zone
+        (102, 106, 100, 106),   # 5: wick enters (H=106 >= 105), close=106 >= 105 → inside zone
+        (105, 106, 100, 104),   # 6: close=104 < 105 → exits zone, test #1
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    zone = rbd[0]
+    assert zone.times_tested == 1
+    assert zone.activation_touch is True
 
 
 # ---------------------------------------------------------------------------
@@ -1036,8 +1302,8 @@ def test_m2_dbr_legin_wick_below_base_applies_exceptional():
     assert z.marking == "Exceptional"
     # Distal should be legin's low (80), not base's low (88)
     assert z.distal == 80.0
-    # Proximal stays on the base (highest body top of base)
-    assert z.proximal == 92.0
+    # M13: WTW proximal = base high = 93 (narrow base, ratio < 1.5)
+    assert z.proximal == 93.0
 
 
 def test_m2_dbr_legin_wick_not_below_base_stays_normal():
@@ -1074,7 +1340,8 @@ def test_m2_rbd_legin_wick_above_base_applies_exceptional():
     z = rbd[0]
     assert z.marking == "Exceptional"
     assert z.distal == 125.0
-    assert z.proximal == 109.0
+    # M13: WTW proximal = base lowest low = 108 (narrow base, ratio < 1.5)
+    assert z.proximal == 108.0
 
 
 def test_m2_rbr_legout_wick_below_base_applies_exceptional():
@@ -1115,8 +1382,8 @@ def test_m2_dbd_legout_wick_above_base_applies_exceptional():
     assert z.distal == 110.0
 
 
-def test_m2_proximal_never_changes():
-    """M2 only affects the distal line; proximal stays on the base."""
+def test_m2_proximal_independent_of_distal():
+    """M2 affects distal; M13 may change proximal independently."""
     rows = [
         (110, 112, 75, 90),   # Legin: wick way below base
         (91, 93, 88, 92),     # Base
@@ -1127,7 +1394,691 @@ def test_m2_proximal_never_changes():
     assert len(dbr) == 1
     z = dbr[0]
     assert z.marking == "Exceptional"
-    # Proximal = highest body top of base = max(91, 92) = 92
-    assert z.proximal == 92.0
-    # Distal = legin low = 75 (more extreme than base low 88)
+    # M13: WTW proximal = base high = 93 (narrow base, ratio < 1.5)
+    assert z.proximal == 93.0
+    # M2: Distal = legin low = 75 (more extreme than base low 88)
     assert z.distal == 75.0
+
+
+# ---------------------------------------------------------------------------
+# M13: Wick-to-wick vs body-to-wick proximal marking
+# ---------------------------------------------------------------------------
+
+def test_m13_clean_narrow_base_gets_wick_to_wick():
+    """M13 P3: narrow base (ratio <= 1.5) → wick-to-wick proximal."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 113, 109, 112),   # Base (boring, body=1/4=0.25)
+        (113, 125, 112, 124),   # Legout (bullish exciting, no gap, 1 candle)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW: proximal=112, distal=109, width=3
+    # WTW: proximal=113, distal=109, width=4
+    # Ratio=4/3=1.33 < 1.5 → WTW
+    assert z.proximal == 113.0
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_m13_wide_wick_base_stays_body_to_wick():
+    """M13 P3: wide wicks (ratio > 1.5) → body-to-wick proximal."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 110, 98, 102),    # Base (boring, body=1/12=0.08 — but also doji!)
+        (103, 125, 102, 124),   # Legout (bullish exciting, no gap)
+    ]
+    # body_pct = 1/12 = 0.083 < 0.10 → doji → P2 forces BTW
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    assert z.proximal == 102.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+def test_m13_doji_in_base_forces_body_to_wick():
+    """M13 P2: doji candle in base (body < 10% of range) → BTW."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (103, 108, 98, 103),    # Base 1 (boring, body=0/10=0, doji)
+        (104, 106, 99, 105),    # Base 2 (boring, body=1/7=0.14, not doji)
+        (106, 125, 105, 124),   # Legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P2: doji in base → body-to-wick
+    assert z.proximal_marking == "Body-to-Wick"
+    # BTW proximal = max body top = max(103, 105) = 105
+    assert z.proximal == 105.0
+
+
+def test_m13_explosive_legout_gap_plus_exciting_forces_wick_to_wick():
+    """M13 P1: gap(1) + exciting candle(1) = 2 units → explosive → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, body=1/9=0.11, wide wicks)
+        (117, 130, 116, 128),   # Legout: gap (opens 117 > 116) + exciting (body=0.79)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # gap=1 + exciting=1 = 2 units → explosive → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+    assert z.strength_points == pytest.approx(2.0)
+
+
+def test_m13_explosive_legout_two_candles_forces_wick_to_wick():
+    """M13 P1: 2+ exciting legout candles → explosive override → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, wide wicks)
+        (113, 125, 112, 124),   # Legout 1 (bullish exciting, no gap)
+        (124, 135, 123, 134),   # Legout 2 (bullish exciting, extends run)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P1: 2 legout candles → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+
+
+def test_m13_width_ratio_exactly_1_5_picks_wick_to_wick():
+    """M13 P3: width ratio exactly 1.5 (not > 1.5) → WTW."""
+    # BTW width=2, WTW width=3, ratio=1.5 exactly → NOT > 1.5 → WTW
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 113, 110, 112),   # Base (boring, body=1/3, high=113, low=110)
+        (113, 125, 112, 124),   # Legout (bullish exciting, no gap)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW proximal=112, distal=110, width=2
+    # WTW proximal=113, distal=110, width=3
+    # ratio = 3/2 = 1.5, NOT > 1.5 → WTW
+    assert z.proximal == 113.0
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_m13_width_ratio_above_1_5_picks_body_to_wick():
+    """M13 P3: width ratio > 1.5 → BTW (zone too wide for WTW)."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 108, 95, 103),    # Base (boring, body=2/13=0.15, wide wicks)
+        (104, 125, 103, 124),   # Legout (bullish exciting, no gap, 1 candle)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # BTW proximal=103, distal=95, width=8
+    # WTW proximal=108, distal=95, width=13
+    # ratio = 13/8 = 1.625 > 1.5 → BTW
+    assert z.proximal == 103.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+# ---------------------------------------------------------------------------
+# M8: Closing concept — leg-out quality vs. opposing zones
+# ---------------------------------------------------------------------------
+
+def test_m8_demand_legout_closes_beyond_supply_strong():
+    """M8: demand zone's leg-out closes above the nearest supply zone's
+    proximal → closing_quality = 'strong' (orders absorbed)."""
+    rows = [
+        # --- RBD supply zone (proximal=1904, distal=1912) ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1910),   # 5: legout close=1910 > supply prox=1904 → STRONG
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "strong"
+
+
+def test_m8_demand_legout_wicks_past_supply_but_closes_below_weak():
+    """M8: demand zone's leg-out wicks above the supply proximal but closes
+    below it → closing_quality = 'weak' (departure unconvincing)."""
+    rows = [
+        # --- RBD supply zone (proximal=1904, distal=1912) ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1900),   # 5: legout close=1900 < supply prox=1904 → WEAK
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "weak"
+
+
+def test_m8_no_opposing_zone_unchecked():
+    """M8: when no opposing zone sits in the leg-out's path the closing
+    concept cannot be checked → closing_quality = 'unchecked'."""
+    rows = [
+        (120, 121, 110, 111),   # 0: legin (bearish, exciting)
+        (111, 114, 109, 112),   # 1: base (boring)
+        (112, 115, 108, 113),   # 2: base (boring)
+        (114, 125, 113, 124),   # 3: legout (bullish, exciting)
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].closing_quality == "unchecked"
+
+
+def test_m8_supply_legout_closes_below_demand_strong():
+    """M8: supply zone's leg-out closes below the nearest demand zone's
+    proximal → closing_quality = 'strong'."""
+    rows = [
+        # --- DBR demand zone (proximal=1888, distal=1878 exceptional via M2) ---
+        (1910, 1911, 1878, 1880),   # 0: legin (bearish, exciting)
+        (1882, 1888, 1879, 1884),   # 1: base (boring)
+        (1885, 1915, 1884, 1912),   # 2: legout (bullish, exciting)
+        # --- RBD supply zone ---
+        (1912, 1940, 1910, 1938),   # 3: legin (bullish, exciting)
+        (1937, 1940, 1933, 1935),   # 4: base (boring)
+        (1934, 1935, 1880, 1882),   # 5: legout close=1882 < demand prox=1888 → STRONG
+        #                                  low=1880 > demand distal=1878 → demand survives
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].closing_quality == "strong"
+
+
+def test_m8_supply_legout_closes_above_demand_weak():
+    """M8: supply zone's leg-out wicks below the demand proximal but closes
+    above it → closing_quality = 'weak'."""
+    rows = [
+        # --- DBR demand zone (proximal=1888, distal=1878 exceptional via M2) ---
+        (1910, 1911, 1878, 1880),   # 0: legin (bearish, exciting)
+        (1882, 1888, 1879, 1884),   # 1: base (boring)
+        (1885, 1915, 1884, 1912),   # 2: legout (bullish, exciting)
+        # --- RBD supply zone ---
+        (1912, 1940, 1910, 1938),   # 3: legin (bullish, exciting)
+        (1937, 1940, 1933, 1935),   # 4: base (boring)
+        (1934, 1935, 1880, 1892),   # 5: legout close=1892 > demand prox=1888 → WEAK
+        #                                  low=1880 > demand distal=1878 → demand survives
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    assess_closing_quality(zones, df)
+
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].closing_quality == "weak"
+
+
+def test_m8_closing_quality_does_not_change_odd_score():
+    """M8: closing_quality is a quality flag only — it must NOT change
+    the ODD score."""
+    rows = [
+        # --- RBD supply zone ---
+        (1880, 1912, 1878, 1910),   # 0: legin (bullish, exciting)
+        (1908, 1912, 1904, 1906),   # 1: base (boring)
+        (1905, 1906, 1868, 1870),   # 2: legout (bearish, exciting)
+        # --- DBR demand zone ---
+        (1870, 1872, 1833, 1835),   # 3: legin (bearish, exciting)
+        (1835, 1840, 1832, 1838),   # 4: base (boring)
+        (1839, 1912, 1838, 1910),   # 5: legout (bullish, exciting) → strong
+    ]
+    df = _make_df(rows)
+    zones = detect_zones(df)
+    scores_before = {z.zone_type: z.odd_score for z in zones}
+    assess_closing_quality(zones, df)
+    scores_after = {z.zone_type: z.odd_score for z in zones}
+    assert scores_before == scores_after
+
+
+# ---------------------------------------------------------------------------
+# M17: Missing-base (instant reversal) zones
+# ---------------------------------------------------------------------------
+
+def test_m17_missing_base_demand_dbr():
+    """M17: bearish exciting → bullish exciting = DBR demand (no base)."""
+    rows = [
+        (130, 131, 118, 119),   # 0: legin (bearish exciting)
+        (120, 121, 108, 109),   # 1: turning point (bearish exciting) — last legin candle
+        (110, 125, 109, 124),   # 2: legout (bullish exciting, opposite direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.category == "demand"
+    assert z.num_base_candles == 0
+    assert z.proximal_marking == "Missing-Base"
+    # Turning point (candle 1): O=120, C=109 → proximal = body top = 120
+    # Distal = lowest low of tp/legout = min(108, 109) = 108
+    assert z.proximal == 120.0
+    assert z.distal == 108.0
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+    assert z.legout_idx == 2
+
+
+def test_m17_missing_base_supply_rbd():
+    """M17: bullish exciting → bearish exciting = RBD supply (no base)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: legin (bullish exciting)
+        (110, 122, 109, 121),   # 1: turning point (bullish exciting)
+        (120, 121, 100, 102),   # 2: legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    assert z.category == "supply"
+    assert z.num_base_candles == 0
+    assert z.proximal_marking == "Missing-Base"
+    # Turning point (candle 1): O=110, C=121 → proximal = body bottom = 110
+    # Distal = highest high of tp/legout = max(122, 121) = 122
+    assert z.proximal == 110.0
+    assert z.distal == 122.0
+
+
+def test_m17_scoring_zero_base_gets_max_time():
+    """M17: 0 base candles → time_at_base = 2 points (maximum speed)."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting)
+        (110, 130, 109, 128),   # 1: legout (bullish exciting, gap: 110 > 108? no)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.time_points == pytest.approx(2.0)
+    assert z.num_base_candles == 0
+
+
+def test_m17_no_double_counting():
+    """M17: bearish → bullish → bearish: only first zone, no reuse of candles."""
+    rows = [
+        (130, 131, 118, 119),   # 0: bearish exciting
+        (120, 121, 108, 109),   # 1: bearish exciting (turning point of zone 1)
+        (110, 125, 109, 124),   # 2: bullish exciting (legout of zone 1)
+        (123, 124, 109, 112),   # 3: bearish exciting (NOT a second zone turning point)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    # Candle 2 is legout of zone 1, not turning point of zone 2
+    assert dbr[0].legout_idx == 2
+
+
+def test_m17_legout_must_clear_turning_point():
+    """M17: legout must clear turning point range — weak reversal rejected."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting, high=121)
+        (110, 118, 109, 117),   # 1: bullish exciting, but close=117 < turning high=121
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 0
+
+
+def test_m17_multi_candle_legout_clears():
+    """M17: single legout candle doesn't clear turning point, but extended legout does."""
+    rows = [
+        (150, 155, 148, 149),   # 0: bearish legin
+        (148, 149, 130, 131),   # 1: turning point (bearish exciting, high=149)
+        (132, 140, 131, 139),   # 2: bullish exciting but close=139 < turning high=149
+        (140, 152, 139, 151),   # 3: bullish exciting, high=152 > turning high=149 ✓
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 0
+
+
+def test_m17_legin_extends_backwards():
+    """M17: leg-in extends backwards to include earlier same-direction candles."""
+    rows = [
+        (150, 151, 138, 139),   # 0: bearish exciting (part of legin run)
+        (140, 141, 128, 129),   # 1: bearish exciting (part of legin run)
+        (130, 131, 118, 119),   # 2: bearish exciting (turning point)
+        (120, 140, 119, 138),   # 3: bullish exciting (legout, clears 131)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.base_start_idx == 2  # turning point
+    assert z.legout_idx == 3
+
+
+def test_m17_legout_extends_forwards():
+    """M17: leg-out extends forwards to include same-direction exciting candles."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish exciting)
+        (110, 130, 109, 128),   # 1: legout (bullish exciting)
+        (128, 145, 127, 143),   # 2: legout extension (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+
+
+def test_m17_same_direction_no_zone():
+    """M17: two exciting candles in same direction → no missing-base zone."""
+    rows = [
+        (120, 121, 108, 109),   # 0: bearish exciting
+        (110, 111, 98, 99),     # 1: bearish exciting (same direction, NOT a reversal)
+        (100, 115, 99, 114),    # 2: bullish exciting
+    ]
+    zones = detect_zones(_make_df(rows))
+    # No missing-base zone between candles 0 and 1 (same direction)
+    # There might be a missing-base zone between candles 1 and 2
+    dbr = [z for z in zones if z.zone_type == "DBR" and z.num_base_candles == 0]
+    assert len(dbr) == 1
+    assert dbr[0].base_start_idx == 1  # turning point is candle 1
+
+
+def test_m17_with_m2_exceptional_distal():
+    """M17: M2 exceptional distal still applies to missing-base zones."""
+    rows = [
+        (130, 131, 95, 109),    # 0: legin with deep wick (low=95, way below turning point)
+        (120, 121, 108, 109),   # 1: turning point (bearish, low=108)
+        (110, 135, 109, 133),   # 2: legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.marking == "Exceptional"
+    # M2: legin low (95) < normal distal (min(108,109)=108) → exceptional distal = 95
+    assert z.distal == 95.0
+    # Proximal = body top of turning point = max(120, 109) = 120
+    assert z.proximal == 120.0
+
+
+def test_m17_continuation_not_missing_base():
+    """M17: same-direction exciting candles don't form missing-base (no reversal)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: bullish exciting
+        (112, 125, 111, 124),   # 1: bullish exciting (same direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 0
+
+
+def test_m17_gap_in_legout_scores_strength_2():
+    """M17: gap away from turning point in legout → strength 2."""
+    rows = [
+        (120, 121, 108, 109),   # 0: turning point (bearish, high=121, low=108)
+        (122, 140, 121, 138),   # 1: legout opens 122 > turning high 121 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.strength_points == pytest.approx(2.0)
+
+
+def test_m17_first_legout_clears_but_last_does_not():
+    """M17: first legout close clears TP but extended run's last close doesn't.
+
+    Without the ANY-candle fix, only the last extended candle is checked
+    and the zone would be wrongly rejected.
+    """
+    rows = [
+        (130, 131, 118, 119),   # 0: turning point (bearish, high=131)
+        (120, 135, 119, 132),   # 1: legout (bullish, close=132 > tp high 131 ✓)
+        (125, 132, 124, 130),   # 2: extended (bullish exciting, close=130 < 131)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 0
+    assert z.base_start_idx == 0
+
+
+def test_min_body_pct_of_price_rejects_small_candle():
+    """Small candle body relative to price should not qualify as exciting."""
+    info = classify_candle(1878.0, 1878.0, 1847.0, 1855.0)
+    # body=23, range=31 → body_pct=0.74 (passes body-to-range)
+    # body/price=23/1855=1.24% (fails 1.3% min body)
+    assert info["body_pct"] == pytest.approx(23 / 31, rel=1e-6)
+    assert info["is_exciting"] is False
+    assert info["is_boring"] is True
+
+
+def test_min_body_pct_of_price_accepts_large_candle():
+    """Candle body above 1.3% of price should still qualify as exciting."""
+    info = classify_candle(1882.0, 1882.0, 1847.0, 1855.0)
+    # body=27, range=35 → body_pct=0.77 (passes body-to-range)
+    # body/price=27/1855=1.46% (passes 1.3% min body)
+    assert info["is_exciting"] is True
+    assert info["is_boring"] is False
+
+
+def test_m13_p1_overrides_doji():
+    """M13: P1 (explosive) takes priority over P2 (doji) — WTW wins."""
+    rows = [
+        (120, 121, 100, 101),   # Legin (bearish exciting)
+        (101, 108, 95, 101),    # Base (boring, body=0/13=0.0, doji!)
+        (109, 125, 108, 124),   # Legout 1 opens 109 > base high 108 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    # P1 (gap) overrides P2 (doji) → WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 108.0
+    assert z.strength_points == pytest.approx(2.0)
+
+
+def test_m13_supply_zone_wick_to_wick():
+    """M13: supply zone WTW — proximal = lowest low of base."""
+    rows = [
+        (100, 112, 99, 111),   # Legin (bullish exciting)
+        (111, 113, 108, 110),  # Base (boring)
+        (109, 110, 90, 92),    # Legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    # BTW proximal=110, distal=113, width=3
+    # WTW proximal=108, distal=113, width=5
+    # ratio=5/3=1.67 > 1.5 → BTW
+    assert z.proximal == 110.0
+    assert z.proximal_marking == "Body-to-Wick"
+
+
+def test_m13_gap_between_consecutive_legout_candles():
+    """M13: gap between legout candles (Pattern 2) → explosive → WTW."""
+    rows = [
+        (120, 121, 110, 111),   # Legin (bearish exciting)
+        (111, 116, 107, 112),   # Base (boring, wide wicks)
+        (113, 120, 112, 119),   # Legout 1 (bullish exciting, no gap from base)
+        (121, 135, 120, 134),   # Legout 2 opens 121 > legout1 high 120 → GAP
+    ]
+    zones = detect_zones(_make_df(rows))
+    assert len(zones) == 1
+    z = zones[0]
+    assert z.strength_points == pytest.approx(2.0)
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 116.0
+
+
+def test_m13_both_m2_and_m13_can_apply():
+    """M2 (exceptional distal) and M13 (WTW proximal) are independent."""
+    rows = [
+        (110, 112, 75, 90),    # Legin: wick way below base (M2 trigger)
+        (91, 93, 88, 92),      # Base
+        (93, 120, 92, 118),    # Legout
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # M2: exceptional distal = 75
+    assert z.marking == "Exceptional"
+    assert z.distal == 75.0
+    # M13: narrow base → WTW proximal = 93
+    assert z.proximal_marking == "Wick-to-Wick"
+    assert z.proximal == 93.0
+
+
+# ---------------------------------------------------------------------------
+# Gap-in-base terminates the base
+# ---------------------------------------------------------------------------
+
+def test_gap_up_in_base_forms_zone_with_gap_as_legout():
+    """Gap up between base candles → base stops, gap IS the legout (demand)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (106, 108, 102, 107),   # 2: opens 106 > prev high 103 → 2.9% GAP UP = legout
+        (108, 125, 107, 124),   # 3: additional candle
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_gap_down_in_base_forms_supply_zone():
+    """Gap down between base candles → base stops, gap IS the legout (supply)."""
+    rows = [
+        (100, 112, 99, 111),    # 0: legin (bullish exciting)
+        (111, 114, 108, 110),   # 1: base candle 1 (boring)
+        (106, 110, 103, 108),   # 2: opens 106 < prev low 108 → 1.9% GAP DOWN = legout
+        (107, 109, 90, 92),     # 3: additional candle
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_no_gap_in_base_extends_normally():
+    """Base candles without gaps extend normally (control test)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (102, 105, 99, 104),    # 2: base candle 2 — opens 102 <= prev high 103 → NO gap
+        (105, 125, 104, 124),   # 3: legout (bullish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].num_base_candles == 2
+
+
+def test_noise_gap_in_base_ignored():
+    """A gap below 1.3% of price is noise — base extends through it.
+
+    Reproduces the APLAPOLLO bug where a 0.9-point gap on a ~1850 stock
+    (0.05%) falsely terminated the base at 1 candle instead of 2.
+    """
+    rows = [
+        (1882, 1882, 1847, 1855),   # 0: legin (bearish exciting, body/price=1.46%)
+        (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
+        (1833, 1843, 1803, 1826),   # 2: opens 1833 < prev low 1834 → 0.05% gap = NOISE
+        (1835, 1838, 1788, 1794),   # 3: legout (bearish exciting)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbd = [z for z in zones if z.zone_type == "DBD"]
+    assert len(dbd) == 1
+    assert dbd[0].num_base_candles == 2
+    assert dbd[0].base_start_idx == 1
+    assert dbd[0].base_end_idx == 2
+
+
+def test_real_gap_in_base_still_triggers():
+    """A gap above 1.3% of price terminates the base (gap-as-legout works)."""
+    rows = [
+        (1882, 1882, 1847, 1855),   # 0: legin (bearish exciting, body/price=1.46%)
+        (1855, 1862, 1834, 1842),   # 1: base candle 1 (boring, body_pct=0.46)
+        (1808, 1843, 1780, 1800),   # 2: opens 1808 < prev low 1834 → 1.42% gap = REAL
+        (1795, 1800, 1760, 1770),   # 3: additional candle
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbd = [z for z in zones if z.zone_type == "DBD"]
+    assert len(dbd) == 1
+    assert dbd[0].num_base_candles == 1
+
+
+def test_gap_in_base_with_exciting_candle_after():
+    """Gap between base candles + exciting candle after → gap is legout, exciting extends it."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (104, 120, 103, 118),   # 2: opens 104 > prev high 103 → GAP; exciting bullish
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.num_base_candles == 1
+    assert z.base_start_idx == 1
+    assert z.base_end_idx == 1
+
+
+def test_gap_legout_has_gap_true_for_scoring():
+    """Gap-as-legout zones get has_gap=True → strength 2. Gap alone = 1 unit,
+    not explosive, so M13 falls to P3 (narrow base → WTW via ratio)."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 103, 98, 102),    # 1: base candle 1 (boring)
+        (106, 108, 102, 107),   # 2: gap up (boring, 106 > 103 → 2.9% gap) → gap is legout
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.strength_points == pytest.approx(2.0)
+    # Gap alone = 1 unit (not explosive), but narrow base ratio < 1.5 → P3 picks WTW
+    assert z.proximal_marking == "Wick-to-Wick"
+
+
+def test_gap_only_legout_not_explosive_wide_base_gets_btw():
+    """Gap-only legout (1 unit) with wide-wick base → not explosive → P3 → BTW."""
+    rows = [
+        (120, 121, 100, 101),   # 0: legin (bearish exciting)
+        (101, 108, 95, 103),    # 1: base (boring, wide wicks: body=2/13, high=108, low=95)
+        (110, 113, 107, 112),   # 2: gap up (boring, opens 110 > prev high 108 → 1.9% gap)
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # Gap=1 unit, 0 exciting=0 units, total=1 → NOT explosive
+    # BTW proximal=103, distal=95, width=8
+    # WTW proximal=108, distal=95, width=13
+    # ratio=13/8=1.625 > 1.5 → BTW
+    assert z.proximal == 103.0
+    assert z.proximal_marking == "Body-to-Wick"

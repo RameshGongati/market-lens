@@ -22,11 +22,11 @@ from config.trading_config import (
     get_available_primaries,
     get_defaults,
 )
-from ui.components.alerts_toggle import render_alerts_toggle
 from ui.components.credentials_form import render_credentials_form
 from ui.components.notifications import render_notifications
 from utils.helpers import format_timestamp
 from utils.market_hours import get_current_ist_time, get_market_countdown, is_market_open, is_trading_day
+from data.nse_indices import refresh_all_watchlists
 from utils.helpers import get_nse_stock_batches, load_predefined_watchlists
 from watchlist.manager import get_all_watchlists
 
@@ -61,9 +61,9 @@ def _init_two_axis_state() -> None:
     on the very first render.
     """
     prefs = load_preferences()
-    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Short-term Trading"))
+    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Options Trading"))
     st.session_state.setdefault("primary_strategy", prefs.get("primary_strategy", "Demand/Supply Zones"))
-    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Short-term Trading")["enhancers"]))
+    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Options Trading")["enhancers"]))
     # Derive use_fibonacci from the persisted enhancers so the dashboard
     # doesn't see a stale False value before the user changes anything.
     st.session_state.setdefault(
@@ -90,7 +90,7 @@ def _on_trading_type_change() -> None:
     snap back to Demand/Supply Zones + Fibonacci).  After the reset the user can
     freely override both — this callback only fires on an explicit type change.
     """
-    new_type: str = st.session_state.get("sidebar_trading_type", "Short-term Trading")
+    new_type: str = st.session_state.get("sidebar_trading_type", "Options Trading")
     defaults = get_defaults(new_type)
     new_primary: str = defaults["primary"]  # type: ignore[assignment]
     new_enhancers: list[str] = list(defaults["enhancers"])  # type: ignore[arg-type]
@@ -203,7 +203,7 @@ def render_sidebar() -> None:
         # ---------- Watchlist ----------
         st.markdown("**Watchlist**")
         _WL_SOURCES = ["My Watchlists", "Index Watchlists", "All NSE Stocks"]
-        st.session_state.setdefault("watchlist_source", "My Watchlists")
+        st.session_state.setdefault("watchlist_source", "Index Watchlists")
         wl_source = st.radio(
             "Watchlist source",
             _WL_SOURCES,
@@ -259,6 +259,34 @@ def render_sidebar() -> None:
                 st.session_state["selected_predefined_watchlist"] = selected_pd
                 wl_data = predefined[pd_names.index(selected_pd)]
                 st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
+
+                if st.button("🔄 Refresh Index Lists from NSE", key="refresh_nse_indices",
+                             use_container_width=True):
+                    with st.spinner("Fetching latest lists from NSE..."):
+                        result = refresh_all_watchlists()
+
+                    # Show per-list change details: added/removed stocks
+                    for name in result["updated"]:
+                        changes = result["changes"][name]
+                        parts = []
+                        if changes["added"]:
+                            parts.append(f"Added: {', '.join(changes['added'])}")
+                        if changes["removed"]:
+                            parts.append(f"Removed: {', '.join(changes['removed'])}")
+                        st.success(f"**{name}** ({result['total_symbols'][name]} stocks) — {'; '.join(parts)}")
+
+                    # Lists fetched successfully but no changes detected
+                    if result["unchanged"]:
+                        st.info(
+                            f"Already up to date: {', '.join(result['unchanged'])}"
+                        )
+
+                    # Lists that failed with reason
+                    for fail_msg in result["failed"]:
+                        st.error(f"Failed — {fail_msg}")
+
+                    if result["updated"]:
+                        st.rerun()
             else:
                 st.caption("No predefined watchlists available.")
         else:
@@ -319,7 +347,7 @@ def render_sidebar() -> None:
 
         # ---------- Trading Type (axis 1) ----------
         st.markdown("**Trading Type**")
-        _tt = st.session_state.get("trading_type", "Short-term Trading")
+        _tt = st.session_state.get("trading_type", "Options Trading")
         _tt_idx = TRADING_TYPES.index(_tt) if _tt in TRADING_TYPES else 0
         st.radio(
             "Trading Type",
@@ -415,11 +443,6 @@ def render_sidebar() -> None:
                     st.rerun()
                 else:
                     st.warning("Select a watchlist first.")
-
-        st.markdown("---")
-
-        # ---------- Alerts Toggle ----------
-        render_alerts_toggle()
 
         st.markdown("---")
 
