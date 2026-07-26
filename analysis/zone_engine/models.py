@@ -74,6 +74,12 @@ class Zone:
     # "weak" = no (wick only, departure unconvincing),
     # "unchecked" = no opposing zone found in the leg-out's path.
     closing_quality: str = "unchecked"
+    # M10: achievement ratio — did the leg-out move far enough beyond
+    # the base to prove institutional conviction?
+    # "Clean" = ratio >= 1.0 (legout moved at least base-range distance),
+    # "Weak Departure" = 0.5 <= ratio < 1.0 (borderline, flagged in UI).
+    # Zones with ratio < 0.5 are silently rejected (never stored).
+    zone_quality: str = "Clean"
 
     # --- Stage 2 context (additive — never folded into odd_score) --------
     trend_at_zone: str = ""         # "UP" | "DOWN" | "SIDEWAYS" at evaluation time

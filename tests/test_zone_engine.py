@@ -2082,3 +2082,243 @@ def test_gap_only_legout_not_explosive_wide_base_gets_btw():
     # ratio=13/8=1.625 > 1.5 → BTW
     assert z.proximal == 103.0
     assert z.proximal_marking == "Body-to-Wick"
+
+
+# ---------------------------------------------------------------------------
+# M10: Achievement ratio — garbage-area rejection
+# ---------------------------------------------------------------------------
+# M10 measures how far the legout moved beyond the zone proximal relative
+# to the base width (proximal-to-distal distance).
+#   ratio < 0.5  → reject (garbage)
+#   0.5 <= ratio < 1.0 → "Weak Departure" (keep but flag)
+#   ratio >= 1.0 → "Clean" (no flag)
+#
+# All test candles satisfy M5 exciting thresholds:
+#   body_pct >= 0.50 AND body >= 1.3% of price.
+
+
+def test_m10_clean_demand_zone_ratio_above_1():
+    """M10: achievement ratio >= 1.0 produces a Clean demand zone.
+
+    Setup: DBR with base_range=5 (proximal=115, distal=110),
+    legout high=125 → legout_move=125-115=10, ratio=10/5=2.0.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=10/12=83%, body/price=8.3%)
+        (120, 122, 110, 110),
+        # idx 1: base — boring (body=2/5=40%, small vs range)
+        (111, 115, 110, 113),
+        # idx 2: legout — bullish exciting (body=12/14=86%, body/price=10.4%)
+        (113, 127, 113, 125),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # WTW: proximal=115, distal=110, base_range=5
+    # legout_move = max_high(125..127=127) - 115 = 12, ratio=12/5=2.4
+    assert z.zone_quality == "Clean"
+
+
+def test_m10_weak_departure_demand_zone_ratio_between_05_and_1():
+    """M10: achievement ratio between 0.5 and 1.0 flags "Weak Departure".
+
+    Setup: DBR with a wide base (range=10) and a legout that moves only 7
+    units beyond proximal → ratio=7/10=0.7.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, moves modestly above proximal
+        # WTW proximal = max(high)=108, distal=min(low)=96, base_range=12
+        # Need legout to move only ~7-8 units above 108 → high ≈ 115-116
+        # body=9/10=90%, body/price=8.3%
+        (108, 116, 106, 117),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # WTW: proximal=108, distal=96, base_range=12
+    # legout_move = 117 - 108 = 9, ratio=9/12=0.75
+    assert z.zone_quality == "Weak Departure"
+
+
+def test_m10_garbage_demand_zone_ratio_below_05_rejected():
+    """M10: achievement ratio < 0.5 silently rejects the zone (garbage area).
+
+    Setup: DBR with wide base (range ~12) and legout that barely clears
+    proximal → ratio < 0.5, no zone created.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, barely clears base
+        # WTW proximal=108, distal=96, base_range=12
+        # Need legout_move < 6 → high ≈ 112-113 max
+        # body=5/6=83%, body/price=4.6%
+        (108, 113, 107, 113),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    # legout_move = 113 - 108 = 5, ratio = 5/12 = 0.42 < 0.5 → rejected
+    assert len(dbr) == 0
+
+
+def test_m10_supply_zone_clean():
+    """M10: supply-side achievement ratio >= 1.0 produces a Clean zone.
+
+    Setup: RBD with base_range=6 (proximal=107, distal=113),
+    legout drops well below proximal.
+    """
+    rows = [
+        # idx 0: legin — bullish exciting (body=11/13=85%, body/price=11%)
+        (100, 112, 99, 111),
+        # idx 1: base — boring (body=1/5=20%)
+        (111, 113, 108, 110),
+        # idx 2: base — boring (body=1/5=20%)
+        (110, 112, 107, 109),
+        # idx 3: legout — bearish exciting, drops far below proximal
+        # WTW: proximal=107, distal=113, base_range=6
+        # legout_move = 107 - 97 = 10, ratio=10/6=1.67
+        # body=11/13=85%, body/price=10.1%
+        (109, 110, 97, 98),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].zone_quality == "Clean"
+
+
+def test_m10_supply_zone_garbage_rejected():
+    """M10: supply-side ratio < 0.5 rejects the zone.
+
+    Setup: RBD with wide base (range ~12) and legout that barely drops
+    below proximal → garbage, no zone created.
+    """
+    rows = [
+        # idx 0: legin — bullish exciting (body=20/22=91%, body/price=18.2%)
+        (100, 122, 100, 120),
+        # idx 1: base — boring (body=2/10=20%)
+        (119, 125, 115, 117),
+        # idx 2: base — boring (body=2/10=20%)
+        (117, 123, 113, 115),
+        # idx 3: legout — bearish exciting, barely drops
+        # WTW: proximal=113, distal=125, base_range=12
+        # Need legout_move < 6 → low > 107
+        # body=5/6=83%, body/price=4.5%
+        (113, 113, 108, 108),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    # legout_move = 113 - 108 = 5, ratio = 5/12 = 0.42 < 0.5 → rejected
+    assert len(rbd) == 0
+
+
+def test_m10_missing_base_skipped_always_clean():
+    """M10: missing-base zones (M17) skip the achievement check entirely.
+
+    Missing-base zones have 0 base candles — instant reversals are decisive
+    by definition. zone_quality should always be "Clean".
+    Uses the proven M17 fixture: legin extension + turning point + legout.
+    """
+    rows = [
+        # idx 0: legin extension — bearish exciting (body=12/13=92%)
+        (130, 131, 118, 119),
+        # idx 1: turning point — bearish exciting, last legin candle
+        (120, 121, 108, 109),
+        # idx 2: legout — bullish exciting, opposite direction (instant reversal)
+        (110, 125, 109, 124),
+    ]
+    zones = detect_zones(_make_df(rows))
+    mb_zones = [z for z in zones if z.num_base_candles == 0]
+    assert len(mb_zones) >= 1
+    for z in mb_zones:
+        assert z.zone_quality == "Clean"
+
+
+def test_m10_near_zero_base_range_guard():
+    """M10: when proximal ≈ distal (base_range < 0.01), skip the check
+    and treat as Clean to avoid division by zero.
+
+    Build a zone where all base candles have nearly identical OHLC values
+    so proximal and distal converge.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring, tiny range (body=0.001, range=0.005)
+        # All values within 0.005 of each other → proximal ≈ distal
+        (100.000, 100.005, 100.000, 100.001),
+        # idx 2: legout — bullish exciting (body=10/12=83%, body/price=9.1%)
+        (100.005, 112, 100, 110),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    # If a zone was created (base might be too narrow for detection), it
+    # should have zone_quality = "Clean" — no crash from division by zero.
+    for z in dbr:
+        assert z.zone_quality == "Clean"
+
+
+def test_m10_existing_dbr_fixture_still_clean():
+    """M10: existing _DBR_ROWS fixture still produces a Clean zone.
+
+    Regression guard — confirms M10 doesn't break existing test data.
+    _DBR_ROWS: proximal=115, distal=108, base_range=7
+    legout high=125, legout_move=125-115=10, ratio=10/7=1.43 → Clean.
+    """
+    zones = detect_zones(_make_df(_DBR_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].zone_quality == "Clean"
+
+
+def test_m10_existing_rbd_fixture_still_clean():
+    """M10: existing _RBD_ROWS fixture still produces a Clean zone.
+
+    Regression guard — confirms M10 doesn't break existing test data.
+    _RBD_ROWS: proximal=107, distal=113, base_range=6
+    legout low=97, legout_move=107-97=10, ratio=10/6=1.67 → Clean.
+    """
+    zones = detect_zones(_make_df(_RBD_ROWS))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].zone_quality == "Clean"
+
+
+def test_m10_does_not_change_odd_score():
+    """M10: the achievement ratio does NOT modify the ODD score.
+
+    M10 is a quality gate (reject) and quality flag (Weak Departure),
+    not a score modifier. Verify odd_score is unchanged for a Weak
+    Departure zone compared to what freshness+strength+time would give.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, modest move (Weak Departure)
+        # WTW proximal=108, distal=96, base_range=12
+        # legout_move = 117 - 108 = 9, ratio = 9/12 = 0.75
+        (108, 116, 106, 117),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.zone_quality == "Weak Departure"
+    # Score should equal freshness + strength + time as usual
+    expected_score = z.freshness_points + z.strength_points + z.time_points
+    assert z.odd_score == pytest.approx(expected_score)

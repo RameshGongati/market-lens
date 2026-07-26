@@ -883,6 +883,9 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
             flags += " | Strong Close"
         elif _cq == "weak":
             flags += " | Weak Close"
+        # M10: achievement ratio — show Weak Departure, hide Clean.
+        if zone.get("zone_quality") == "Weak Departure":
+            flags += " | Weak Departure"
         if zone.get("ema20_enhancer"):
             flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for

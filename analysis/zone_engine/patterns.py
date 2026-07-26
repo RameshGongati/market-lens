@@ -39,6 +39,16 @@ _MAX_LEG_RUN = 6
 # the gap must show institutional conviction, not bid-ask noise.
 _MIN_GAP_LEGOUT_PCT = _MIN_BODY_PCT_OF_PRICE
 
+# M10: Achievement ratio thresholds — measures how far the legout moved
+# beyond the zone proximal relative to the base width (proximal-to-distal).
+# Zones below _MIN are garbage (silently rejected); between _MIN and _CLEAN
+# are flagged "Weak Departure"; at or above _CLEAN are accepted as "Clean".
+_MIN_ACHIEVEMENT_RATIO = 0.5     # below = hard reject (garbage area)
+_CLEAN_ACHIEVEMENT_RATIO = 1.0   # at or above = clean (no flag)
+# Near-zero base range guard: skip M10 when proximal ≈ distal to avoid
+# division by zero (e.g. after rounding or in very tight bases).
+_MIN_BASE_RANGE_FOR_M10 = 0.01
+
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("bearish", "bullish"): ("DBR", "demand"),   # Drop-Base-Rally
@@ -285,6 +295,58 @@ def _exceptional_distal(
     return float(legout["High"].max())
 
 
+def _m10_achievement_check(
+    df: pd.DataFrame,
+    category: str,
+    proximal: float,
+    distal: float,
+    legout_start: int,
+    legout_end: int,
+    num_base_candles: int,
+) -> tuple[bool, str]:
+    """M10: Garbage-area rejection based on leg-out achievement ratio.
+
+    Measures how far the legout moved beyond the zone proximal relative
+    to the base width.  A legout that barely clears the base proves no
+    institutional conviction — the zone is garbage.
+
+    For demand: legout_move = max(High across legout) - proximal  (rally above zone)
+    For supply: legout_move = proximal - min(Low across legout)   (drop below zone)
+
+    Returns:
+        (should_keep, zone_quality) — False means reject the zone entirely;
+        True with "Weak Departure" means keep but flag; True with "Clean"
+        means no flag needed.
+    """
+    # M17 missing-base zones: instant reversals are decisive by definition —
+    # skip M10 and treat as Clean.
+    if num_base_candles == 0:
+        return True, "Clean"
+
+    base_range = abs(proximal - distal)
+
+    # Guard: near-zero base range (proximal ≈ distal after rounding) —
+    # skip to avoid division by zero and treat as Clean.
+    if base_range < _MIN_BASE_RANGE_FOR_M10:
+        return True, "Clean"
+
+    # Compute how far the legout moved beyond the zone proximal.
+    if category == "demand":
+        legout_extreme = float(df["High"].iloc[legout_start: legout_end + 1].max())
+        legout_move = legout_extreme - proximal
+    else:
+        legout_extreme = float(df["Low"].iloc[legout_start: legout_end + 1].min())
+        legout_move = proximal - legout_extreme
+
+    ratio = legout_move / base_range
+
+    if ratio < _MIN_ACHIEVEMENT_RATIO:
+        return False, "Clean"  # rejected — quality string irrelevant
+    if ratio < _CLEAN_ACHIEVEMENT_RATIO:
+        return True, "Weak Departure"
+    return True, "Clean"
+
+
 def detect_zones(df: pd.DataFrame) -> list[Zone]:
     """Scan an OHLCV dataframe for DBR / RBR / RBD / DBD zone patterns.
 
@@ -399,6 +461,8 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 )
 
                 if not mb_score["is_invalidated"]:
+                    # M10: skipped for missing-base zones (M17) — instant
+                    # reversals are decisive by definition, always "Clean".
                     zones.append(
                         Zone(
                             zone_type=mb_zone_type,
@@ -409,6 +473,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                             distal_exceptional=mb_dist_exc,
                             marking=mb_marking,
                             proximal_marking="Missing-Base",
+                            zone_quality="Clean",
                             base_start_idx=turning_point,
                             base_end_idx=turning_point,
                             legout_idx=mb_legout_start,
@@ -537,6 +602,16 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             btw_distal=distal,
         )
 
+        # M10: achievement ratio — reject garbage zones where the legout
+        # barely cleared the base, flag borderline ones as "Weak Departure".
+        keep, zone_quality = _m10_achievement_check(
+            df, category, proximal, distal,
+            legout_start, legout_end, num_base_candles,
+        )
+        if not keep:
+            i = legout_end + 1
+            continue
+
         score = score_zone(
             df=df,
             category=category,
@@ -562,6 +637,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 distal_exceptional=distal_exceptional,
                 marking=marking,
                 proximal_marking=proximal_marking,
+                zone_quality=zone_quality,
                 base_start_idx=base_start,
                 base_end_idx=base_end,
                 legout_idx=legout_start,
