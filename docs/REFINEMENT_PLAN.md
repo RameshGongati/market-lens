@@ -13,6 +13,7 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 - ~~M3 Close-Based Exit~~ — Fixed (`ba9e212`, 2026-07-20). Exit now requires candle to CLOSE outside the zone, not just wick. A wick that enters the zone but closes inside does not count as tested. Discovered via BAJFINANCE RBD zone (Jul 20 candle).
 - ~~M3 Persistent Habitation~~ — Added (`144a0bc`, 2026-07-20). If 4 consecutive candles close inside a zone after entry, the zone is invalidated (imbalance exhausted). Counter resets on any close outside. Discovered via ADANIPORTS DBR zone where price sat inside for 14+ candles.
 - ~~M46 Distal Wick Breaches~~ — Resolved by changing M46 to wick-based invalidation (`458ba6c`, 2026-07-20). Any wick past distal now destroys the zone, so a "wick breaches" counter is unnecessary.
+- ~~M10 Garbage-Area Rejection~~ — Implemented (`44ef8e9`, 2026-07-26). Achievement ratio = legout_move / base_range. Ratio < 0.5 rejects garbage zones; 0.5-1.0 flags "Weak Departure"; >= 1.0 is "Clean". Skipped for missing-base (M17) and near-zero base ranges. Does not modify ODD score. 10 tests added.
 
 ### Remaining
 
@@ -37,25 +38,7 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 
 ## Phase 1 Remaining — New Rules
 
-### 2. M10 — Garbage-Area Rejection
-
-**Priority:** High (filters out low-quality zones before they reach the UI)
-
-**Formula:**
-```
-achievement_ratio = (legout_extreme - proximal) / (proximal - distal)
-```
-
-**Tiers:**
-- `< 0.5` = hard reject (discard zone)
-- `0.5 - 1.0` = "Weak Departure" flag (keep but flag)
-- `>= 1.0` = clean
-
-**Guard:** Skip ratio check for missing-base zones (near-zero denominator).
-
-**Files:** New function in `analysis/zone_engine/scoring.py` or `patterns.py`. Zone model needs `achievement_ratio: float` and possibly `departure_quality: str` fields.
-
-### 3. M12 — Narrow Base Width
+### 2. M12 — Narrow Base Width (was #3)
 
 **Priority:** Medium (information-only initially)
 
@@ -68,7 +51,7 @@ base_width_pct = (base_high - base_low) / price * 100
 
 **Files:** `analysis/zone_engine/models.py`, `analysis/zone_engine/patterns.py` (compute during detection), `ui/components/stock_detail.py` (display)
 
-### 4. M65/M66 — LOTL Merge + Achievement
+### 3. M65/M66 — LOTL Merge + Achievement
 
 **Priority:** Medium (depends on M8 being fully stable)
 

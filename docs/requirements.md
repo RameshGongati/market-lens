@@ -189,21 +189,33 @@ Called at `analysis/demand_supply.py:222`, between detect and filter. Checks `zo
 
 ## Phase 1 — Pending Rules
 
-### #10 M10 — Garbage-Area Rejection (TODO)
+### #10 M10 — Garbage-Area Rejection (DONE — `44ef8e9`)
 
 **Spec:** Reject zones where the legout barely clears the base. Achievement ratio formula:
 ```
 achievement_ratio = (legout_extreme - proximal) / (proximal - distal)
 ```
 
-Two tiers:
+Three tiers:
 - `< 0.5` = hard reject (zone discarded)
 - `0.5 - 1.0` = "Weak Departure" flag (kept but flagged)
 - `>= 1.0` = clean (no flag)
 
-Guard: For missing-base zones where `proximal - distal` is near zero, skip the ratio check.
+Guards:
+- Missing-base zones (M17, 0 base candles): skip check, always "Clean"
+- Near-zero base range (< 0.01): skip check, always "Clean" (division guard)
 
-**Existing code:** None.
+M10 does NOT modify ODD score — it is a quality gate (reject) and quality flag only.
+
+**Code:**
+- `analysis/zone_engine/patterns.py:43-50` — constants `_MIN_ACHIEVEMENT_RATIO`, `_CLEAN_ACHIEVEMENT_RATIO`, `_MIN_BASE_RANGE_FOR_M10`
+- `analysis/zone_engine/patterns.py:289-332` — `_m10_achievement_check()` computes ratio and returns (keep, zone_quality)
+- `analysis/zone_engine/models.py:77-82` — `zone_quality: str = "Clean"` field on Zone dataclass
+- `ui/components/stock_detail.py:886-887` — " | Weak Departure" flag in chart zone labels
+
+**Tests:** 10 tests covering clean demand, weak departure, garbage rejection, supply-side, missing-base skip, division guard, regression on existing fixtures, and score independence.
+
+**Status:** INLINE with spec.
 
 ---
 

@@ -85,6 +85,7 @@ python -m pytest tests/ -v
 | M3   | Zone test counting: wick-entry + close-exit cycles + persistent habitation (4 closes inside = dead) |
 | M5   | Exciting candle: body >= 50% of range AND body >= 1.3% of price |
 | M8   | Closing concept: legout closes beyond opposing zone? strong/weak/unchecked |
+| M10  | Garbage-area rejection: achievement ratio < 0.5 rejects, 0.5-1.0 flags "Weak Departure" |
 | M13  | Proximal marking: WTW vs BTW via priority chain (P1 explosive, P2 doji, P3 ratio) |
 | M17  | Missing-base zones: instant reversal, 0 base candles |
 | M28  | Time-at-base scoring: 0-3 candles = 2pts, 4-5 = 1pt, 6+ = 0pts |
@@ -92,7 +93,6 @@ python -m pytest tests/ -v
 
 ## Next Pending Rules
 
-- **M10** — Garbage-area rejection (legout barely clears base)
 - **M12** — Narrow base width as quality metric
 - **M65/M66** — LOTL merge + achievement weighting
 
