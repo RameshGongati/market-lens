@@ -17,6 +17,7 @@ from config.preferences import load_preferences
 from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
+    build_source_manager,
     default_interval_label,
     fetch_by_interval,
     fetch_for_trading_type,
@@ -317,8 +318,22 @@ def render_stock_detail(
         # Need a fresh fetch at this interval.
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
         full_symbol = f"{symbol}{suffix}"
+        # Fetch through the data source the user actually selected. Without an
+        # explicit fetch_fn, fetch_by_interval falls back to _default_fetch_fn,
+        # which is hard-wired to Yahoo Finance — the chart would silently ignore
+        # a Jugaad/NSE selection and show different prices than the analysis.
+        _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+        _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
         with st.spinner(f"Fetching {interval_label} data for {symbol}…"):
-            _chart_df, _fetch_meta = fetch_by_interval(full_symbol, interval_label)
+            try:
+                _chart_fetch_fn = build_source_manager(_src_name, _src_creds).get_history
+            except Exception as exc:
+                # Surface the failure instead of quietly charting Yahoo data.
+                st.warning(f"Could not use {_src_name} ({exc}); showing Yahoo Finance data.")
+                _chart_fetch_fn = None
+            _chart_df, _fetch_meta = fetch_by_interval(
+                full_symbol, interval_label, fetch_fn=_chart_fetch_fn,
+            )
 
         if _chart_df is not None and not _chart_df.empty:
             # Re-run the same primary strategy on the interval-specific data.

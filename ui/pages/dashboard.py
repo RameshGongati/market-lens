@@ -13,7 +13,13 @@ from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
 from config.alert_settings import load_alert_config
 from config.trading_config import get_timeframe
-from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
+from data.manager import (
+    DataSourceManager,
+    FetchMeta,
+    build_source_manager,
+    fetch_for_trading_type,
+    interval_display_label,
+)
 from storage.database import get_all_alerts, save_analysis_result
 from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
@@ -619,10 +625,20 @@ def _render_detail_view() -> None:
         try:
             suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
             full_symbol = f"{symbol}{suffix}"
-            # Use fetch_for_trading_type so the chart matches analysis bars;
-            # _default_fetch_fn (yfinance) is used since this is outside the
-            # DataSourceManager's scope and yf is already imported in this file.
-            history_df, _det_meta = fetch_for_trading_type(full_symbol, trading_type)
+            # Use fetch_for_trading_type so the chart matches analysis bars, and
+            # route it through the selected data source — omitting fetch_fn would
+            # fall back to _default_fetch_fn (Yahoo Finance) and quietly override
+            # a Jugaad/NSE selection with different prices.
+            _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+            _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
+            try:
+                _det_fetch_fn = build_source_manager(_src_name, _src_creds).get_history
+            except Exception as exc:
+                logger.warning("Detail prefetch source init failed (%s): %s", _src_name, exc)
+                _det_fetch_fn = None
+            history_df, _det_meta = fetch_for_trading_type(
+                full_symbol, trading_type, fetch_fn=_det_fetch_fn,
+            )
             if history_df is not None and not history_df.empty:
                 st.session_state[cache_key] = history_df
             else:
