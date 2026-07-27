@@ -49,6 +49,12 @@ _CLEAN_ACHIEVEMENT_RATIO = 1.0   # at or above = clean (no flag)
 # division by zero (e.g. after rounding or in very tight bases).
 _MIN_BASE_RANGE_FOR_M10 = 0.01
 
+# M12: base width above this percentage of price is flagged "Wide Base" in
+# the UI.  Deliberately PUBLIC (no leading underscore) because
+# ``ui/components/stock_detail.py`` imports it — one source of truth keeps
+# the detection threshold and the displayed label from drifting apart.
+WIDE_BASE_THRESHOLD_PCT = 3.0
+
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("bearish", "bullish"): ("DBR", "demand"),   # Drop-Base-Rally
@@ -347,6 +353,39 @@ def _m10_achievement_check(
     return True, "Clean"
 
 
+def _base_width_pct(
+    df: pd.DataFrame,
+    base_start: int,
+    base_end: int,
+    proximal: float,
+) -> float:
+    """M12: Base width as a percentage of the zone's proximal price.
+
+    Measures how much price territory the base contested.  A tight base (low
+    percentage) means institutional orders sat in a narrow band, so the entry
+    is precise and the stop can sit close; a wide base means the level is
+    fuzzy and the stop must sit far away, hurting R:R.
+
+    Uses the FULL base range — highest high to lowest low across every base
+    candle — regardless of whether M13 marked the proximal wick-to-wick or
+    body-to-wick.  The full range is the total territory contested, which is
+    the thing being measured; the marking only decides where price is entered.
+
+    Missing-base zones (M17) pass ``base_start == base_end == turning point``,
+    so this same slice naturally returns that single candle's range — no
+    special case needed.
+
+    Returns:
+        Width as a percentage of *proximal*, or ``0.0`` when *proximal* is
+        non-positive (defensive — real price data is always above zero).
+    """
+    if proximal <= 0:
+        return 0.0
+    base_high = float(df["High"].iloc[base_start: base_end + 1].max())
+    base_low = float(df["Low"].iloc[base_start: base_end + 1].min())
+    return (base_high - base_low) / proximal * 100
+
+
 def detect_zones(df: pd.DataFrame) -> list[Zone]:
     """Scan an OHLCV dataframe for DBR / RBR / RBD / DBD zone patterns.
 
@@ -449,6 +488,12 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 )
                 mb_legout_candles = candles[mb_legout_start: mb_legout_end + 1]
 
+                # M12: the turning-point candle IS the base here, so passing
+                # it as both bounds returns that candle's own high-low range.
+                mb_base_width_pct = _base_width_pct(
+                    df, turning_point, turning_point, mb_proximal,
+                )
+
                 mb_score = score_zone(
                     df=df,
                     category=mb_category,
@@ -474,6 +519,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                             marking=mb_marking,
                             proximal_marking="Missing-Base",
                             zone_quality="Clean",
+                            base_width_pct=mb_base_width_pct,
                             base_start_idx=turning_point,
                             base_end_idx=turning_point,
                             legout_idx=mb_legout_start,
@@ -612,6 +658,10 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             i = legout_end + 1
             continue
 
+        # M12: base width as a percentage of price — information only, it
+        # never rejects a zone and never feeds into the ODD score below.
+        base_width_pct = _base_width_pct(df, base_start, base_end, proximal)
+
         score = score_zone(
             df=df,
             category=category,
@@ -638,6 +688,7 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 marking=marking,
                 proximal_marking=proximal_marking,
                 zone_quality=zone_quality,
+                base_width_pct=base_width_pct,
                 base_start_idx=base_start,
                 base_end_idx=base_end,
                 legout_idx=legout_start,

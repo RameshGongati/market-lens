@@ -13,6 +13,7 @@ import streamlit.components.v1 as st_components
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT
 from config.preferences import load_preferences
 from config.trading_config import get_timeframe
 from data.manager import (
@@ -454,6 +455,11 @@ def render_stock_detail(
     # ---------- Key metrics (from the interval-specific re-analysis) ----------
     _render_metrics(chart_result, analysis_type)
 
+    # M12: base widths for the zones drawn above — always visible, unlike the
+    # chart label which only flags the wide ones.
+    if analysis_type == "Demand/Supply Zones":
+        _render_zone_widths(chart_result)
+
     st.markdown("---")
 
     # ---------- Recommendation (from the interval-specific re-analysis) ----------
@@ -535,6 +541,39 @@ def _render_metrics(result: dict[str, Any], analysis_type: str) -> None:
     for col, (label, value) in zip(cols, metrics):
         with col:
             st.metric(label, value)
+
+
+def _render_zone_widths(result: dict[str, Any]) -> None:
+    """M12: show every displayed zone's base width next to its boundaries.
+
+    The chart label only flags bases wider than
+    :data:`WIDE_BASE_THRESHOLD_PCT`, so a tight base leaves no trace there.
+    This panel always prints the raw number — when sizing a trade, knowing a
+    base is 0.8% wide matters as much as knowing another is 5%.
+    """
+    zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+    if not zones:
+        return
+
+    with st.expander("Zone base widths", expanded=False):
+        st.caption(
+            "Base width is the full base range (highest high to lowest low) "
+            f"as a percentage of the proximal. Above {WIDE_BASE_THRESHOLD_PCT:.0f}% "
+            "the zone is flagged \"Wide Base\" on the chart — the stop has to "
+            "sit far from entry, which hurts R:R."
+        )
+        rows = []
+        for z in zones:
+            width = float(z.get("base_width_pct", 0.0) or 0.0)
+            rows.append({
+                "Zone": z.get("zone_type", "—"),
+                "Proximal": f"₹{z.get('proximal', 0):,.2f}",
+                "Distal": f"₹{z.get('distal', 0):,.2f}",
+                "Score": _fmt_zone_score(z.get("odd_score", 0)),
+                "Base width": f"{width:.1f}%",
+                "Flag": "Wide Base" if width > WIDE_BASE_THRESHOLD_PCT else "",
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +940,18 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
         # M10: achievement ratio — show Weak Departure, hide Clean.
         if zone.get("zone_quality") == "Weak Departure":
             flags += " | Weak Departure"
+        # M12: base width — flag only a notably wide base; a tight one is
+        # the normal case and would just clutter the label.
+        # Missing-base zones (M17) are excluded: their "base" is the single
+        # turning-point candle, which is EXCITING by definition (M5 wants its
+        # body >= 1.3% of price and >= 50% of its range), so its full range
+        # sits near the threshold structurally. An instant reversal has no
+        # base to be sloppy about, so "Wide Base" would read as a criticism
+        # of something that isn't there. The width still shows in the detail
+        # panel — see _render_zone_widths.
+        _bw = float(zone.get("base_width_pct", 0.0) or 0.0)
+        if _bw > WIDE_BASE_THRESHOLD_PCT and int(zone.get("num_base_candles", 0) or 0) > 0:
+            flags += f" | Wide Base {_bw:.1f}%"
         if zone.get("ema20_enhancer"):
             flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for

@@ -80,6 +80,11 @@ class Zone:
     # "Weak Departure" = 0.5 <= ratio < 1.0 (borderline, flagged in UI).
     # Zones with ratio < 0.5 are silently rejected (never stored).
     zone_quality: str = "Clean"
+    # M12: how much price territory the base contested, as a percentage of
+    # the proximal.  A tight base gives a precise entry and a close stop; a
+    # wide one means the level is fuzzy and the stop sits far away.
+    # INFORMATION ONLY — never filters a zone and never changes odd_score.
+    base_width_pct: float = 0.0
 
     # --- Stage 2 context (additive — never folded into odd_score) --------
     trend_at_zone: str = ""         # "UP" | "DOWN" | "SIDEWAYS" at evaluation time

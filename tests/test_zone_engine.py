@@ -25,7 +25,7 @@ from analysis.zone_engine.fibonacci import (
 )
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
-from analysis.zone_engine.patterns import detect_zones
+from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT, detect_zones
 from analysis.zone_engine.scoring import (
     assess_closing_quality,
     confluence_rating,
@@ -2322,3 +2322,148 @@ def test_m10_does_not_change_odd_score():
     # Score should equal freshness + strength + time as usual
     expected_score = z.freshness_points + z.strength_points + z.time_points
     assert z.odd_score == pytest.approx(expected_score)
+
+
+# ---------------------------------------------------------------------------
+# M12: Base width as a quality metric
+# ---------------------------------------------------------------------------
+# base_width_pct = (base_high - base_low) / proximal * 100, using the FULL
+# base range regardless of whether M13 marked the proximal wick-to-wick or
+# body-to-wick. Information only — never filters, never changes odd_score.
+#
+# Expected values are derived from the zone's ACTUAL proximal rather than a
+# hardcoded number, so these tests don't silently break if M13's priority
+# chain picks a different marking than the fixture author assumed.
+
+# Narrow base on a ~500 stock: base spans 498-505 (7 points).
+# idx 0: legin  — bearish exciting (body 18/22 = 0.82, 18/502 = 3.6% of price)
+# idx 1: base   — boring           (body 1/7 = 0.14)
+# idx 2: legout — bullish exciting, closes above the base high of 505
+_M12_NARROW_ROWS = [
+    (520, 522, 500, 502),
+    (502, 505, 498, 503),
+    (505, 525, 503, 523),
+]
+
+# Wide base on a ~500 stock: base spans 485-520 (35 points).
+# idx 0: legin  — bearish exciting (body 52/56 = 0.93, 52/488 = 10.7% of price)
+# idx 1: base   — boring           (body 7/35 = 0.20)
+# idx 2: legout — bullish exciting, closes above the base high of 520
+_M12_WIDE_ROWS = [
+    (540, 542, 486, 488),
+    (488, 520, 485, 495),
+    (497, 535, 495, 533),
+]
+
+
+def test_m12_narrow_base_width_computed():
+    """M12: a tight base yields a small base_width_pct.
+
+    Base spans 498-505 = 7 points on a ~500 stock, so the width lands
+    near 1.4% — comfortably under the 3% "Wide Base" threshold.
+    """
+    zones = detect_zones(_make_df(_M12_NARROW_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # base_high = 505, base_low = 498 -> width 7
+    expected = (505 - 498) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct < WIDE_BASE_THRESHOLD_PCT
+
+
+def test_m12_wide_base_width_exceeds_threshold():
+    """M12: a sloppy base yields a base_width_pct above the flag threshold.
+
+    Base spans 485-520 = 35 points on a ~500 stock, so the width lands
+    near 7% and would render " | Wide Base 7.1%" on the chart label.
+    """
+    zones = detect_zones(_make_df(_M12_WIDE_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # base_high = 520, base_low = 485 -> width 35
+    expected = (520 - 485) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct > WIDE_BASE_THRESHOLD_PCT
+
+
+def test_m12_supply_zone_uses_base_range_over_proximal():
+    """M12: supply zones use the same base high-low range over proximal.
+
+    For a supply zone the proximal is the LOW edge, but the numerator is
+    still the full base range — the formula does not mirror.
+    """
+    zones = detect_zones(_make_df(_RBD_ROWS))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    # base candles: highs 113/112 -> 113, lows 108/107 -> 107, width 6
+    expected = (113 - 107) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+
+
+def test_m12_missing_base_uses_turning_point_range():
+    """M12: for missing-base zones the turning-point candle IS the base.
+
+    num_base_candles is 0, so the shared helper is passed the turning point
+    as both bounds and returns that single candle's high-low range.
+    """
+    rows = [
+        (130, 131, 118, 119),   # legin extension (bearish exciting)
+        (120, 121, 108, 109),   # turning point (bearish exciting)
+        (110, 125, 109, 124),   # legout (bullish exciting, opposite direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    mb = [z for z in zones if z.num_base_candles == 0]
+    assert len(mb) == 1
+    z = mb[0]
+    # Turning point candle: high 121, low 108 -> width 13
+    expected = (121 - 108) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct > 0
+
+
+def test_m12_base_width_does_not_change_odd_score():
+    """M12: base width is informational — it never feeds the ODD score.
+
+    The narrow and wide fixtures both have one base candle, no gap, and no
+    tests after the legout, so their freshness/strength/time components are
+    identical. Their scores must match despite very different widths.
+    """
+    narrow = [z for z in detect_zones(_make_df(_M12_NARROW_ROWS)) if z.zone_type == "DBR"][0]
+    wide = [z for z in detect_zones(_make_df(_M12_WIDE_ROWS)) if z.zone_type == "DBR"][0]
+
+    # The widths genuinely differ — otherwise this test proves nothing.
+    assert wide.base_width_pct > narrow.base_width_pct + 3.0
+
+    # Same score components in, same score out.
+    assert narrow.freshness_points == wide.freshness_points
+    assert narrow.strength_points == wide.strength_points
+    assert narrow.time_points == wide.time_points
+    assert narrow.odd_score == wide.odd_score
+    # And the score is still exactly the sum of its three components.
+    for z in (narrow, wide):
+        assert z.odd_score == pytest.approx(
+            z.freshness_points + z.strength_points + z.time_points
+        )
+
+
+def test_m12_existing_fixtures_populate_base_width():
+    """M12: existing DBR/RBD fixtures gain a populated width, unchanged otherwise.
+
+    Regression guard — confirms M12 adds a field without disturbing the
+    boundaries, marking, or scoring those fixtures already assert.
+    """
+    dbr = [z for z in detect_zones(_make_df(_DBR_ROWS)) if z.zone_type == "DBR"][0]
+    # base high 115, base low 108 -> width 7 over proximal 115
+    assert dbr.base_width_pct == pytest.approx((115 - 108) / 115 * 100, abs=0.1)
+    assert dbr.proximal == pytest.approx(115)
+    assert dbr.distal == pytest.approx(108)
+    assert dbr.proximal_marking == "Wick-to-Wick"
+
+    rbd = [z for z in detect_zones(_make_df(_RBD_ROWS)) if z.zone_type == "RBD"][0]
+    # base high 113, base low 107 -> width 6 over proximal 107
+    assert rbd.base_width_pct == pytest.approx((113 - 107) / 107 * 100, abs=0.1)
+    assert rbd.proximal == pytest.approx(107)
+    assert rbd.distal == pytest.approx(113)
