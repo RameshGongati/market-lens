@@ -86,6 +86,7 @@ python -m pytest tests/ -v
 | M5   | Exciting candle: body >= 50% of range AND body >= 1.3% of price |
 | M8   | Closing concept: legout closes beyond opposing zone? strong/weak/unchecked |
 | M10  | Garbage-area rejection: achievement ratio < 0.5 rejects, 0.5-1.0 flags "Weak Departure" |
+| M12  | Base width as % of proximal; flags "Wide Base" above 3% (suppressed for missing-base zones) |
 | M13  | Proximal marking: WTW vs BTW via priority chain (P1 explosive, P2 doji, P3 ratio) |
 | M17  | Missing-base zones: instant reversal, 0 base candles |
 | M28  | Time-at-base scoring: 0-3 candles = 2pts, 4-5 = 1pt, 6+ = 0pts |
@@ -93,7 +94,6 @@ python -m pytest tests/ -v
 
 ## Next Pending Rules
 
-- **M12** — Narrow base width as quality metric
 - **M65/M66** — LOTL merge + achievement weighting
 
 See `docs/requirements.md` for the cross-checked GTF roadmap (Phases 1-8) and `docs/REFINEMENT_PLAN.md` for the prioritized implementation plan.

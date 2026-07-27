@@ -14,6 +14,7 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 - ~~M3 Persistent Habitation~~ — Added (`144a0bc`, 2026-07-20). If 4 consecutive candles close inside a zone after entry, the zone is invalidated (imbalance exhausted). Counter resets on any close outside. Discovered via ADANIPORTS DBR zone where price sat inside for 14+ candles.
 - ~~M46 Distal Wick Breaches~~ — Resolved by changing M46 to wick-based invalidation (`458ba6c`, 2026-07-20). Any wick past distal now destroys the zone, so a "wick breaches" counter is unnecessary.
 - ~~M10 Garbage-Area Rejection~~ — Implemented (`44ef8e9`, 2026-07-26). Achievement ratio = legout_move / base_range. Ratio < 0.5 rejects garbage zones; 0.5-1.0 flags "Weak Departure"; >= 1.0 is "Clean". Skipped for missing-base (M17) and near-zero base ranges. Does not modify ODD score. 10 tests added.
+- ~~M12 Narrow Base Width~~ — Implemented (`7e0d79d`, 2026-07-27). `base_width_pct = (base_high - base_low) / proximal * 100`, using the full base range regardless of M13's marking. Information only — no filtering, no score change. Flagged "Wide Base" on the chart above 3% (`WIDE_BASE_THRESHOLD_PCT`, public so the UI imports it), with the raw number always shown in a detail-panel expander. Flag suppressed for missing-base zones: their turning-point candle is exciting by definition, so its range sits near the threshold structurally and the warning was misleading. 6 tests added.
 
 ### Remaining
 
@@ -38,20 +39,7 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 
 ## Phase 1 Remaining — New Rules
 
-### 2. M12 — Narrow Base Width (was #3)
-
-**Priority:** Medium (information-only initially)
-
-**Formula:**
-```
-base_width_pct = (base_high - base_low) / price * 100
-```
-
-**Scope:** Add to Zone model as `base_width_pct: float`. Display in zone detail panel. Do NOT use as score modifier initially.
-
-**Files:** `analysis/zone_engine/models.py`, `analysis/zone_engine/patterns.py` (compute during detection), `ui/components/stock_detail.py` (display)
-
-### 3. M65/M66 — LOTL Merge + Achievement
+### 2. M65/M66 — LOTL Merge + Achievement
 
 **Priority:** Medium (depends on M8 being fully stable)
 

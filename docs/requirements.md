@@ -219,16 +219,30 @@ M10 does NOT modify ODD score — it is a quality gate (reject) and quality flag
 
 ---
 
-### #11 M12 — Narrow Base Width (TODO)
+### #11 M12 — Narrow Base Width (DONE — `7e0d79d`)
 
 **Spec:** Measure base tightness:
 ```
-base_width_pct = (base_high - base_low) / price * 100
+base_width_pct = (base_high - base_low) / proximal * 100
 ```
 
-Initially information-only (displayed in zone details), not a score modifier.
+Information-only — never filters a zone and never changes `odd_score`.
 
-**Existing code:** None.
+**Decisions taken during implementation:**
+- **Denominator is `proximal`, not live price.** Using the current market price would make a stored zone property drift every day as price moves. The proximal fixes the value at formation time.
+- **Numerator is the FULL base range**, regardless of whether M13 marked the proximal wick-to-wick or body-to-wick. The full range is the territory contested; the marking only decides where price is entered. The tradeable width is already derivable from `proximal` and `distal`, so no second field was added.
+- **Demand/supply asymmetry accepted.** `proximal` is the high edge for demand zones and the low edge for supply, so the same base measured either way differs by roughly the width percentage itself — about 0.09pp near the 3% threshold. Judged negligible.
+- **Threshold constant is PUBLIC** (`WIDE_BASE_THRESHOLD_PCT`, no leading underscore) so `stock_detail.py` imports it instead of keeping a second copy that could drift from the detection value.
+- **"Wide Base" flag suppressed for missing-base zones (M17).** Their base is the single turning-point candle, which is exciting by definition (M5 requires body >= 1.3% of price and >= 50% of range), so its full range sits near the 3% threshold structurally — 2 of 5 LUPIN missing-base zones tripped it. An instant reversal has no base to be sloppy about. The width is still stored and shown in the detail panel; only the chart warning is withheld.
+
+**Code:**
+- `analysis/zone_engine/patterns.py` — `WIDE_BASE_THRESHOLD_PCT = 3.0`; `_base_width_pct()` helper; computed at both zone creation paths
+- `analysis/zone_engine/models.py` — `base_width_pct: float = 0.0` field on Zone
+- `ui/components/stock_detail.py` — `| Wide Base N.N%` chart-label flag above threshold (non-missing-base only); `_render_zone_widths()` expander showing every zone's width always
+
+**Tests:** 6 tests covering narrow base, wide base above threshold, supply-side, missing-base turning-point range, score independence, and regression on existing fixtures. Expected values are derived from each zone's actual `proximal` rather than hardcoded, so the tests do not silently depend on M13's marking choice.
+
+**Status:** INLINE with spec.
 
 ---
 
