@@ -39,7 +39,9 @@ class YahooFinanceSource(DataSource):
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.fast_info
-            hist = ticker.history(period="2d", interval="1d")
+            # Use unadjusted prices so values match actual traded prices
+            # on TradingView/TraderTiger (not shifted by dividend adjustments).
+            hist = ticker.history(period="2d", interval="1d", auto_adjust=False)
 
             current_price = float(getattr(info, "last_price", 0) or 0)
             prev_close = float(getattr(info, "previous_close", current_price) or current_price)
@@ -88,9 +90,17 @@ class YahooFinanceSource(DataSource):
         """
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period, interval=interval)
+            # Use unadjusted prices so chart levels and zone boundaries
+            # match actual traded prices (consistent with TradingView,
+            # TraderTiger, Zerodha Kite). Adjusted prices shift all
+            # pre-dividend candles down by the dividend amount, misplacing
+            # demand/supply zones relative to current price.
+            df = ticker.history(
+                period=period, interval=interval, auto_adjust=False,
+            )
             if df.empty:
                 logger.warning("No history returned for %s", symbol)
+            # Drop the "Adj Close" column added when auto_adjust=False
             df = df[["Open", "High", "Low", "Close", "Volume"]]
             if interval not in ("1wk", "1mo"):
                 df = df[df["Volume"].fillna(0) > 0]
