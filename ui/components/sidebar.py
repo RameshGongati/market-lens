@@ -50,31 +50,28 @@ def _enhancer_key(enhancer: str) -> str:
 
 
 def _init_two_axis_state() -> None:
-    """Initialise the two-axis session state keys from saved preferences.
+    """Derive the session state keys that depend on ``enhancers``.
 
     Called once per session at the top of :func:`render_sidebar` before any
     widgets are defined.  Uses ``setdefault`` so it never overwrites values
     that are already in session state (e.g. from a previous rerun).
 
-    Also back-fills individual enhancer checkbox keys from ``enhancers`` so
-    that the ``st.checkbox`` calls below pick up the right initial state even
-    on the very first render.
+    ``trading_type``, ``primary_strategy`` and ``enhancers`` themselves are
+    NOT set here.  ``app.init_session_state`` establishes them first — from
+    fixed launch defaults, or from the deep-link query params when a stock is
+    opened in a new tab — so a ``setdefault`` at this point could never do
+    anything.  This function only fills in what depends on them.
     """
-    prefs = load_preferences()
-    st.session_state.setdefault("trading_type", prefs.get("trading_type", "Options Trading"))
-    st.session_state.setdefault("primary_strategy", prefs.get("primary_strategy", "Demand/Supply Zones"))
-    st.session_state.setdefault("enhancers", prefs.get("enhancers", get_defaults("Options Trading")["enhancers"]))
-    # Derive use_fibonacci from the persisted enhancers so the dashboard
-    # doesn't see a stale False value before the user changes anything.
+    enhancers = st.session_state.get("enhancers", [])
+    # Derive use_fibonacci from the enhancer list so the dashboard doesn't
+    # see a stale False value before the user changes anything.
     st.session_state.setdefault(
-        "use_fibonacci", "Fibonacci Confluence" in st.session_state["enhancers"]
+        "use_fibonacci", "Fibonacci Confluence" in enhancers
     )
     # Pre-populate individual checkbox keys so the widgets show the correct
     # initial state (Streamlit ignores value= if the key already exists).
     for enhancer in ENHANCERS:
-        st.session_state.setdefault(
-            _enhancer_key(enhancer), enhancer in st.session_state["enhancers"]
-        )
+        st.session_state.setdefault(_enhancer_key(enhancer), enhancer in enhancers)
 
 
 # ---------------------------------------------------------------------------

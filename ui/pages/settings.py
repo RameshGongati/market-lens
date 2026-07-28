@@ -33,8 +33,18 @@ def render_settings() -> None:
     st.markdown("---")
 
     # ---------- User Preferences ----------
-    st.markdown("### User Preferences")
-    st.caption("Preferences are saved automatically when you change selections in the sidebar.")
+    # These are a RECORD of the last sidebar selections, not the settings the
+    # app is currently running. The app starts from fixed defaults every launch,
+    # so this block can legitimately disagree with "Active Data Source" above —
+    # the caption says so, because two different values for the same thing on
+    # one page otherwise reads as a bug.
+    st.markdown("### Last Used Selections")
+    st.caption(
+        "Recorded automatically when you change the sidebar. These are a history "
+        "of your last choices — they are **not** reapplied on startup, so they can "
+        "differ from what is running now. See *Active Data Source* above for the "
+        "source in use, or the sidebar for the current settings."
+    )
     try:
         prefs = load_preferences()
     except Exception:

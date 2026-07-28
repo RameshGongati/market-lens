@@ -169,17 +169,22 @@ def render_stock_detail(
     exchange: str,
     analysis_type: str,
     result: dict[str, Any],
-    history_df: pd.DataFrame | None = None,
     stock_id: int | None = None,
 ) -> None:
     """Render the full detailed analysis view for a single stock.
+
+    Chart data is fetched here via ``fetch_by_interval`` for whichever candle
+    interval the user selects, so no OHLCV frame is passed in — the caller
+    used to supply one for a cache-priming step that could never take effect
+    (its key lacked the interval cache's ``use_fib`` component) and which
+    would have served the wrong bar count anyway, since the dashboard fetches
+    the trading type's timeframe while the chart fetches the interval's.
 
     Args:
         symbol: Stock ticker.
         exchange: Exchange (NSE/BSE).
         analysis_type: The analysis type run.
         result: Analysis result dict from the analysis module.
-        history_df: Optional OHLCV DataFrame for the price chart.
         stock_id: Database stock id for history/notes lookup.
     """
     if st.button("← Back to Dashboard", key="back_btn"):
@@ -258,19 +263,10 @@ def render_stock_detail(
     # Initialise to the trading-type default on first open for this stock.
     st.session_state.setdefault(_iv_key, _default_label)
 
-    # Prime the per-interval cache with the dashboard's already-computed result
-    # for the default interval so the first render is instant (no extra fetch).
-    # Keyed by data source for the same reason as the chart cache below —
-    # priming from a Yahoo dataframe must not satisfy a Jugaad request.
+    # The data source participates in the chart cache key below, so switching
+    # source refetches rather than replaying the previous source's bars.
     _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
     _cache_src_key = _cache_src.replace(" ", "_")
-    _default_cache_key = f"detail_cache_{symbol}_{_default_label}_{_cache_src_key}"
-    if (
-        st.session_state.get(_default_cache_key) is None
-        and history_df is not None
-        and not history_df.empty
-    ):
-        st.session_state[_default_cache_key] = (history_df, result, "")
 
     # Chart controls: Chart Type | Candle Interval
     ct_col, iv_col = st.columns([2, 5])

@@ -16,7 +16,6 @@ from config.trading_config import get_timeframe
 from data.manager import (
     DataSourceManager,
     FetchMeta,
-    build_source_manager,
     fetch_for_trading_type,
     interval_display_label,
 )
@@ -614,52 +613,20 @@ def _render_detail_view() -> None:
     exchange = result.get("exchange") or st.session_state.get("_qp_exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
-    # Stage C: the chart data must match the analysis timeframe so that zone
-    # overlays and Fibonacci lines land on the same bars as the analysis.
-    # Cache key includes trading_type so switching type invalidates old cache,
-    # and the data source so switching source does too — without it a
-    # dataframe fetched from Yahoo is replayed after selecting Jugaad, and the
-    # source-aware fetch below never runs because the cache short-circuits it.
-    trading_type = st.session_state.get("trading_type", "Options Trading")
-    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
-    cache_key = (
-        f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
-        f"_{_cache_src.replace(' ', '_')}"
-    )
-    history_df = st.session_state.get(cache_key)
-
-    if history_df is None or getattr(history_df, "empty", True):
-        try:
-            suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            full_symbol = f"{symbol}{suffix}"
-            # Use fetch_for_trading_type so the chart matches analysis bars, and
-            # route it through the selected data source — omitting fetch_fn would
-            # fall back to _default_fetch_fn (Yahoo Finance) and quietly override
-            # a Jugaad/NSE selection with different prices.
-            _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
-            _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
-            try:
-                _det_fetch_fn = build_source_manager(_src_name, _src_creds).get_history
-            except Exception as exc:
-                logger.warning("Detail prefetch source init failed (%s): %s", _src_name, exc)
-                _det_fetch_fn = None
-            history_df, _det_meta = fetch_for_trading_type(
-                full_symbol, trading_type, fetch_fn=_det_fetch_fn,
-            )
-            if history_df is not None and not history_df.empty:
-                st.session_state[cache_key] = history_df
-            else:
-                history_df = None
-        except Exception as exc:
-            logger.warning("History prefetch failed for %s: %s", symbol, exc)
-            history_df = None
-
+    # No OHLCV prefetch here: render_stock_detail fetches its own bars via
+    # fetch_by_interval for the candle interval the user picks. A prefetch used
+    # to run for a cache-priming step in that function, but the priming key
+    # could never match the interval cache's key, so the frame was fetched and
+    # then dropped — one wasted network round trip per detail view. Priming was
+    # removed rather than repaired: the dashboard fetches the trading type's
+    # timeframe (1y for Options Trading) while the chart fetches the interval's
+    # (5y for Daily), so a working prime would have shown a different history
+    # on first render than on every render after.
     render_stock_detail(
         symbol=symbol,
         exchange=exchange,
         analysis_type=analysis_type,
         result=result,
-        history_df=history_df,
         stock_id=stock_id,
     )
 
