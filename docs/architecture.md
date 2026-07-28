@@ -170,19 +170,50 @@ Analysis orchestrator: iterates over stocks, fetches data via `DataSourceManager
 
 #### `data/manager.py`
 - `DataSourceManager` — switches between data sources, delegates fetch calls
+- `build_source_manager()` — constructs a manager already switched to a named source. UI entry points use this and pass its `get_history` as `fetch_fn`, so a chart or analysis path cannot quietly fall back to `_default_fetch_fn` (hard-wired to Yahoo) while another source is selected
 - `fetch_for_trading_type()` — maps Trading Type to `{period, interval}` via `trading_config`, fetches, falls back from intraday to daily if < 20 rows
 - `fetch_by_interval()` — maps UI labels ("Daily", "Weekly", "75m", "15m") to fetch params; handles 75m resampling (5×15m aggregation)
+- `_default_fetch_fn()` — the fallback used when no `fetch_fn` is supplied. Passes `auto_adjust=False` to match `YahooFinanceSource`; keep the two in step
 
 #### `data/sources/yahoo_finance.py`
-Only fully functional source. Uses `yfinance` for quotes and OHLCV history. Zero-volume rows filtered for non-weekly/monthly intervals.
+Working source. Uses `yfinance` for quotes and OHLCV history with `auto_adjust=False`, so prices are the actual traded levels rather than dividend-adjusted ones and line up with TradingView / TraderTiger / Zerodha Kite. Zero-volume rows filtered for non-weekly/monthly intervals. Note that Yahoo silently omits whole trading days for some symbols — see the gotchas in `CLAUDE.md`.
+
+#### `data/sources/jugaad.py`
+Working source. Reads NSE directly via `jugaad-data`, so prices are unadjusted by nature and recent sessions are more reliable than Yahoo's. NSE reports timestamps in UTC (18:30 UTC = midnight IST next day), so `fetch_history` converts to IST and normalises before indexing — without it every date lands a day early. Live quotes can fail when the market is closed.
 
 ### Config (`config/`)
+
+#### `config/preferences.py`
+JSON persistence at `~/.market-lens/user_preferences.json`, with migration from the
+legacy single-axis "analysis type" model. Sidebar changes are written here, but
+**only `show_candle_tooltip` and `last_analysis_timestamp` are read back** —
+`app.init_session_state()` starts from fixed defaults every launch, so the rest is
+a record of last-used selections rather than restored state. The Settings page
+labels it accordingly.
+
+#### `config/alert_settings.py`
+Load/save for `config/alert_config.json` (gitignored — it holds the Telegram bot
+token). Back-fills newly added keys on load so an older file keeps working.
 
 #### `config/trading_config.py`
 Central vocabulary for the two-axis model:
 - `TRADING_TYPES`: Options Trading, Intraday Trading, Short-term Trading, Long-term Investment
 - `TRADING_TYPE_TIMEFRAME`: maps each type to `{period, interval}` (e.g., Intraday → `{60d, 15m}`)
 - `PRIMARY_STRATEGIES`, `ENHANCERS`, `TRADING_TYPE_DEFAULTS`
+
+### Alerts (`alerts/`, `alert_monitor.py`)
+
+Telegram zone-proximity notifications, configured on the Settings page.
+
+- `alerts/telegram.py` — Bot API delivery (`sendMessage`, HTML parse mode) plus
+  message formatting for zone alerts and the connectivity test
+- `alerts/zone_alert_checker.py` — scans cached analysis results for zones within
+  the configured proximity, honouring the min-score and zone-type filters
+- `alert_monitor.py` — standalone background script (**not** inside Streamlit) that
+  reuses the same `DemandSupplyAnalysis` / `detect_zones` / `filter_zones` pipeline,
+  so no detection logic is duplicated. Checks every 5 minutes during market hours
+  and sleeps outside them. Three cooldown modes: once-per-zone-per-day,
+  every-approach, once-per-zone-ever
 
 ### Storage (`storage/database.py`)
 
@@ -252,15 +283,27 @@ OHLCV DataFrame
 
 ### 6. Deep-Link (New Tab)
 
-Card generates `?stock=SYMBOL&exchange=EXCHANGE` URL. On load:
-- `app.py` reads query params → sets session state → routes to detail view
+Card generates `?stock=SYMBOL&exchange=EXCHANGE&src=…&tt=…&ps=…&enh=…`. The extra
+params carry the analysis context because a new browser tab is a **separate
+Streamlit session** with empty state — without them the tab fell back to launch
+defaults and could chart a different data source than the analysis just run.
+
+On load:
+- `app.py` reads query params → validates each against its allowed list
+  (`SUPPORTED_DATA_SOURCES`, `TRADING_TYPES`, `PRIMARY_STRATEGIES`, `ENHANCERS`)
+  → sets session state → routes to detail view. This must happen **before**
+  `render_sidebar()` so the sidebar and chart agree. An empty `enh=` means "no
+  enhancers selected"; an unrecognised value falls back to the default
 - `dashboard.py:_run_single_stock_analysis()` runs analysis on-the-fly if no cached result
+
+App-launch defaults are deliberately NOT read from saved preferences — only this
+link carries selections forward. See the preferences gotcha in `CLAUDE.md`.
 
 ---
 
 ## Rule Engine / Rule Numbering System
 
-GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule is a specific trading concept from the GTF course (Episodes 1-20). Rules are implemented incrementally — the current codebase covers 9 rules from Phase 1 (marking refinements).
+GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule is a specific trading concept from the GTF course (Episodes 1-20). Rules are implemented incrementally — the current codebase covers 10 rules from Phase 1 (M2, M3, M5, M8, M10, M12, M13, M17, M28, M46). See the table in `CLAUDE.md` for what each does.
 
 **How rules are tagged in code:**
 - `# Rule:` or `# M<N>:` comments at the definition site

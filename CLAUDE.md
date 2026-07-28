@@ -5,11 +5,12 @@ Market Lens is a Streamlit application for Indian equity market analysis (2,374 
 ## Tech Stack
 
 - **Runtime:** Python 3.12, Streamlit
-- **Data:** yfinance (Yahoo Finance); 4 other data sources scaffolded but not functional
+- **Data:** yfinance (Yahoo Finance) and jugaad-data (NSE direct) both fully working; 4 other sources scaffolded but not functional
 - **Charts:** Plotly (candlestick + volume subplots with zone/SMA/Fibonacci overlays)
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`) for watchlists, analysis results, alerts, notes; JSON (`~/.market-lens/user_preferences.json`) for preferences
+- **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (348 tests across 11 files)
+- **Tests:** pytest (364 tests across 10 files)
 
 ## Repo Structure
 
@@ -28,13 +29,19 @@ analysis/
     trend.py                    #   50 SMA clock method (Stage 2)
     enhancers.py                #   EMA 20 confluence (Stage 2)
     fibonacci.py                #   Fibonacci retracement confluence (Stage 3, opt-in)
+alerts/
+  telegram.py                   # Telegram delivery + HTML message formatting
+  zone_alert_checker.py         # Scans cached results for zone-proximity matches
+alert_monitor.py                # Standalone background monitor (runs outside Streamlit)
 config/
   trading_config.py             # Two-axis model: trading types, strategies, enhancers, timeframes
   preferences.py                # JSON persistence with legacy migration
+  alert_settings.py             # Load/save for the Telegram alert config
   settings.py                   # App constants, data sources, limits
 data/
   manager.py                    # DataSourceManager, timeframe-aware fetching, intraday fallback
-  sources/yahoo_finance.py      # Only fully functional data source
+  sources/yahoo_finance.py      # Working source; unadjusted prices (auto_adjust=False)
+  sources/jugaad.py             # Working source; NSE direct, UTC->IST date conversion
   stock_list.json               # 2,374 NSE stocks
   predefined_watchlists.json    # NIFTY50, BANKNIFTY, F&O index watchlists
 ui/
@@ -48,13 +55,13 @@ utils/
   export.py                     # Excel + PDF export
   market_hours.py               # NSE market hours, holidays, countdown
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
-tests/                          # 11 test files, 348 tests
+tests/                          # 10 test files, 364 tests
 ```
 
 ## Running Locally
 
 ```bash
-cd /home/gongati/market-lens
+cd /home/gongati/projects/market-lens
 source venv/bin/activate
 streamlit run app.py
 ```
@@ -62,7 +69,7 @@ streamlit run app.py
 ## Running Tests
 
 ```bash
-cd /home/gongati/market-lens
+cd /home/gongati/projects/market-lens
 source venv/bin/activate
 python -m pytest tests/ -v
 ```
@@ -116,9 +123,21 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 7. **`_merge_overlapping_zones()` exists but is not called** from `filter_zones()`. The merge-intervals code is present in `filters.py` but the current pipeline keeps overlapping zones separate.
 
-8. **Data source limitation:** Only Yahoo Finance works. The other 4 sources (NSE India, Zerodha, Upstox, TradingView) are scaffolded but require credentials or unavailable libraries.
+8. **Data source limitation:** Yahoo Finance and Jugaad Data (NSE) both work. The other 4 sources (NSE India, Zerodha, Upstox, TradingView) are scaffolded but require credentials or unavailable libraries.
 
-9. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/market-lens && ..."`.
+9. **Yahoo silently drops trading days.** For some symbols Yahoo omits an entire session — e.g. Mon 2026-07-27 is missing for TORNTPHARM, RELIANCE and LUPIN but present for TCS, INFY, SBIN, ITC and ONGC. A gap is indistinguishable from a shorter dataframe, so nothing can detect it. Jugaad reads NSE directly and has the day. A missing candle shifts base counts and legout runs, so zone output can differ between sources for reasons that are not a bug in the engine.
+
+10. **Prices are UNADJUSTED (`auto_adjust=False`).** Yahoo defaults to dividend-adjusted history, which shifts every pre-dividend candle down by the dividend and so misplaces zones against the current price. Both `yahoo_finance.py` and `manager._default_fetch_fn` pass `auto_adjust=False` so levels match TradingView, TraderTiger and Zerodha Kite. Keep the two in step — they are separate code paths.
+
+11. **The detail chart fetches its own bars.** `render_stock_detail` calls `fetch_by_interval` for the selected candle interval; no OHLCV frame is passed in. A prefetch-and-prime path used to exist but its cache key could never match the interval cache's, and the two paths fetch different windows anyway (dashboard uses the trading type's timeframe, 1y for Options Trading; the chart uses the interval's, 5y for Daily). Do not "repair" that by aligning keys — it would show a different history on first render than on later ones.
+
+12. **Chart caches are keyed by data source.** `detail_cache_{symbol}_{interval}_{use_fib}_{source}`. Without the source component, switching Yahoo -> Jugaad hits the cache and replays the old source's bars, and the source-aware fetch never runs.
+
+13. **A new browser tab is a separate Streamlit session.** The "View" deep link (`?stock=...`) carries the analysis context — `src`, `tt`, `ps`, `enh` — because the new tab cannot see the opening tab's session state. `app.main()` validates each against its allowed list before applying, and must do so BEFORE `render_sidebar()`.
+
+14. **Preferences are recorded, not restored.** Sidebar changes are written to `user_preferences.json`, but `init_session_state()` deliberately starts from fixed defaults every launch, so they are not reapplied. Only `show_candle_tooltip` and `last_analysis_timestamp` are read back. The Settings page labels this block "Last Used Selections" for that reason.
+
+15. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes need a heredoc (`git commit -F - <<'EOF'`) or the shell mis-parses them as paths.
 
 ## Critical Instruction
 
