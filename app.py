@@ -3,6 +3,8 @@
 import streamlit as st
 
 from config.credentials import load_credentials
+from config.settings import SUPPORTED_DATA_SOURCES
+from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
 from storage.database import init_db
 from ui.components.sidebar import render_sidebar
 from ui.pages.dashboard import render_dashboard
@@ -14,13 +16,20 @@ logger = get_logger(__name__)
 
 
 def init_session_state() -> None:
-    """Initialise all required Streamlit session state keys."""
+    """Initialise all required Streamlit session state keys.
+
+    These are deliberately fixed defaults, not the saved preferences: every
+    fresh app launch starts from a known baseline. A stock opened in a new
+    browser tab is the one case that must NOT use these — it adopts the
+    opening tab's selections from the URL instead (see the ?stock= handler
+    in :func:`main`), because a new tab is a separate Streamlit session with
+    empty state and would otherwise silently analyse against different
+    settings than the ones on screen.
+    """
     defaults: dict = {
         "active_page": "dashboard",
         "selected_watchlist_id": None,
         # Two-axis analysis model (Trading Type + Primary Strategy + Enhancers).
-        # The sidebar seeds these from saved preferences via _init_two_axis_state;
-        # they are listed here so the keys always exist before any page reads them.
         "trading_type": "Options Trading",
         "primary_strategy": "Demand/Supply Zones",
         "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
@@ -73,6 +82,27 @@ def main() -> None:
         st.session_state.active_page = "stock_detail"
         _qp_exchange = st.query_params.get("exchange", "NSE")
         st.session_state["_qp_exchange"] = _qp_exchange
+
+        # Adopt the opening tab's analysis context (see stock_card.py). This
+        # must happen before render_sidebar() below so the sidebar widgets and
+        # the detail chart both use the settings the user actually ran the
+        # analysis with, rather than the launch defaults set above.
+        _qp_src = st.query_params.get("src")
+        if _qp_src in SUPPORTED_DATA_SOURCES:
+            st.session_state["selected_data_source"] = _qp_src
+        _qp_tt = st.query_params.get("tt")
+        if _qp_tt in TRADING_TYPES:
+            st.session_state["trading_type"] = _qp_tt
+        _qp_ps = st.query_params.get("ps")
+        if _qp_ps in PRIMARY_STRATEGIES:
+            st.session_state["primary_strategy"] = _qp_ps
+        _qp_enh = st.query_params.get("enh")
+        if _qp_enh is not None:
+            # Empty string legitimately means "no enhancers selected".
+            _adopted = [e for e in _qp_enh.split(",") if e in ENHANCERS]
+            st.session_state["enhancers"] = _adopted
+            st.session_state["use_fibonacci"] = "Fibonacci Confluence" in _adopted
+
         st.session_state["_qp_handled"] = True
 
     try:

@@ -195,7 +195,23 @@ def render_stock_card(
 
     # Open stock detail in a new browser tab via query-param deep link.
     # URL-encode params so symbols with special chars (e.g. M&M) work correctly.
-    _detail_url = "?" + urlencode({"stock": symbol, "exchange": exchange})
+    #
+    # The analysis context rides along on the URL because a new browser tab is
+    # a SEPARATE Streamlit session with empty state — it cannot see what this
+    # sidebar has selected. Without these the new tab silently fell back to the
+    # app defaults (Yahoo Finance, Fibonacci on), so the chart could be drawn
+    # from a different data source than the analysis the user just ran.
+    # App-launch defaults are deliberately left untouched; only this link
+    # carries the selections forward.
+    _detail_url = "?" + urlencode({
+        "stock": symbol,
+        "exchange": exchange,
+        "src": st.session_state.get("selected_data_source", "Yahoo Finance"),
+        "tt": st.session_state.get("trading_type", "Options Trading"),
+        "ps": st.session_state.get("primary_strategy", "Demand/Supply Zones"),
+        # Comma-joined; use_fibonacci is derived from this on the far side.
+        "enh": ",".join(st.session_state.get("enhancers", [])),
+    })
     st.markdown(
         f"""
         <a href="{_detail_url}" target="_blank" style="
