@@ -260,7 +260,11 @@ def render_stock_detail(
 
     # Prime the per-interval cache with the dashboard's already-computed result
     # for the default interval so the first render is instant (no extra fetch).
-    _default_cache_key = f"detail_cache_{symbol}_{_default_label}"
+    # Keyed by data source for the same reason as the chart cache below —
+    # priming from a Yahoo dataframe must not satisfy a Jugaad request.
+    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
+    _cache_src_key = _cache_src.replace(" ", "_")
+    _default_cache_key = f"detail_cache_{symbol}_{_default_label}_{_cache_src_key}"
     if (
         st.session_state.get(_default_cache_key) is None
         and history_df is not None
@@ -314,7 +318,14 @@ def render_stock_detail(
     # without an additional network call.
     # -----------------------------------------------------------------------
     _use_fib = st.session_state.get("use_fibonacci", False)
-    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}_{_use_fib}"
+    # The data source belongs in the key: without it, switching Yahoo -> Jugaad
+    # hits this cache and returns the old Yahoo dataframe, skipping the
+    # source-aware fetch below entirely. The zones are then recomputed from
+    # that stale data too, so the whole detail view silently shows the wrong
+    # source (and, for symbols where Yahoo drops a trading day, a gap).
+    _chart_cache_key = (
+        f"detail_cache_{symbol}_{interval_label}_{_use_fib}_{_cache_src_key}"
+    )
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"

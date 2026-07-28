@@ -616,9 +616,16 @@ def _render_detail_view() -> None:
 
     # Stage C: the chart data must match the analysis timeframe so that zone
     # overlays and Fibonacci lines land on the same bars as the analysis.
-    # Cache key includes trading_type so switching type invalidates old cache.
+    # Cache key includes trading_type so switching type invalidates old cache,
+    # and the data source so switching source does too — without it a
+    # dataframe fetched from Yahoo is replayed after selecting Jugaad, and the
+    # source-aware fetch below never runs because the cache short-circuits it.
     trading_type = st.session_state.get("trading_type", "Options Trading")
-    cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
+    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
+    cache_key = (
+        f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
+        f"_{_cache_src.replace(' ', '_')}"
+    )
     history_df = st.session_state.get(cache_key)
 
     if history_df is None or getattr(history_df, "empty", True):
