@@ -214,9 +214,10 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Streamlit
-.streamlit/secrets.toml
-.streamlit/
+# Streamlit — the theme in config.toml is part of the app and IS committed;
+# everything else here (notably secrets.toml) stays local.
+.streamlit/*
+!.streamlit/config.toml
 
 # Market Lens specific
 *.db
