@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import time
 from datetime import date
+from pathlib import Path
 
 from utils.logger import get_logger
 
@@ -45,7 +48,53 @@ _SCHEMAS: tuple[dict[str, str], ...] = (
 
 # One trading day's file is ~3,400 rows and identical for every symbol, so a
 # session that repairs several stocks downloads it once. Keyed by date.
-_cache: dict[date, dict[str, dict[str, float]] | None] = {}
+_cache: dict[date, dict[str, dict[str, float]]] = {}
+
+# When a date's download fails, note when, so the next symbol does not retry
+# immediately but the session is not written off either.
+_failed_at: dict[date, float] = {}
+_RETRY_AFTER_SEC = 120
+
+# Downloading the file costs ~5s; parsing a local copy costs ~50ms. Without a
+# disk copy that 5s is paid again on the FIRST chart opened after every app
+# restart, which is what made the detail view feel slow. A session's prices
+# never change once published, so the file is written next to the app's other
+# state and re-read on later runs.
+_DISK_CACHE = Path.home() / ".market-lens" / "bhavcopy"
+
+
+def _disk_path(dt: date) -> Path:
+    return _DISK_CACHE / f"{dt.isoformat()}.json"
+
+
+def _read_disk(dt: date) -> dict[str, dict[str, float]] | None:
+    """Return a previously saved session, or None if absent or unreadable."""
+    path = _disk_path(dt)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return data or None
+    except Exception as exc:  # noqa: BLE001 — a bad cache file must not break a fetch
+        logger.warning("Discarding unreadable bhavcopy cache %s: %s", path.name, exc)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def _write_disk(dt: date, table: dict[str, dict[str, float]]) -> None:
+    """Save a parsed session. Failure to cache is never fatal."""
+    try:
+        _DISK_CACHE.mkdir(parents=True, exist_ok=True)
+        # Write then rename so a crash mid-write cannot leave a half file that
+        # would be read back as corrupt on the next run.
+        tmp = _disk_path(dt).with_suffix(".tmp")
+        tmp.write_text(json.dumps(table))
+        tmp.replace(_disk_path(dt))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not cache bhavcopy for %s: %s", dt, exc)
 
 
 def _parse(raw: str) -> dict[str, dict[str, float]]:
@@ -86,12 +135,32 @@ def _parse(raw: str) -> dict[str, dict[str, float]]:
 def _load(dt: date) -> dict[str, dict[str, float]] | None:
     """Download and parse one session's bhavcopy, or return None.
 
-    A miss is cached as None too: the file genuinely does not exist for
-    holidays and for sessions NSE has not published yet, and retrying it on
-    every symbol in a watchlist would be slow for no gain.
+    A SUCCESS is cached for the life of the process — the file never changes
+    once published, and a watchlist run would otherwise re-download it per
+    symbol.
+
+    A FAILURE is retried, at most once per :data:`_RETRY_AFTER_SEC`. NSE
+    occasionally serves a truncated or rate-limited response, and caching
+    that permanently was observed to strip the latest bar from every chart
+    for a whole session after a single blip. Rate-limiting the retry keeps a
+    genuine outage (a holiday, or a session not yet published) from issuing
+    one request per symbol.
     """
-    if dt in _cache:
-        return _cache[dt]
+    cached = _cache.get(dt)
+    if cached:
+        return cached
+
+    from_disk = _read_disk(dt)
+    if from_disk:
+        _cache[dt] = from_disk
+        logger.info(
+            "Bhavcopy for %s read from local cache (%d EQ symbols)", dt, len(from_disk)
+        )
+        return from_disk
+
+    last_try = _failed_at.get(dt)
+    if last_try is not None and (time.monotonic() - last_try) < _RETRY_AFTER_SEC:
+        return None
 
     parsed: dict[str, dict[str, float]] | None = None
     try:
@@ -106,7 +175,12 @@ def _load(dt: date) -> dict[str, dict[str, float]] | None:
     except Exception as exc:  # noqa: BLE001 — never let a repair break a fetch
         logger.warning("Bhavcopy unavailable for %s: %s", dt, exc)
 
-    _cache[dt] = parsed
+    if parsed:
+        _cache[dt] = parsed
+        _failed_at.pop(dt, None)
+        _write_disk(dt, parsed)
+    else:
+        _failed_at[dt] = time.monotonic()
     return parsed
 
 

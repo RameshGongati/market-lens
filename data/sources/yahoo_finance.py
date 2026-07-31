@@ -10,6 +10,29 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _intraday_close(symbol: str, bar_date) -> float | None:
+    """Last intraday close for *symbol* on *bar_date*, or None.
+
+    Second line of repair when NSE's bhavcopy is unavailable. Deliberately
+    hourly rather than minute data: it covers enough days to reach the
+    requested session while staying a small response.
+    """
+    try:
+        intraday = yf.Ticker(symbol).history(
+            period="5d", interval="1h", auto_adjust=False,
+        )
+        if intraday.empty or "Close" not in intraday.columns:
+            return None
+        same_day = intraday[intraday.index.date == bar_date]
+        same_day = same_day[same_day["Close"].notna()]
+        if same_day.empty:
+            return None
+        return float(same_day["Close"].iloc[-1])
+    except Exception as exc:  # noqa: BLE001 — a failed repair must not fail the fetch
+        logger.warning("Intraday fallback failed for %s: %s", symbol, exc)
+        return None
+
+
 def _repair_last_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """Fill a missing close on the most recent daily bar from NSE's bhavcopy.
 
@@ -35,10 +58,30 @@ def _repair_last_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     except AttributeError:
         return df
 
+    # Yahoo's own intraday feed is tried FIRST. It comes from a different
+    # pipeline than the daily bar and is routinely complete while the daily
+    # one is still unsettled — BAJAJHLDNG's 15:15 hourly close matched NSE's
+    # official close exactly. It costs ~200ms against ~5s for the bhavcopy,
+    # and NSE rate-limits, so a bhavcopy-first order made every chart open
+    # wait seconds and sometimes pay that cost only to fail.
+    #
+    # The bhavcopy stays as the backup: Yahoo keeps only ~60 days of hourly
+    # data, so intraday cannot answer for an older session, and NSE remains
+    # the authority when the two ever disagree.
+    close = _intraday_close(symbol, bar_date)
+    if close is not None:
+        df = df.copy()
+        df.iloc[-1, df.columns.get_loc("Close")] = close
+        logger.info(
+            "Completed %s bar for %s from Yahoo intraday (close %.2f)",
+            bar_date, symbol, close,
+        )
+        return df
+
     eod = fetch_eod_ohlc(symbol, bar_date)
     if not eod:
         logger.warning(
-            "%s has no close for %s and NSE has no bhavcopy entry — dropping the bar",
+            "%s has no close for %s from intraday or NSE — dropping the bar",
             symbol, bar_date,
         )
         return df
