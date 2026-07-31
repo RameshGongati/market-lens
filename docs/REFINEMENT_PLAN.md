@@ -105,6 +105,75 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ---
 
+## Pending — Discussed, Not Started
+
+### Trade Confirmation Filter (PENDING)
+
+Surface zones where price entered and then closed back out through the
+PROXIMAL side. That exit is the confirmation the zone is live — orders were
+there and pushed price away — and is the point at which an order would be
+placed. An exit through the distal is the opposite and already invalidates
+the zone under M46.
+
+**Already implemented, just not surfaced:** `count_zone_tests` in
+`scoring.py` defines exit as `close > proximal` (demand) / `close < proximal`
+(supply), so `times_tested >= 1` on a surviving zone ALREADY means "confirmed
+at least once". `activation_touch` with `times_tested == 0` already means
+"price inside, not yet confirmed". The states exist; nothing exposes them.
+
+**The blocker, and why this is not just a dropdown.** A confirmation costs
+freshness (3.0 → 1.5), and `filter_zones` drops anything scoring under 5.0.
+A once-tested zone therefore needs BOTH strength 2 AND time 2 to reach 5.5
+and survive — every other combination lands at 4.5 or below. Measured across
+8 NIFTY stocks: **59 confirmed zones detected, only 2 reached the screener.**
+Adding a filter without addressing this would return a near-empty list and
+look broken.
+
+**Decision needed:** bypass the score cutoff when the confirmation filter is
+active (contained, preferred), stop treating a confirmation as freshness
+damage (truer to the intent but changes `odd_score` app-wide, including
+alerts), or lower the display cutoff (affects everything).
+
+**Also unresolved:** how recent a confirmation must be to be actionable — a
+bounce 40 candles ago is not a trade, and `count_zone_tests` counts
+confirmations without recording when they happened.
+
+**Note:** a pure distance filter cannot do this. For a demand zone, price
+approaching from above and price having bounced back up are the SAME side at
+the SAME distance — only the history differs.
+
+### Main-Area UI Pass (PENDING)
+
+The sidebar was redesigned in `6eec011`; the main pages were deliberately
+left alone and now look unstyled beside it.
+
+- **Page width cap** (~1400px, centred). `layout="wide"` currently lets
+  dropdowns and containers stretch to the full monitor width.
+- **Card treatment** for the Settings page sections, matching the sidebar.
+- **`STRENGTH_BG` / `STRENGTH_COLORS`** in `analysis/base.py` are Bootstrap 4
+  alert colours (`#d4edda`, `#fff3cd`, `#f8d7da`) and look dated against the
+  current palette. They stay green/amber/red — they are semantic — but the
+  shades want refreshing.
+
+**Constraint:** the main canvas must stay white. `backgroundColor` in
+`.streamlit/config.toml` is app-wide, so tinting it also tints the area the
+Plotly charts render on, whose colours were chosen against white. Put cards
+on a white canvas rather than tinting the canvas.
+
+### Discarded Quote Fetch (PENDING — one line)
+
+`yahoo_finance.fetch_quote` assigns `hist = ticker.history(...)` and never
+reads it; every returned value comes from `fast_info`. It is a full chart API
+request per quote: **260ms with it, 42ms without**, and `fetch_quote` runs
+once per stock, so a 50-stock scan wastes roughly 11 seconds. Deleting the
+line changes no output.
+
+(By contrast, the unused `stock_df` import in `jugaad.connect` is
+deliberate — an import probe paired with the `except ImportError` below it.
+pyflakes flags it because pyflakes does not honour `# noqa`.)
+
+---
+
 ## Completed Features (Non-GTF)
 
 ### Telegram Alert System (DONE — `55922c9`..`75b2094`, 2026-07-22)
