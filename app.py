@@ -11,7 +11,8 @@ from ui.pages.alerts_page import render_alerts_page
 from ui.pages.analysis_results import render_analysis_results
 from ui.pages.dashboard import render_detail_view
 from ui.pages.market_overview import render_market_overview
-from ui.pages.placeholders import render_reports_page, render_trade_journal_page
+from ui.pages.placeholders import render_trade_journal_page
+from ui.pages.reports_page import render_reports_page
 from ui.pages.watchlist_manager import render_watchlist_manager
 from ui.pages.settings import render_settings
 from utils.logger import get_logger
