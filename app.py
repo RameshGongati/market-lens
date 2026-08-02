@@ -7,9 +7,11 @@ from config.settings import SUPPORTED_DATA_SOURCES
 from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
 from storage.database import init_db
 from ui.components.sidebar import render_sidebar
+from ui.pages.alerts_page import render_alerts_page
 from ui.pages.analysis_results import render_analysis_results
 from ui.pages.dashboard import render_detail_view
 from ui.pages.market_overview import render_market_overview
+from ui.pages.placeholders import render_reports_page, render_trade_journal_page
 from ui.pages.watchlist_manager import render_watchlist_manager
 from ui.pages.settings import render_settings
 from utils.logger import get_logger
@@ -387,6 +389,12 @@ def main() -> None:
         render_detail_view()
     elif page == "analysis_results":
         render_analysis_results()
+    elif page == "alerts":
+        render_alerts_page()
+    elif page == "reports":
+        render_reports_page()
+    elif page == "trade_journal":
+        render_trade_journal_page()
     elif page == "watchlist_manager":
         render_watchlist_manager()
     elif page == "settings":

@@ -691,7 +691,9 @@ def _render_detail_strip(results: dict[str, dict]) -> None:
             if not alerts:
                 st.caption("No alerts.")
             for a in alerts:
-                msg = getattr(a, "message", None) or str(a)
+                # Rows are dicts, not objects — see market_overview for the
+                # same fix; getattr fell through and printed the whole row.
+                msg = a.get("message", "") if isinstance(a, dict) else str(a)
                 st.markdown(
                     f"<div style='font-size:0.76rem;padding:2px 0;"
                     f"border-bottom:1px solid #F4F4F1;'>• "

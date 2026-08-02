@@ -436,7 +436,11 @@ def _render_recent_alerts() -> None:
         st.caption("No alerts yet.")
         return
     for a in alerts:
-        msg = getattr(a, "message", None) or str(a)
+        # get_all_alerts returns sqlite3.Row converted to DICTS, not objects.
+        # getattr(...) here always missed and fell through to str(a), which
+        # printed the entire row — id, stock_id, is_read and all — as the
+        # alert text. Invisible until an alert actually existed.
+        msg = a.get("message", "") if isinstance(a, dict) else str(a)
         st.markdown(
             f"<div style='font-size:0.78rem;padding:3px 0;"
             f"border-bottom:1px solid #F4F4F1;'>• {html.escape(str(msg))[:70]}</div>",

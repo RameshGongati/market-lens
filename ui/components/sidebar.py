@@ -97,6 +97,49 @@ def _count_active_screener_filters() -> int:
     return active
 
 
+def _alert_badge_count() -> int:
+    """Number shown on the Alerts nav item.
+
+    Counts stocks currently near a zone in the last scan, falling back to
+    unread rows in the alerts table when no scan has run. Both come from
+    ``ui.pages.alerts_page`` so the badge and the page it opens can never
+    report different numbers.
+    """
+    try:
+        from ui.pages.alerts_page import unread_alert_count, zone_alert_matches
+        near = len(zone_alert_matches())
+        return near if near else unread_alert_count()
+    except Exception:
+        return 0
+
+
+def _render_secondary_nav() -> None:
+    """Alerts / Reports / Trade Journal / Settings, one row each."""
+    current = st.session_state.get("active_page", "dashboard")
+    count = _alert_badge_count()
+
+    items = (
+        ("Alerts", "alerts", ":material/notifications:"),
+        ("Reports", "reports", ":material/description:"),
+        ("Trade Journal", "trade_journal", ":material/menu_book:"),
+        ("Settings", "settings", ":material/settings:"),
+    )
+    for label, page, icon in items:
+        # The count rides in the label because Streamlit buttons take no
+        # badge slot, and a separate element beside the button would not stay
+        # aligned as the sidebar narrows.
+        text = f"{label}  ·  {count}" if page == "alerts" and count else label
+        if st.button(
+            text,
+            icon=icon,
+            use_container_width=True,
+            type="primary" if page == current else "secondary",
+            key=f"nav2_{page}",
+        ):
+            st.session_state.active_page = page
+            st.rerun()
+
+
 def _panel_marker() -> None:
     """Emit an invisible marker identifying a container as a sidebar PANEL.
 
@@ -322,13 +365,16 @@ def render_sidebar() -> None:
             # The current page is rendered as a FILLED button and the others
             # as outlines, so the active page is visible at a glance —
             # previously all three were identical.
+            #
+            # Settings moved out of this row to the secondary nav group below
+            # the analysis controls: this row is for the places you go while
+            # working, and Settings is not one of them.
             _current_page = st.session_state.get("active_page", "dashboard")
             _nav = (
                 ("Dashboard", "dashboard", ":material/dashboard:"),
                 ("Watchlists", "watchlist_manager", ":material/list:"),
-                ("Settings", "settings", ":material/settings:"),
             )
-            for _col, (_label, _page, _icon) in zip(st.columns(3), _nav):
+            for _col, (_label, _page, _icon) in zip(st.columns(2), _nav):
                 with _col:
                     if st.button(
                         _label,
@@ -667,6 +713,13 @@ def render_sidebar() -> None:
                 st.session_state["use_fibonacci"] = (
                     "Fibonacci Confluence" in st.session_state["enhancers"]
                 )
+
+            # ---------- Secondary nav ----------
+            # Alerts / Reports / Trade Journal / Settings sit below the
+            # analysis controls: they are destinations rather than scan
+            # settings. Full-width rows rather than a column grid so the
+            # labels never wrap and the Alerts badge has somewhere to sit.
+            _render_secondary_nav()
 
             # Small breathing space before the primary action, without a rule.
             st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
