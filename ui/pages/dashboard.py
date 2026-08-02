@@ -7,11 +7,18 @@ import yfinance as yf
 import streamlit as st
 
 from alerts.manager import check_and_trigger_alerts
+from alerts.zone_alert_checker import check_zone_alerts
 from analysis.base import BaseAnalysis
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from config.alert_settings import load_alert_config
 from config.trading_config import get_timeframe
-from data.manager import DataSourceManager, FetchMeta, fetch_for_trading_type, interval_display_label
+from data.manager import (
+    DataSourceManager,
+    FetchMeta,
+    fetch_for_trading_type,
+    interval_display_label,
+)
 from storage.database import get_all_alerts, save_analysis_result
 from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
@@ -28,6 +35,10 @@ _STATUS_ORDER = {"bullish": 0, "neutral": 1, "bearish": 2}
 _STRENGTH_ORDER = {"Strong": 0, "Medium": 1, "Weak": 2}
 _PROXIMITY_PCT = {"≤3%": 3.0, "≤5%": 5.0, "≤10%": 10.0}
 _SCORE_THRESHOLD = {"7": 7.0, "6+": 6.0, "5+": 5.0}
+# Confirmed zones sit on a different ladder: freshness is pinned at 1.5 once
+# a zone has been tested, so the only reachable totals are 2.5 / 3.5 / 4.5 /
+# 5.5. The usual 7 / 6+ / 5+ thresholds would match almost nothing.
+_CONFIRM_SCORE_THRESHOLD = {"5.5": 5.5, "4.5+": 4.5, "3.5+": 3.5}
 
 
 def _nearest_zones(result: dict) -> list[dict]:
@@ -46,9 +57,29 @@ def _passes_screener(result: dict) -> bool:
     Reads screener state from session state. A stock passes if ANY of its
     nearest zones (demand or supply) satisfies all active criteria.
     """
+    strength_filter: list[str] = st.session_state.get("screener_zone_strength", [])
+
+    # Zone confirmation is a separate mode, not an extra condition. It reads
+    # its own pre-selected list (see demand_supply.confirmation_zones) because
+    # a confirmed zone can score below the 5.0 display cutoff and so may not
+    # appear in demand_zones/supply_zones at all.
+    if st.session_state.get("screener_confirmation", False):
+        confirmed = result.get("confirmation_zones") or []
+        if not confirmed:
+            return False
+        score_min = _CONFIRM_SCORE_THRESHOLD.get(
+            st.session_state.get("screener_confirm_score", "All")
+        )
+        for zone in confirmed:
+            if score_min is not None and zone.get("odd_score", 0) < score_min:
+                continue
+            if strength_filter and zone.get("zone_strength", "Normal") not in strength_filter:
+                continue
+            return True
+        return False
+
     proximity = st.session_state.get("screener_proximity", "All")
     min_score = st.session_state.get("screener_min_score", "All")
-    strength_filter: list[str] = st.session_state.get("screener_zone_strength", [])
 
     if proximity == "All" and min_score == "All" and not strength_filter:
         return True
@@ -334,6 +365,28 @@ def _render_filter_sort_bar(
             + (" …" if len(_fallback) > 5 else "")
         )
 
+    # -- Zone proximity alert banner --
+    try:
+        _alert_cfg = load_alert_config()
+        if _alert_cfg.get("enabled"):
+            _matches = check_zone_alerts(results, _alert_cfg)
+            if _matches:
+                with st.expander(
+                    f"🔔 {len(_matches)} stock{'s' if len(_matches) != 1 else ''} near zones",
+                    expanded=False,
+                ):
+                    for m in _matches:
+                        _cat = m.zone.get("category", "demand")
+                        _icon = "📈" if _cat == "demand" else "📉"
+                        _score = m.zone.get("odd_score", 0)
+                        st.markdown(
+                            f"{_icon} **{m.symbol}** ₹{m.current_price:,.2f} — "
+                            f"{m.distance_pct:.1f}% from {_cat} "
+                            f"(Score {_score})"
+                        )
+    except Exception as exc:
+        logger.warning("Alert banner check failed: %s", exc)
+
     # Initialise filter/sort state with defaults
     st.session_state.setdefault("dash_status_filter", [])
     st.session_state.setdefault("dash_strength_filter", [])
@@ -397,11 +450,21 @@ def _render_filter_sort_bar(
     elif sort_by == "Alphabetical":
         filtered.sort(key=lambda x: x[0])
 
-    _active_screeners = sum([
-        st.session_state.get("screener_proximity", "All") != "All",
-        st.session_state.get("screener_min_score", "All") != "All",
-        bool(st.session_state.get("screener_zone_strength", [])),
-    ])
+    # Mirrors sidebar._count_active_screener_filters — proximity and the
+    # normal score ladder are inactive in confirmation mode, so counting a
+    # value left over from the other mode would overstate what is filtering.
+    if st.session_state.get("screener_confirmation", False):
+        _active_screeners = sum([
+            True,  # the confirmation mode itself
+            st.session_state.get("screener_confirm_score", "All") != "All",
+            bool(st.session_state.get("screener_zone_strength", [])),
+        ])
+    else:
+        _active_screeners = sum([
+            st.session_state.get("screener_proximity", "All") != "All",
+            st.session_state.get("screener_min_score", "All") != "All",
+            bool(st.session_state.get("screener_zone_strength", [])),
+        ])
     _scr_note = f" | {_active_screeners} screener filter{'s' if _active_screeners != 1 else ''} active" if _active_screeners else ""
     st.caption(f"Showing {len(filtered)} of {total} stocks{_scr_note}")
 
@@ -466,6 +529,37 @@ def _do_export_pdf(
         st.error(f"PDF export failed: {exc}")
 
 
+def _card_summary(result: dict) -> str:
+    """Card summary, with the confirmed zone put first in confirmation mode.
+
+    The default summary leads with the nearest DISPLAY zone, which in this mode
+    is the wrong headline: on ONGC it announced a supply zone 17% away while
+    the zone that actually matched the screener sat 3% away and went unnamed.
+    Confirmation zones score below the display floor, so they can never appear
+    in the default text — the card has to say which zone it matched on.
+    """
+    summary = result.get("summary", "")
+    # Live session state — the same read _passes_screener and the chart
+    # overlays use, so all three agree on whether the mode is active.
+    if not st.session_state.get("screener_confirmation", False):
+        return summary
+
+    zones = result.get("confirmation_zones") or []
+    if not zones:
+        return summary
+
+    price = result.get("current_price", 0.0) or 0.0
+    parts = []
+    for z in zones:
+        prox = z.get("proximal", 0.0)
+        gap = f" {abs(price - prox) / price * 100:.1f}%" if price else ""
+        parts.append(
+            f"{z.get('category', '')} {prox:g} "
+            f"({z.get('zone_type', '')}, score {z.get('odd_score', 0):g}{gap})"
+        )
+    return f"Confirmed: {' · '.join(parts)} | {summary}"
+
+
 def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
     """Render a 3-column grid of stock cards."""
     if not results:
@@ -478,7 +572,7 @@ def _render_results_grid(results: dict[str, dict], analysis_type: str) -> None:
                 symbol=symbol,
                 exchange=result.get("exchange", "NSE"),
                 status=result.get("status", "neutral"),
-                summary=result.get("summary", ""),
+                summary=_card_summary(result),
                 current_price=result.get("current_price", 0.0),
                 change=result.get("change", 0.0),
                 change_pct=result.get("change_pct", 0.0),
@@ -584,35 +678,20 @@ def _render_detail_view() -> None:
     exchange = result.get("exchange") or st.session_state.get("_qp_exchange", "NSE")
     stock_id = result.get("stock_id") or st.session_state.get("selected_stock_id")
 
-    # Stage C: the chart data must match the analysis timeframe so that zone
-    # overlays and Fibonacci lines land on the same bars as the analysis.
-    # Cache key includes trading_type so switching type invalidates old cache.
-    trading_type = st.session_state.get("trading_type", "Options Trading")
-    cache_key = f"detail_hist_{symbol}_{trading_type.replace(' ', '_')}"
-    history_df = st.session_state.get(cache_key)
-
-    if history_df is None or getattr(history_df, "empty", True):
-        try:
-            suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-            full_symbol = f"{symbol}{suffix}"
-            # Use fetch_for_trading_type so the chart matches analysis bars;
-            # _default_fetch_fn (yfinance) is used since this is outside the
-            # DataSourceManager's scope and yf is already imported in this file.
-            history_df, _det_meta = fetch_for_trading_type(full_symbol, trading_type)
-            if history_df is not None and not history_df.empty:
-                st.session_state[cache_key] = history_df
-            else:
-                history_df = None
-        except Exception as exc:
-            logger.warning("History prefetch failed for %s: %s", symbol, exc)
-            history_df = None
-
+    # No OHLCV prefetch here: render_stock_detail fetches its own bars via
+    # fetch_by_interval for the candle interval the user picks. A prefetch used
+    # to run for a cache-priming step in that function, but the priming key
+    # could never match the interval cache's key, so the frame was fetched and
+    # then dropped — one wasted network round trip per detail view. Priming was
+    # removed rather than repaired: the dashboard fetches the trading type's
+    # timeframe (1y for Options Trading) while the chart fetches the interval's
+    # (5y for Daily), so a working prime would have shown a different history
+    # on first render than on every render after.
     render_stock_detail(
         symbol=symbol,
         exchange=exchange,
         analysis_type=analysis_type,
         result=result,
-        history_df=history_df,
         stock_id=stock_id,
     )
 

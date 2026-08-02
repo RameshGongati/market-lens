@@ -1,0 +1,28 @@
+# Market Lens theme — soft neutral (Option A).
+#
+# The accent is deliberately slate rather than a saturated colour: green and
+# red already carry meaning in this app (demand vs supply zones, Strong vs
+# Weak strength badges), so an accent from either family would read as a
+# signal. Slate recedes and lets the candles dominate.
+#
+# Streamlit's own default primaryColor is #ff4b4b, which is both louder than
+# anything else on screen and clashes with red-means-supply on the charts.
+
+[theme]
+base = "light"
+
+# Drives filled buttons, radio dots, checkboxes, slider tracks and focus rings.
+primaryColor = "#4A5361"
+
+# Main canvas stays WHITE. This is app-wide, not sidebar-only, so tinting it
+# also tints everything the main pages render on — including the area around
+# the Plotly charts, whose colours were chosen against white. The sidebar
+# gets its own surfaces via secondaryBackgroundColor and the CSS in app.py.
+backgroundColor = "#FFFFFF"
+
+# The sidebar RAIL — the surface the panels sit on. Lighter than the panels
+# themselves: the layering that matters is panel-to-card, so the rail steps
+# back and lets the white cards carry the contrast.
+secondaryBackgroundColor = "#F7F6F1"
+
+textColor = "#26262B"

@@ -39,6 +39,22 @@ _MAX_LEG_RUN = 6
 # the gap must show institutional conviction, not bid-ask noise.
 _MIN_GAP_LEGOUT_PCT = _MIN_BODY_PCT_OF_PRICE
 
+# M10: Achievement ratio thresholds — measures how far the legout moved
+# beyond the zone proximal relative to the base width (proximal-to-distal).
+# Zones below _MIN are garbage (silently rejected); between _MIN and _CLEAN
+# are flagged "Weak Departure"; at or above _CLEAN are accepted as "Clean".
+_MIN_ACHIEVEMENT_RATIO = 0.5     # below = hard reject (garbage area)
+_CLEAN_ACHIEVEMENT_RATIO = 1.0   # at or above = clean (no flag)
+# Near-zero base range guard: skip M10 when proximal ≈ distal to avoid
+# division by zero (e.g. after rounding or in very tight bases).
+_MIN_BASE_RANGE_FOR_M10 = 0.01
+
+# M12: base width above this percentage of price is flagged "Wide Base" in
+# the UI.  Deliberately PUBLIC (no leading underscore) because
+# ``ui/components/stock_detail.py`` imports it — one source of truth keeps
+# the detection threshold and the displayed label from drifting apart.
+WIDE_BASE_THRESHOLD_PCT = 3.0
+
 # Rule: Pattern identity — (legin direction, legout direction) -> (zone_type, category)
 _PATTERN_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("bearish", "bullish"): ("DBR", "demand"),   # Drop-Base-Rally
@@ -234,9 +250,17 @@ def _missing_base_marking(
 ) -> tuple[float, float]:
     """M17: Zone boundary marking for missing-base (instant reversal) zones.
 
-    Both the turning-point and first legout candle define the zone:
-      * DEMAND: proximal = body bottom of legout, distal = lowest low of both
-      * SUPPLY: proximal = body top of legout, distal = highest high of both
+    Both the turning-point and first legout candle define the zone, and the
+    proximal takes the more CONSERVATIVE of the two — the edge nearer the
+    distal — so the zone never claims more range than both candles support:
+
+      * DEMAND: proximal = min(body_top_tp, body_top_legout),
+        distal = lowest low of both
+      * SUPPLY: proximal = max(body_bottom_tp, body_bottom_legout),
+        distal = highest high of both
+
+    ``max(open, close)`` is a candle's body top and ``min(open, close)`` its
+    body bottom, which is what the expressions below compute.
     """
     tp_o = float(df["Open"].iloc[turning_point_idx])
     tp_h = float(df["High"].iloc[turning_point_idx])
@@ -283,6 +307,91 @@ def _exceptional_distal(
         return float(legout["Low"].min())
     # DBD
     return float(legout["High"].max())
+
+
+def _m10_achievement_check(
+    df: pd.DataFrame,
+    category: str,
+    proximal: float,
+    distal: float,
+    legout_start: int,
+    legout_end: int,
+    num_base_candles: int,
+) -> tuple[bool, str]:
+    """M10: Garbage-area rejection based on leg-out achievement ratio.
+
+    Measures how far the legout moved beyond the zone proximal relative
+    to the base width.  A legout that barely clears the base proves no
+    institutional conviction — the zone is garbage.
+
+    For demand: legout_move = max(High across legout) - proximal  (rally above zone)
+    For supply: legout_move = proximal - min(Low across legout)   (drop below zone)
+
+    Returns:
+        (should_keep, zone_quality) — False means reject the zone entirely;
+        True with "Weak Departure" means keep but flag; True with "Clean"
+        means no flag needed.
+    """
+    # M17 missing-base zones: instant reversals are decisive by definition —
+    # skip M10 and treat as Clean.
+    if num_base_candles == 0:
+        return True, "Clean"
+
+    base_range = abs(proximal - distal)
+
+    # Guard: near-zero base range (proximal ≈ distal after rounding) —
+    # skip to avoid division by zero and treat as Clean.
+    if base_range < _MIN_BASE_RANGE_FOR_M10:
+        return True, "Clean"
+
+    # Compute how far the legout moved beyond the zone proximal.
+    if category == "demand":
+        legout_extreme = float(df["High"].iloc[legout_start: legout_end + 1].max())
+        legout_move = legout_extreme - proximal
+    else:
+        legout_extreme = float(df["Low"].iloc[legout_start: legout_end + 1].min())
+        legout_move = proximal - legout_extreme
+
+    ratio = legout_move / base_range
+
+    if ratio < _MIN_ACHIEVEMENT_RATIO:
+        return False, "Clean"  # rejected — quality string irrelevant
+    if ratio < _CLEAN_ACHIEVEMENT_RATIO:
+        return True, "Weak Departure"
+    return True, "Clean"
+
+
+def _base_width_pct(
+    df: pd.DataFrame,
+    base_start: int,
+    base_end: int,
+    proximal: float,
+) -> float:
+    """M12: Base width as a percentage of the zone's proximal price.
+
+    Measures how much price territory the base contested.  A tight base (low
+    percentage) means institutional orders sat in a narrow band, so the entry
+    is precise and the stop can sit close; a wide base means the level is
+    fuzzy and the stop must sit far away, hurting R:R.
+
+    Uses the FULL base range — highest high to lowest low across every base
+    candle — regardless of whether M13 marked the proximal wick-to-wick or
+    body-to-wick.  The full range is the total territory contested, which is
+    the thing being measured; the marking only decides where price is entered.
+
+    Missing-base zones (M17) pass ``base_start == base_end == turning point``,
+    so this same slice naturally returns that single candle's range — no
+    special case needed.
+
+    Returns:
+        Width as a percentage of *proximal*, or ``0.0`` when *proximal* is
+        non-positive (defensive — real price data is always above zero).
+    """
+    if proximal <= 0:
+        return 0.0
+    base_high = float(df["High"].iloc[base_start: base_end + 1].max())
+    base_low = float(df["Low"].iloc[base_start: base_end + 1].min())
+    return (base_high - base_low) / proximal * 100
 
 
 def detect_zones(df: pd.DataFrame) -> list[Zone]:
@@ -387,6 +496,12 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 )
                 mb_legout_candles = candles[mb_legout_start: mb_legout_end + 1]
 
+                # M12: the turning-point candle IS the base here, so passing
+                # it as both bounds returns that candle's own high-low range.
+                mb_base_width_pct = _base_width_pct(
+                    df, turning_point, turning_point, mb_proximal,
+                )
+
                 mb_score = score_zone(
                     df=df,
                     category=mb_category,
@@ -399,6 +514,8 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 )
 
                 if not mb_score["is_invalidated"]:
+                    # M10: skipped for missing-base zones (M17) — instant
+                    # reversals are decisive by definition, always "Clean".
                     zones.append(
                         Zone(
                             zone_type=mb_zone_type,
@@ -409,6 +526,8 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                             distal_exceptional=mb_dist_exc,
                             marking=mb_marking,
                             proximal_marking="Missing-Base",
+                            zone_quality="Clean",
+                            base_width_pct=mb_base_width_pct,
                             base_start_idx=turning_point,
                             base_end_idx=turning_point,
                             legout_idx=mb_legout_start,
@@ -537,6 +656,20 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
             btw_distal=distal,
         )
 
+        # M10: achievement ratio — reject garbage zones where the legout
+        # barely cleared the base, flag borderline ones as "Weak Departure".
+        keep, zone_quality = _m10_achievement_check(
+            df, category, proximal, distal,
+            legout_start, legout_end, num_base_candles,
+        )
+        if not keep:
+            i = legout_end + 1
+            continue
+
+        # M12: base width as a percentage of price — information only, it
+        # never rejects a zone and never feeds into the ODD score below.
+        base_width_pct = _base_width_pct(df, base_start, base_end, proximal)
+
         score = score_zone(
             df=df,
             category=category,
@@ -562,6 +695,8 @@ def detect_zones(df: pd.DataFrame) -> list[Zone]:
                 distal_exceptional=distal_exceptional,
                 marking=marking,
                 proximal_marking=proximal_marking,
+                zone_quality=zone_quality,
+                base_width_pct=base_width_pct,
                 base_start_idx=base_start,
                 base_end_idx=base_end,
                 legout_idx=legout_start,

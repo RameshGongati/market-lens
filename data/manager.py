@@ -165,7 +165,12 @@ def _default_fetch_fn(symbol: str, period: str, interval: str) -> pd.DataFrame:
     import yfinance as yf  # lazy — keeps test-suite startup fast when mocked
 
     try:
-        df = yf.Ticker(symbol).history(period=period, interval=interval)
+        # auto_adjust=False mirrors YahooFinanceSource.fetch_history: unadjusted
+        # prices match the actual traded levels shown by TradingView / TraderTiger,
+        # so zone boundaries land on the same prices regardless of which path fetched.
+        df = yf.Ticker(symbol).history(
+            period=period, interval=interval, auto_adjust=False,
+        )
         if df.empty:
             return df
         available = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
@@ -547,3 +552,37 @@ class DataSourceManager:
             logger.warning("Data source %s not connected", self._active_source_name)
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
         return self._active_source.fetch_history(symbol, period, interval)
+
+
+def build_source_manager(
+    source_name: str,
+    credentials: dict[str, str] | None = None,
+) -> DataSourceManager:
+    """Return a :class:`DataSourceManager` already switched to *source_name*.
+
+    Centralises the "construct then switch_source" pair that every UI entry
+    point needs.  Call this — and pass the resulting ``get_history`` as the
+    ``fetch_fn`` of :func:`fetch_for_trading_type` / :func:`fetch_by_interval` —
+    so a chart or analysis path can never quietly fall back to
+    :func:`_default_fetch_fn` (hard-wired to Yahoo Finance) while the user has a
+    different source selected.
+
+    Args:
+        source_name: One of the keys in :data:`_SOURCE_REGISTRY`.
+        credentials: Optional credential fields for the requested source.
+
+    Returns:
+        A connected manager whose ``active_source_name`` is *source_name*.
+
+    Raises:
+        ValueError: If *source_name* is not a registered source.
+        RuntimeError: If the requested source fails to connect.  Callers should
+            surface this to the user rather than swallowing it — a silent
+            fallback is what this helper exists to prevent.
+    """
+    manager = DataSourceManager()
+    if credentials:
+        manager.switch_source(source_name, credentials)
+    else:
+        manager.switch_source(source_name)
+    return manager

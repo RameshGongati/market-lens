@@ -52,7 +52,7 @@ import pandas as pd
 from analysis.base import BaseAnalysis, Status, Strength
 from analysis.zone_engine.enhancers import ema20_confluence
 from analysis.zone_engine.fibonacci import calculate_fib_levels, fib_confluence, find_recent_swing
-from analysis.zone_engine.filters import filter_zones
+from analysis.zone_engine.filters import filter_confirmation_zones, filter_zones
 from analysis.zone_engine.models import Zone
 from analysis.zone_engine.patterns import detect_zones
 from analysis.zone_engine.scoring import assess_closing_quality, confluence_rating
@@ -222,6 +222,18 @@ class DemandSupplyAnalysis(BaseAnalysis):
             assess_closing_quality(zones, zone_data)
             all_zones_count = len(zones)
             display_zones = filter_zones(zones, current_price)
+            # Zone confirmation is a SEPARATE selection over the same raw
+            # zones, not a variation of display_zones. It has to be, because
+            # filter_zones drops anything under 5.0 and a confirmed zone can
+            # never score 5.0 — freshness is pinned at 1.5, so the reachable
+            # totals are 2.5 / 3.5 / 4.5 / 5.5. Deriving it from the filtered
+            # list would find almost nothing; deriving it from the raw list
+            # leaves display_zones untouched.
+            # zone_data (not data) is passed so the recency check dates the
+            # last confirmation against the same bars the zones were found in.
+            confirmation_zones = filter_confirmation_zones(
+                zones, current_price, zone_data,
+            )
 
             # --- Stage 2: trend + EMA 20 confluence context ------------------
             # Pure additive context layered on the already-filtered display
@@ -292,6 +304,10 @@ class DemandSupplyAnalysis(BaseAnalysis):
                 # and ui/components/stock_detail.py — see module docstring.
                 "demand_zones": [_zone_dict(z) for z in demand_zones],
                 "supply_zones": [_zone_dict(z) for z in supply_zones],
+                # Zones price has already reacted to and left, still within
+                # reach. Additive: nothing else reads this, so the charts and
+                # alerts are unaffected — only the screener consults it.
+                "confirmation_zones": [_zone_dict(z) for z in confirmation_zones],
                 "strength": strength,
             }
             # Stage 3: only ever present when the Fibonacci enhancer was

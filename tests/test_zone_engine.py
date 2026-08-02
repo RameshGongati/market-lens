@@ -25,7 +25,7 @@ from analysis.zone_engine.fibonacci import (
 )
 from analysis.zone_engine.filters import filter_zones
 from analysis.zone_engine.models import Zone
-from analysis.zone_engine.patterns import detect_zones
+from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT, detect_zones
 from analysis.zone_engine.scoring import (
     assess_closing_quality,
     confluence_rating,
@@ -2082,3 +2082,388 @@ def test_gap_only_legout_not_explosive_wide_base_gets_btw():
     # ratio=13/8=1.625 > 1.5 → BTW
     assert z.proximal == 103.0
     assert z.proximal_marking == "Body-to-Wick"
+
+
+# ---------------------------------------------------------------------------
+# M10: Achievement ratio — garbage-area rejection
+# ---------------------------------------------------------------------------
+# M10 measures how far the legout moved beyond the zone proximal relative
+# to the base width (proximal-to-distal distance).
+#   ratio < 0.5  → reject (garbage)
+#   0.5 <= ratio < 1.0 → "Weak Departure" (keep but flag)
+#   ratio >= 1.0 → "Clean" (no flag)
+#
+# All test candles satisfy M5 exciting thresholds:
+#   body_pct >= 0.50 AND body >= 1.3% of price.
+
+
+def test_m10_clean_demand_zone_ratio_above_1():
+    """M10: achievement ratio >= 1.0 produces a Clean demand zone.
+
+    Setup: DBR with base_range=5 (proximal=115, distal=110),
+    legout high=125 → legout_move=125-115=10, ratio=10/5=2.0.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=10/12=83%, body/price=8.3%)
+        (120, 122, 110, 110),
+        # idx 1: base — boring (body=2/5=40%, small vs range)
+        (111, 115, 110, 113),
+        # idx 2: legout — bullish exciting (body=12/14=86%, body/price=10.4%)
+        (113, 127, 113, 125),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # WTW: proximal=115, distal=110, base_range=5
+    # legout_move = max_high(125..127=127) - 115 = 12, ratio=12/5=2.4
+    assert z.zone_quality == "Clean"
+
+
+def test_m10_weak_departure_demand_zone_ratio_between_05_and_1():
+    """M10: achievement ratio between 0.5 and 1.0 flags "Weak Departure".
+
+    Setup: DBR with a wide base (range=10) and a legout that moves only 7
+    units beyond proximal → ratio=7/10=0.7.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, moves modestly above proximal
+        # WTW proximal = max(high)=108, distal=min(low)=96, base_range=12
+        # Need legout to move only ~7-8 units above 108 → high ≈ 115-116
+        # body=9/10=90%, body/price=8.3%
+        (108, 116, 106, 117),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # WTW: proximal=108, distal=96, base_range=12
+    # legout_move = 117 - 108 = 9, ratio=9/12=0.75
+    assert z.zone_quality == "Weak Departure"
+
+
+def test_m10_garbage_demand_zone_ratio_below_05_rejected():
+    """M10: achievement ratio < 0.5 silently rejects the zone (garbage area).
+
+    Setup: DBR with wide base (range ~12) and legout that barely clears
+    proximal → ratio < 0.5, no zone created.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, barely clears base
+        # WTW proximal=108, distal=96, base_range=12
+        # Need legout_move < 6 → high ≈ 112-113 max
+        # body=5/6=83%, body/price=4.6%
+        (108, 113, 107, 113),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    # legout_move = 113 - 108 = 5, ratio = 5/12 = 0.42 < 0.5 → rejected
+    assert len(dbr) == 0
+
+
+def test_m10_supply_zone_clean():
+    """M10: supply-side achievement ratio >= 1.0 produces a Clean zone.
+
+    Setup: RBD with base_range=6 (proximal=107, distal=113),
+    legout drops well below proximal.
+    """
+    rows = [
+        # idx 0: legin — bullish exciting (body=11/13=85%, body/price=11%)
+        (100, 112, 99, 111),
+        # idx 1: base — boring (body=1/5=20%)
+        (111, 113, 108, 110),
+        # idx 2: base — boring (body=1/5=20%)
+        (110, 112, 107, 109),
+        # idx 3: legout — bearish exciting, drops far below proximal
+        # WTW: proximal=107, distal=113, base_range=6
+        # legout_move = 107 - 97 = 10, ratio=10/6=1.67
+        # body=11/13=85%, body/price=10.1%
+        (109, 110, 97, 98),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].zone_quality == "Clean"
+
+
+def test_m10_supply_zone_garbage_rejected():
+    """M10: supply-side ratio < 0.5 rejects the zone.
+
+    Setup: RBD with wide base (range ~12) and legout that barely drops
+    below proximal → garbage, no zone created.
+    """
+    rows = [
+        # idx 0: legin — bullish exciting (body=20/22=91%, body/price=18.2%)
+        (100, 122, 100, 120),
+        # idx 1: base — boring (body=2/10=20%)
+        (119, 125, 115, 117),
+        # idx 2: base — boring (body=2/10=20%)
+        (117, 123, 113, 115),
+        # idx 3: legout — bearish exciting, barely drops
+        # WTW: proximal=113, distal=125, base_range=12
+        # Need legout_move < 6 → low > 107
+        # body=5/6=83%, body/price=4.5%
+        (113, 113, 108, 108),
+    ]
+    zones = detect_zones(_make_df(rows))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    # legout_move = 113 - 108 = 5, ratio = 5/12 = 0.42 < 0.5 → rejected
+    assert len(rbd) == 0
+
+
+def test_m10_missing_base_skipped_always_clean():
+    """M10: missing-base zones (M17) skip the achievement check entirely.
+
+    Missing-base zones have 0 base candles — instant reversals are decisive
+    by definition. zone_quality should always be "Clean".
+    Uses the proven M17 fixture: legin extension + turning point + legout.
+    """
+    rows = [
+        # idx 0: legin extension — bearish exciting (body=12/13=92%)
+        (130, 131, 118, 119),
+        # idx 1: turning point — bearish exciting, last legin candle
+        (120, 121, 108, 109),
+        # idx 2: legout — bullish exciting, opposite direction (instant reversal)
+        (110, 125, 109, 124),
+    ]
+    zones = detect_zones(_make_df(rows))
+    mb_zones = [z for z in zones if z.num_base_candles == 0]
+    assert len(mb_zones) >= 1
+    for z in mb_zones:
+        assert z.zone_quality == "Clean"
+
+
+def test_m10_near_zero_base_range_guard():
+    """M10: when proximal ≈ distal (base_range < 0.01), skip the check
+    and treat as Clean to avoid division by zero.
+
+    Build a zone where all base candles have nearly identical OHLC values
+    so proximal and distal converge.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring, tiny range (body=0.001, range=0.005)
+        # All values within 0.005 of each other → proximal ≈ distal
+        (100.000, 100.005, 100.000, 100.001),
+        # idx 2: legout — bullish exciting (body=10/12=83%, body/price=9.1%)
+        (100.005, 112, 100, 110),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    # If a zone was created (base might be too narrow for detection), it
+    # should have zone_quality = "Clean" — no crash from division by zero.
+    for z in dbr:
+        assert z.zone_quality == "Clean"
+
+
+def test_m10_existing_dbr_fixture_still_clean():
+    """M10: existing _DBR_ROWS fixture still produces a Clean zone.
+
+    Regression guard — confirms M10 doesn't break existing test data.
+    _DBR_ROWS: proximal=115, distal=108, base_range=7
+    legout high=125, legout_move=125-115=10, ratio=10/7=1.43 → Clean.
+    """
+    zones = detect_zones(_make_df(_DBR_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    assert dbr[0].zone_quality == "Clean"
+
+
+def test_m10_existing_rbd_fixture_still_clean():
+    """M10: existing _RBD_ROWS fixture still produces a Clean zone.
+
+    Regression guard — confirms M10 doesn't break existing test data.
+    _RBD_ROWS: proximal=107, distal=113, base_range=6
+    legout low=97, legout_move=107-97=10, ratio=10/6=1.67 → Clean.
+    """
+    zones = detect_zones(_make_df(_RBD_ROWS))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    assert rbd[0].zone_quality == "Clean"
+
+
+def test_m10_does_not_change_odd_score():
+    """M10: the achievement ratio does NOT modify the ODD score.
+
+    M10 is a quality gate (reject) and quality flag (Weak Departure),
+    not a score modifier. Verify odd_score is unchanged for a Weak
+    Departure zone compared to what freshness+strength+time would give.
+    """
+    rows = [
+        # idx 0: legin — bearish exciting (body=20/22=91%, body/price=16.7%)
+        (120, 122, 100, 100),
+        # idx 1: base — boring (body=2/10=20%)
+        (101, 106, 96, 103),
+        # idx 2: base — boring (body=2/10=20%)
+        (103, 108, 98, 105),
+        # idx 3: legout — bullish exciting, modest move (Weak Departure)
+        # WTW proximal=108, distal=96, base_range=12
+        # legout_move = 117 - 108 = 9, ratio = 9/12 = 0.75
+        (108, 116, 106, 117),
+    ]
+    zones = detect_zones(_make_df(rows))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    assert z.zone_quality == "Weak Departure"
+    # Score should equal freshness + strength + time as usual
+    expected_score = z.freshness_points + z.strength_points + z.time_points
+    assert z.odd_score == pytest.approx(expected_score)
+
+
+# ---------------------------------------------------------------------------
+# M12: Base width as a quality metric
+# ---------------------------------------------------------------------------
+# base_width_pct = (base_high - base_low) / proximal * 100, using the FULL
+# base range regardless of whether M13 marked the proximal wick-to-wick or
+# body-to-wick. Information only — never filters, never changes odd_score.
+#
+# Expected values are derived from the zone's ACTUAL proximal rather than a
+# hardcoded number, so these tests don't silently break if M13's priority
+# chain picks a different marking than the fixture author assumed.
+
+# Narrow base on a ~500 stock: base spans 498-505 (7 points).
+# idx 0: legin  — bearish exciting (body 18/22 = 0.82, 18/502 = 3.6% of price)
+# idx 1: base   — boring           (body 1/7 = 0.14)
+# idx 2: legout — bullish exciting, closes above the base high of 505
+_M12_NARROW_ROWS = [
+    (520, 522, 500, 502),
+    (502, 505, 498, 503),
+    (505, 525, 503, 523),
+]
+
+# Wide base on a ~500 stock: base spans 485-520 (35 points).
+# idx 0: legin  — bearish exciting (body 52/56 = 0.93, 52/488 = 10.7% of price)
+# idx 1: base   — boring           (body 7/35 = 0.20)
+# idx 2: legout — bullish exciting, closes above the base high of 520
+_M12_WIDE_ROWS = [
+    (540, 542, 486, 488),
+    (488, 520, 485, 495),
+    (497, 535, 495, 533),
+]
+
+
+def test_m12_narrow_base_width_computed():
+    """M12: a tight base yields a small base_width_pct.
+
+    Base spans 498-505 = 7 points on a ~500 stock, so the width lands
+    near 1.4% — comfortably under the 3% "Wide Base" threshold.
+    """
+    zones = detect_zones(_make_df(_M12_NARROW_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # base_high = 505, base_low = 498 -> width 7
+    expected = (505 - 498) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct < WIDE_BASE_THRESHOLD_PCT
+
+
+def test_m12_wide_base_width_exceeds_threshold():
+    """M12: a sloppy base yields a base_width_pct above the flag threshold.
+
+    Base spans 485-520 = 35 points on a ~500 stock, so the width lands
+    near 7% and would render " | Wide Base 7.1%" on the chart label.
+    """
+    zones = detect_zones(_make_df(_M12_WIDE_ROWS))
+    dbr = [z for z in zones if z.zone_type == "DBR"]
+    assert len(dbr) == 1
+    z = dbr[0]
+    # base_high = 520, base_low = 485 -> width 35
+    expected = (520 - 485) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct > WIDE_BASE_THRESHOLD_PCT
+
+
+def test_m12_supply_zone_uses_base_range_over_proximal():
+    """M12: supply zones use the same base high-low range over proximal.
+
+    For a supply zone the proximal is the LOW edge, but the numerator is
+    still the full base range — the formula does not mirror.
+    """
+    zones = detect_zones(_make_df(_RBD_ROWS))
+    rbd = [z for z in zones if z.zone_type == "RBD"]
+    assert len(rbd) == 1
+    z = rbd[0]
+    # base candles: highs 113/112 -> 113, lows 108/107 -> 107, width 6
+    expected = (113 - 107) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+
+
+def test_m12_missing_base_uses_turning_point_range():
+    """M12: for missing-base zones the turning-point candle IS the base.
+
+    num_base_candles is 0, so the shared helper is passed the turning point
+    as both bounds and returns that single candle's high-low range.
+    """
+    rows = [
+        (130, 131, 118, 119),   # legin extension (bearish exciting)
+        (120, 121, 108, 109),   # turning point (bearish exciting)
+        (110, 125, 109, 124),   # legout (bullish exciting, opposite direction)
+    ]
+    zones = detect_zones(_make_df(rows))
+    mb = [z for z in zones if z.num_base_candles == 0]
+    assert len(mb) == 1
+    z = mb[0]
+    # Turning point candle: high 121, low 108 -> width 13
+    expected = (121 - 108) / z.proximal * 100
+    assert z.base_width_pct == pytest.approx(expected, abs=0.1)
+    assert z.base_width_pct > 0
+
+
+def test_m12_base_width_does_not_change_odd_score():
+    """M12: base width is informational — it never feeds the ODD score.
+
+    The narrow and wide fixtures both have one base candle, no gap, and no
+    tests after the legout, so their freshness/strength/time components are
+    identical. Their scores must match despite very different widths.
+    """
+    narrow = [z for z in detect_zones(_make_df(_M12_NARROW_ROWS)) if z.zone_type == "DBR"][0]
+    wide = [z for z in detect_zones(_make_df(_M12_WIDE_ROWS)) if z.zone_type == "DBR"][0]
+
+    # The widths genuinely differ — otherwise this test proves nothing.
+    assert wide.base_width_pct > narrow.base_width_pct + 3.0
+
+    # Same score components in, same score out.
+    assert narrow.freshness_points == wide.freshness_points
+    assert narrow.strength_points == wide.strength_points
+    assert narrow.time_points == wide.time_points
+    assert narrow.odd_score == wide.odd_score
+    # And the score is still exactly the sum of its three components.
+    for z in (narrow, wide):
+        assert z.odd_score == pytest.approx(
+            z.freshness_points + z.strength_points + z.time_points
+        )
+
+
+def test_m12_existing_fixtures_populate_base_width():
+    """M12: existing DBR/RBD fixtures gain a populated width, unchanged otherwise.
+
+    Regression guard — confirms M12 adds a field without disturbing the
+    boundaries, marking, or scoring those fixtures already assert.
+    """
+    dbr = [z for z in detect_zones(_make_df(_DBR_ROWS)) if z.zone_type == "DBR"][0]
+    # base high 115, base low 108 -> width 7 over proximal 115
+    assert dbr.base_width_pct == pytest.approx((115 - 108) / 115 * 100, abs=0.1)
+    assert dbr.proximal == pytest.approx(115)
+    assert dbr.distal == pytest.approx(108)
+    assert dbr.proximal_marking == "Wick-to-Wick"
+
+    rbd = [z for z in detect_zones(_make_df(_RBD_ROWS)) if z.zone_type == "RBD"][0]
+    # base high 113, base low 107 -> width 6 over proximal 107
+    assert rbd.base_width_pct == pytest.approx((113 - 107) / 107 * 100, abs=0.1)
+    assert rbd.proximal == pytest.approx(107)
+    assert rbd.distal == pytest.approx(113)

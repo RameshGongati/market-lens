@@ -4,6 +4,36 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
+_OHLC = ("Open", "High", "Low", "Close")
+
+
+def drop_incomplete_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove rows missing any OHLC value.
+
+    A partially-formed bar is not a candle, and letting one through is worse
+    than dropping it because nothing downstream raises. Every comparison
+    against NaN is False, so ``classify_candle`` reports a NaN-close bar as a
+    BORING DOJI — a plausible-looking base candle that can silently extend a
+    base, shift ``base_end_idx`` or break a leg-out run, with no error
+    anywhere. Observed on BAJAJHLDNG 2026-07-31, where Yahoo returned open,
+    high, low and volume but no close.
+
+    Volume is deliberately not checked: a genuine zero-volume session is a
+    real (if illiquid) bar, and the sources already filter those separately.
+
+    Args:
+        df: OHLCV frame, or anything lacking those columns (returned as-is).
+
+    Returns:
+        The frame with incomplete rows removed.
+    """
+    if df is None or df.empty:
+        return df
+    present = [c for c in _OHLC if c in df.columns]
+    if not present:
+        return df
+    return df.dropna(subset=present)
+
 
 class DataSource(ABC):
     """Contract that every data source implementation must satisfy."""

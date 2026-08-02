@@ -13,10 +13,12 @@ import streamlit.components.v1 as st_components
 from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
+from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT
 from config.preferences import load_preferences
 from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
+    build_source_manager,
     default_interval_label,
     fetch_by_interval,
     fetch_for_trading_type,
@@ -167,17 +169,22 @@ def render_stock_detail(
     exchange: str,
     analysis_type: str,
     result: dict[str, Any],
-    history_df: pd.DataFrame | None = None,
     stock_id: int | None = None,
 ) -> None:
     """Render the full detailed analysis view for a single stock.
+
+    Chart data is fetched here via ``fetch_by_interval`` for whichever candle
+    interval the user selects, so no OHLCV frame is passed in — the caller
+    used to supply one for a cache-priming step that could never take effect
+    (its key lacked the interval cache's ``use_fib`` component) and which
+    would have served the wrong bar count anyway, since the dashboard fetches
+    the trading type's timeframe while the chart fetches the interval's.
 
     Args:
         symbol: Stock ticker.
         exchange: Exchange (NSE/BSE).
         analysis_type: The analysis type run.
         result: Analysis result dict from the analysis module.
-        history_df: Optional OHLCV DataFrame for the price chart.
         stock_id: Database stock id for history/notes lookup.
     """
     if st.button("← Back to Dashboard", key="back_btn"):
@@ -256,15 +263,10 @@ def render_stock_detail(
     # Initialise to the trading-type default on first open for this stock.
     st.session_state.setdefault(_iv_key, _default_label)
 
-    # Prime the per-interval cache with the dashboard's already-computed result
-    # for the default interval so the first render is instant (no extra fetch).
-    _default_cache_key = f"detail_cache_{symbol}_{_default_label}"
-    if (
-        st.session_state.get(_default_cache_key) is None
-        and history_df is not None
-        and not history_df.empty
-    ):
-        st.session_state[_default_cache_key] = (history_df, result, "")
+    # The data source participates in the chart cache key below, so switching
+    # source refetches rather than replaying the previous source's bars.
+    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
+    _cache_src_key = _cache_src.replace(" ", "_")
 
     # Chart controls: Chart Type | Candle Interval
     ct_col, iv_col = st.columns([2, 5])
@@ -312,13 +314,40 @@ def render_stock_detail(
     # without an additional network call.
     # -----------------------------------------------------------------------
     _use_fib = st.session_state.get("use_fibonacci", False)
-    _chart_cache_key = f"detail_cache_{symbol}_{interval_label}_{_use_fib}"
+    # The data source belongs in the key: without it, switching Yahoo -> Jugaad
+    # hits this cache and returns the old Yahoo dataframe, skipping the
+    # source-aware fetch below entirely. The zones are then recomputed from
+    # that stale data too, so the whole detail view silently shows the wrong
+    # source (and, for symbols where Yahoo drops a trading day, a gap).
+    # The confirmation mode is deliberately NOT part of this key. What is
+    # cached is (dataframe, analysis result) — not the figure, which is rebuilt
+    # from them on every rerun. ``confirmation_zones`` is always present in the
+    # result regardless of the checkbox, and the overlay decides at draw time
+    # whether to use it, so the cached value is mode-independent. Keying on the
+    # mode would only force a redundant refetch and re-analysis on every toggle.
+    _chart_cache_key = (
+        f"detail_cache_{symbol}_{interval_label}_{_use_fib}_{_cache_src_key}"
+    )
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
         full_symbol = f"{symbol}{suffix}"
+        # Fetch through the data source the user actually selected. Without an
+        # explicit fetch_fn, fetch_by_interval falls back to _default_fetch_fn,
+        # which is hard-wired to Yahoo Finance — the chart would silently ignore
+        # a Jugaad/NSE selection and show different prices than the analysis.
+        _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+        _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
         with st.spinner(f"Fetching {interval_label} data for {symbol}…"):
-            _chart_df, _fetch_meta = fetch_by_interval(full_symbol, interval_label)
+            try:
+                _chart_fetch_fn = build_source_manager(_src_name, _src_creds).get_history
+            except Exception as exc:
+                # Surface the failure instead of quietly charting Yahoo data.
+                st.warning(f"Could not use {_src_name} ({exc}); showing Yahoo Finance data.")
+                _chart_fetch_fn = None
+            _chart_df, _fetch_meta = fetch_by_interval(
+                full_symbol, interval_label, fetch_fn=_chart_fetch_fn,
+            )
 
         if _chart_df is not None and not _chart_df.empty:
             # Re-run the same primary strategy on the interval-specific data.
@@ -439,6 +468,11 @@ def render_stock_detail(
     # ---------- Key metrics (from the interval-specific re-analysis) ----------
     _render_metrics(chart_result, analysis_type)
 
+    # M12: base widths for the zones drawn above — always visible, unlike the
+    # chart label which only flags the wide ones.
+    if analysis_type == "Demand/Supply Zones":
+        _render_zone_widths(chart_result)
+
     st.markdown("---")
 
     # ---------- Recommendation (from the interval-specific re-analysis) ----------
@@ -520,6 +554,39 @@ def _render_metrics(result: dict[str, Any], analysis_type: str) -> None:
     for col, (label, value) in zip(cols, metrics):
         with col:
             st.metric(label, value)
+
+
+def _render_zone_widths(result: dict[str, Any]) -> None:
+    """M12: show every displayed zone's base width next to its boundaries.
+
+    The chart label only flags bases wider than
+    :data:`WIDE_BASE_THRESHOLD_PCT`, so a tight base leaves no trace there.
+    This panel always prints the raw number — when sizing a trade, knowing a
+    base is 0.8% wide matters as much as knowing another is 5%.
+    """
+    zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+    if not zones:
+        return
+
+    with st.expander("Zone base widths", expanded=False):
+        st.caption(
+            "Base width is the full base range (highest high to lowest low) "
+            f"as a percentage of the proximal. Above {WIDE_BASE_THRESHOLD_PCT:.0f}% "
+            "the zone is flagged \"Wide Base\" on the chart — the stop has to "
+            "sit far from entry, which hurts R:R."
+        )
+        rows = []
+        for z in zones:
+            width = float(z.get("base_width_pct", 0.0) or 0.0)
+            rows.append({
+                "Zone": z.get("zone_type", "—"),
+                "Proximal": f"₹{z.get('proximal', 0):,.2f}",
+                "Distal": f"₹{z.get('distal', 0):,.2f}",
+                "Score": _fmt_zone_score(z.get("odd_score", 0)),
+                "Base width": f"{width:.1f}%",
+                "Flag": "Wide Base" if width > WIDE_BASE_THRESHOLD_PCT else "",
+            })
+        st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +801,10 @@ _EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
 # bullish-green / cautionary-orange palette so they read at a glance.
 _TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
 _AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+# Confirmation zones are drawn under a lower score bar than everything else on
+# the chart, so their flag uses a distinct blue rather than the green/orange
+# verdict palette — it states a different kind of fact.
+_CONFIRMED_FLAG_COLOR = "#1c6fb0"   # dark blue
 
 # Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
 _TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
@@ -814,6 +885,22 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
     neither is shown — the label is byte-for-byte identical to Stage 2's.
     """
     zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+
+    # Zone confirmation: draw the confirmed zones too, whenever the checkbox is
+    # set — the same live session-state read the screener filter uses, so the
+    # list and the chart can never disagree about which mode is active.
+    #
+    # These are exactly the zones filter_zones refuses to draw: scoring 3.5-5.0
+    # and/or tested more than once. Without this the screener could list a
+    # stock on a zone the chart never showed — observed on LUPIN, whose
+    # confirmed zone 1.7% from price was invisible while three drawn demand
+    # zones sat 34-45% away.
+    if st.session_state.get("screener_confirmation", False):
+        _drawn = {round(float(z["proximal"]), 4) for z in zones}
+        for _cz in result.get("confirmation_zones", []):
+            if round(float(_cz["proximal"]), 4) not in _drawn:
+                zones.append({**_cz, "confirmed_zone": True})
+
     if not zones or df.empty:
         return
 
@@ -875,6 +962,11 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
         # text supports inline <span style="color:..."> for exactly this
         # kind of "mostly one color, one bit highlighted" label.
         flags = ""
+        # Mark the confirmation-only zones so they are never mistaken for the
+        # ordinary 5.0+ set — they are drawn under a lower bar and the label
+        # has to say so.
+        if zone.get("confirmed_zone"):
+            flags += f" | <span style='color:{_CONFIRMED_FLAG_COLOR}'>CONFIRMED</span>"
         if zone.get("marking") == "Exceptional":
             flags += " | Exceptional"
         # M8: closing concept — show Strong/Weak Close, hide Unchecked.
@@ -883,6 +975,21 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
             flags += " | Strong Close"
         elif _cq == "weak":
             flags += " | Weak Close"
+        # M10: achievement ratio — show Weak Departure, hide Clean.
+        if zone.get("zone_quality") == "Weak Departure":
+            flags += " | Weak Departure"
+        # M12: base width — flag only a notably wide base; a tight one is
+        # the normal case and would just clutter the label.
+        # Missing-base zones (M17) are excluded: their "base" is the single
+        # turning-point candle, which is EXCITING by definition (M5 wants its
+        # body >= 1.3% of price and >= 50% of its range), so its full range
+        # sits near the threshold structurally. An instant reversal has no
+        # base to be sloppy about, so "Wide Base" would read as a criticism
+        # of something that isn't there. The width still shows in the detail
+        # panel — see _render_zone_widths.
+        _bw = float(zone.get("base_width_pct", 0.0) or 0.0)
+        if _bw > WIDE_BASE_THRESHOLD_PCT and int(zone.get("num_base_candles", 0) or 0) > 0:
+            flags += f" | Wide Base {_bw:.1f}%"
         if zone.get("ema20_enhancer"):
             flags += " | EMA20"
         # Stage 3 (opt-in): only when the Fibonacci checkbox was on for

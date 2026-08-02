@@ -1,0 +1,16 @@
+{
+  "enabled": false,
+  "telegram": {
+    "bot_token": "",
+    "recipients": []
+  },
+  "conditions": {
+    "stocks_source": "watchlist",
+    "custom_stocks": [],
+    "proximity_pct": 1.0,
+    "min_score": 6,
+    "zone_type": "both",
+    "cooldown": "once_per_zone_per_day"
+  },
+  "alert_history": {}
+}
