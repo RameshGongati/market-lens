@@ -420,6 +420,71 @@ Separate documents not yet provided. Not part of GTF course material.
 
 ---
 
+## Zone Confirmation Screener (DONE — `f8aae8a`)
+
+Opt-in screener mode surfacing stocks where price **entered a zone and closed
+back out through the proximal**, then stayed near it. A different trade from
+the one the display filter supports: that finds zones price is *approaching*
+(entry is a prediction), this finds zones price has *already reacted to*
+(evidence the orders were real).
+
+**Why it cannot reuse `filter_zones`** — arithmetic, not preference.
+Confirmation forces freshness off its top value, so the reachable ODD totals
+become:
+
+| Zone state | Freshness | Reachable totals |
+|------------|-----------|------------------|
+| Tested once | 1.5 | 2.5 / 3.5 / 4.5 / 5.5 |
+| Tested 2+ | 0.0 | 1.0 / 2.0 / 3.0 / 4.0 |
+
+Neither ladder contains **5.0**, so the `_MIN_DISPLAY_SCORE = 5.0` cutoff
+cannot grade a confirmed zone — it silently demands strength 2 AND time 2,
+the single perfect pairing. Measured over 8 NIFTY stocks: 17 confirmed zones
+sat at 4.5 and were discarded by a margin no zone could ever have earned.
+`filter_confirmation_zones` is therefore a **separate selection over the same
+raw zones**; `filter_zones` is untouched and `display_zones` is byte-identical.
+
+### Qualifying conditions
+
+| Condition | Value | Code Location |
+|-----------|-------|---------------|
+| Confirmed at least once | `times_tested >= 1` | `filters.py:filter_confirmation_zones()` |
+| Min score | 3.5 | `filters.py:_CONFIRMATION_MIN_SCORE=3.5` |
+| Max distance from proximal | 8% | `filters.py:_CONFIRMATION_MAX_DISTANCE_PCT=8.0` |
+| Max bars since last exit | 10 | `filters.py:_CONFIRMATION_MAX_BARS_SINCE_TEST=10` |
+| Zones per side | 1 (nearest) | `filters.py:_MAX_CONFIRMATION_ZONES_PER_SIDE=1` |
+
+The exit side needs no separate check: `count_zone_tests` only counts a test
+when the candle closes back out through the **proximal**, and an exit through
+the distal invalidates the zone under M46 instead.
+
+**Recency is independent of distance.** A zone can sit 3% from price with its
+reaction two months old — price wandered away and came back for unrelated
+reasons. Observed on RELIANCE: a supply zone 3.4% from price whose last exit
+was 44 bars back, alongside a demand zone 4.3% away that exited 5 bars back.
+Only the second is a live signal.
+
+### Display
+
+Confirmed zones are drawn on the chart tagged **CONFIRMED** in blue
+(`stock_detail.py:_CONFIRMED_FLAG_COLOR`) — they score below the display floor
+and would otherwise be invisible. LUPIN showed why: its confirmed zone 1.7%
+from price was undrawn while three displayed demand zones sat 34–45% away, so
+the screener listed the stock on evidence the chart never showed.
+
+The card summary leads with the matched zone in this mode, for the same
+reason (ONGC advertised a supply zone 17% away while the matched one sat 3%
+away, unnamed).
+
+Screener, chart overlay and card summary all read **live session state**
+(`screener_confirmation`). An earlier version froze the mode onto the result
+at scan time while the screener read it live; the list matched 16 stocks and
+not one showed a confirmed zone.
+
+The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
+
+---
+
 ## Open Gaps Summary
 
 | Item | Gap | Priority |

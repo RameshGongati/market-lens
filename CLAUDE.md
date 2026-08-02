@@ -10,7 +10,7 @@ Market Lens is a Streamlit application for Indian equity market analysis (2,374 
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`) for watchlists, analysis results, alerts, notes; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (388 tests across 11 files)
+- **Tests:** pytest (408 tests across 13 files)
 
 ## Repo Structure
 
@@ -57,7 +57,7 @@ utils/
   export.py                     # Excel + PDF export
   market_hours.py               # NSE market hours, holidays, countdown
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
-tests/                          # 11 test files, 388 tests
+tests/                          # 13 test files, 408 tests
 ```
 
 ## Running Locally
@@ -135,7 +135,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 12. **Chart caches are keyed by data source.** `detail_cache_{symbol}_{interval}_{use_fib}_{source}`. Without the source component, switching Yahoo -> Jugaad hits the cache and replays the old source's bars, and the source-aware fetch never runs.
 
-13. **A new browser tab is a separate Streamlit session.** The "View" deep link (`?stock=...`) carries the analysis context — `src`, `tt`, `ps`, `enh` — because the new tab cannot see the opening tab's session state. `app.main()` validates each against its allowed list before applying, and must do so BEFORE `render_sidebar()`.
+13. **A new browser tab is a separate Streamlit session.** The "View" deep link (`?stock=...`) carries the analysis context — `src`, `tt`, `ps`, `enh`, `cf` — because the new tab cannot see the opening tab's session state. `app.main()` validates each against its allowed list before applying, and must do so BEFORE `render_sidebar()`. Anything that changes what the chart draws belongs here: `cf` (zone confirmation) was missed at first, and every chart opened from the dashboard silently rendered with the mode off, which looked like the drawing code was broken. `cf` also seeds `sidebar_screener_confirmation`, or the new tab's checkbox renders unticked while the mode is active.
 
 14. **Preferences are recorded, not restored.** Sidebar changes are written to `user_preferences.json`, but `init_session_state()` deliberately starts from fixed defaults every launch, so they are not reapplied. Only `show_candle_tooltip` and `last_analysis_timestamp` are read back. The Settings page labels this block "Last Used Selections" for that reason.
 
@@ -149,7 +149,11 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 19. **Tests that touch the bhavcopy must redirect `_DISK_CACHE`.** `tests/test_incomplete_bars.py` has an autouse fixture pointing every cache at `tmp_path`. Without it a test fixture is written into the REAL cache under `~/.market-lens`, where the app reads it back as a genuine session — observed serving a fabricated RELIANCE close of 1510.00 against an actual 1307.80.
 
-20. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes need a heredoc (`git commit -F - <<'EOF'`) or the shell mis-parses them as paths.
+20. **Streamlit renders `react-aria-ComboBox`, not BaseWeb.** Sidebar CSS in `app.py` hooked on `[data-baseweb="select"]` matched NOTHING — there are zero BaseWeb elements in this build's DOM — so the rule sat there looking correct while doing nothing. Selectbox styling must target `.react-aria-ComboBox`. Related: the select control already HAS a 1px border, coloured white; on the white section cards that reads as no border at all, so only the colour needs changing, never the box. Verify UI selectors against the running app (`javascript_tool` + `getComputedStyle`) rather than by inspection — a wrong selector fails silently and looks identical to a wrong value.
+
+21. **Popover content renders in a portal OUTSIDE the sidebar.** `st.popover` bodies land under `[data-testid="stPopoverBody"]` at body level, so `section[data-testid="stSidebar"] ...` rules do not reach the screener's dropdowns even though they appear inside the sidebar visually.
+
+22. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes need a heredoc (`git commit -F - <<'EOF'`) or the shell mis-parses them as paths.
 
 ## Critical Instruction
 

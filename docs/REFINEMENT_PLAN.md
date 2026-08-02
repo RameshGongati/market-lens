@@ -43,6 +43,14 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 
 **Priority:** Medium (depends on M8 being fully stable)
 
+> **Attempted once and reverted.** A previous implementation (capping the
+> merged span) was removed at the user's request — it "completely messed up
+> the zone markings" on real charts. The branch was reset, so nothing of it
+> survives in history. Before retrying: merging changes the drawn boundaries
+> of zones the user reads daily, so validate against real charts across many
+> symbols *before* committing, not just against unit tests. Widening a zone's
+> proximal moves the entry level, which is the number being traded.
+
 **Starting point:** `_merge_overlapping_zones()` exists in `filters.py:78-108` but is not called.
 
 **Steps:**
@@ -107,41 +115,6 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ## Pending — Discussed, Not Started
 
-### Trade Confirmation Filter (PENDING)
-
-Surface zones where price entered and then closed back out through the
-PROXIMAL side. That exit is the confirmation the zone is live — orders were
-there and pushed price away — and is the point at which an order would be
-placed. An exit through the distal is the opposite and already invalidates
-the zone under M46.
-
-**Already implemented, just not surfaced:** `count_zone_tests` in
-`scoring.py` defines exit as `close > proximal` (demand) / `close < proximal`
-(supply), so `times_tested >= 1` on a surviving zone ALREADY means "confirmed
-at least once". `activation_touch` with `times_tested == 0` already means
-"price inside, not yet confirmed". The states exist; nothing exposes them.
-
-**The blocker, and why this is not just a dropdown.** A confirmation costs
-freshness (3.0 → 1.5), and `filter_zones` drops anything scoring under 5.0.
-A once-tested zone therefore needs BOTH strength 2 AND time 2 to reach 5.5
-and survive — every other combination lands at 4.5 or below. Measured across
-8 NIFTY stocks: **59 confirmed zones detected, only 2 reached the screener.**
-Adding a filter without addressing this would return a near-empty list and
-look broken.
-
-**Decision needed:** bypass the score cutoff when the confirmation filter is
-active (contained, preferred), stop treating a confirmation as freshness
-damage (truer to the intent but changes `odd_score` app-wide, including
-alerts), or lower the display cutoff (affects everything).
-
-**Also unresolved:** how recent a confirmation must be to be actionable — a
-bounce 40 candles ago is not a trade, and `count_zone_tests` counts
-confirmations without recording when they happened.
-
-**Note:** a pure distance filter cannot do this. For a demand zone, price
-approaching from above and price having bounced back up are the SAME side at
-the SAME distance — only the history differs.
-
 ### Main-Area UI Pass (PENDING)
 
 The sidebar was redesigned in `6eec011`; the main pages were deliberately
@@ -175,6 +148,44 @@ pyflakes flags it because pyflakes does not honour `# noqa`.)
 ---
 
 ## Completed Features (Non-GTF)
+
+### Zone Confirmation Screener (DONE — `f8aae8a`, 2026-08-02)
+
+Was "Trade Confirmation Filter (PENDING)". Full spec in
+`requirements.md` → *Zone Confirmation Screener*. How the open questions were
+resolved:
+
+- **The score blocker** — resolved by the *contained* option: a separate
+  `filter_confirmation_zones` over the same raw zones with its own 3.5 floor.
+  `filter_zones`, `_MIN_DISPLAY_SCORE` and `odd_score` are untouched, so
+  charts and alerts are unaffected. Confirmed by A/B: HEAD and the feature
+  branch run against one cached set of OHLCV frames for 12 stocks produce
+  byte-identical zones, scores, status, trend and summaries with the mode off.
+- **The 5.0 arithmetic was worse than recorded.** The old note covered
+  once-tested zones (2.5/3.5/4.5/5.5). Zones tested 2+ times have freshness
+  0.0 and reach only 1.0–4.0, so the 5.0 cutoff excluded them *entirely* —
+  not just the imperfect ones. 3.5 admits a once-tested zone that earned at
+  least one of strength/time, and a repeatedly-tested zone only at 4.0, its
+  own ladder's maximum.
+- **Recency** — resolved with `_CONFIRMATION_MAX_BARS_SINCE_TEST = 10`.
+  `_bars_since_last_confirmation` replays M3's cycle definition to date the
+  last exit; deliberately kept in the confirmation path rather than added to
+  `Zone`, so scoring is not disturbed.
+- **Nearest-per-side cap of 1** added — the level price would meet next.
+
+Measured on Nifty 50 / Swing Trading / Yahoo: **16 of 50 matched**.
+
+Two traps worth remembering, both cost a debugging round:
+
+1. **The scan and the chart use different windows.** The scan fetches the
+   trading type's timeframe (1y for Swing), the detail chart the interval's
+   (5y for Daily) — see Gotcha 11. A confirmed zone older than the scan
+   window is invisible to the screener but drawn on the chart (RELIANCE:
+   zone formed ~319 bars back, absent from a 246-bar scan). Not introduced
+   here, but this feature makes it visible.
+2. **The View link opens a new tab = a separate Streamlit session.** Until
+   `cf` was added to the deep link, every chart opened from the dashboard
+   rendered with the mode off and showed nothing (Gotcha 13).
 
 ### Telegram Alert System (DONE — `55922c9`..`75b2094`, 2026-07-22)
 - Config UI on Settings page with bot token, recipients, conditions
