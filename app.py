@@ -141,10 +141,30 @@ def main() -> None:
                 font-size: 0.84rem;
                 color: #55555E;
             }
-            /* Selectbox values. */
-            section[data-testid="stSidebar"] [data-baseweb="select"] div {
+            /* Selectbox values.
+
+               Hooked on .react-aria-ComboBox, which is what this Streamlit
+               build renders. An earlier [data-baseweb="select"] selector
+               matched NOTHING here — BaseWeb is not in this DOM at all — so
+               the rule silently did nothing. If the dropdowns ever lose their
+               styling after a Streamlit upgrade, check that class first. */
+            section[data-testid="stSidebar"] .react-aria-ComboBox input {
                 font-size: 0.92rem;
                 color: #1E1E23;
+            }
+            /* Make the control's edge visible. Streamlit already draws a 1px
+               border, but coloured WHITE on the white section cards — so the
+               DATA SOURCE and WATCHLIST dropdowns read as plain text rather
+               than as controls you can open. Only the colour needs changing;
+               the box, its radius and its metrics are Streamlit's own, so the
+               control does not shift by a pixel. */
+            section[data-testid="stSidebar"] .react-aria-ComboBox > div {
+                border-color: #C6C4BC;
+            }
+            section[data-testid="stSidebar"] .react-aria-ComboBox > div:hover,
+            section[data-testid="stSidebar"]
+            .react-aria-ComboBox > div:focus-within {
+                border-color: #4A5361;
             }
 
             /* Watchlist segmented control.
