@@ -43,7 +43,7 @@ _HIGH_ODD = 7.0
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _indices_cached() -> list[dict]:
+def indices_cached() -> list[dict]:
     """Index snapshots, refreshed every 5 minutes.
 
     Cached here rather than in ``data.market_indices`` so that module stays
@@ -203,7 +203,7 @@ def render_market_overview() -> None:
             )
 
     # ---- Top summary cards -------------------------------------------------
-    indices = _indices_cached()
+    indices = indices_cached()
     bias, bias_reason = market_bias(indices)  # type: ignore[arg-type]
 
     high_odd = sum(

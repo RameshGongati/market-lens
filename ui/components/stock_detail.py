@@ -1,5 +1,6 @@
 """Full detailed stock analysis view with chart toggle, history, and notes."""
 
+import html
 import math
 from datetime import datetime
 from typing import Any
@@ -10,29 +11,29 @@ from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
 from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT
 from config.preferences import load_preferences
-from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
     build_source_manager,
     default_interval_label,
     fetch_by_interval,
-    fetch_for_trading_type,
-    interval_display_label,
 )
+from data.market_indices import market_bias
 from storage.database import (
     compare_analysis_results,
     delete_note,
     get_notes,
     save_note,
 )
+from ui.components.panels import bias_pill, kv_row, section_title
 from ui.components.tradingview_chart import get_tradingview_url, render_tradingview_chart
+from ui.pages.market_overview import indices_cached
 from utils.helpers import format_timestamp, get_company_name
 from utils.logger import get_logger
+from utils.market_hours import get_current_ist_time, is_market_open
 
 logger = get_logger(__name__)
 
@@ -187,70 +188,86 @@ def render_stock_detail(
         result: Analysis result dict from the analysis module.
         stock_id: Database stock id for history/notes lookup.
     """
-    if st.button("← Back to Dashboard", key="back_btn"):
-        st.session_state.active_page = "dashboard"
-        st.session_state.selected_stock_symbol = None
-        # Clear query params so the URL doesn't re-trigger stock detail on rerun.
-        st.query_params.clear()
-        st.rerun()
-
-    status = result.get("status", "neutral")
-    strength = result.get("strength", "—")
-    color = _STATUS_COLOR.get(status, "#ffc107")
-    s_color = STRENGTH_COLORS.get(strength, "#856404")
-    s_bg = STRENGTH_BG.get(strength, "#fff3cd")
-    current_price = result.get("current_price", 0.0)
-    company_name = get_company_name(symbol)
-
-    st.markdown(
-        f"## {symbol} "
-        f"<span style='color:{color};font-size:0.75em;background:{color}22;"
-        f"padding:2px 8px;border-radius:8px;'>"
-        f"{'▲' if status=='bullish' else '▼' if status=='bearish' else '●'} {status.upper()}"
-        f"</span>"
-        f"&nbsp;<span style='font-size:0.7em;color:{s_color};background:{s_bg};"
-        f"padding:2px 8px;border-radius:8px;border:1px solid {s_color};'>{strength}</span>",
-        unsafe_allow_html=True,
-    )
-    # Stage C: show the effective timeframe alongside analysis type.
-    # Prefer the session-state label (which reflects any intraday fallback)
-    # over the configured label from get_timeframe().
-    _trading_type = st.session_state.get("trading_type", "Options Trading")
-    _tf_label = st.session_state.get("_used_tf_label") or interval_display_label(
-        get_timeframe(_trading_type)["interval"]
-    )
-    st.caption(
-        f"{company_name} · {exchange} · {analysis_type} · "
-        f"Timeframe: {_tf_label} · ₹{current_price:,.2f}"
-    )
+    _render_detail_header(symbol, exchange, analysis_type, result)
 
     if "error" in result:
         st.error(result["error"])
         return
 
-    # Export single stock button
-    col_exp, _ = st.columns([1, 4])
-    with col_exp:
-        if st.button("📥 Export PDF", key="export_single_btn"):
-            try:
-                from utils.export import export_to_pdf
-                path = export_to_pdf(
-                    {symbol: result},
-                    watchlist_name="single",
-                    analysis_type=analysis_type,
-                    symbol_filter=symbol,
-                    trading_type=st.session_state.get("trading_type", ""),
-                    primary_strategy=st.session_state.get(
-                        "primary_strategy", analysis_type
-                    ),
-                    enhancers=st.session_state.get("enhancers", []),
-                )
-                st.success(f"Exported to: `{path}`")
-            except Exception as exc:
-                st.error(f"Export failed: {exc}")
+    # Chart is FIRST because st.tabs has no way to preselect a tab — it always
+    # opens the first one. This page is reached by clicking "View" on a stock,
+    # so landing anywhere but the chart means the thing the user asked for is
+    # off screen behind a tab.
+    tabs = st.tabs([
+        "Chart", "Overview", "Analysis", "Zones", "Confluence",
+        "Trade Plan", "Notes",
+    ])
 
-    st.markdown("---")
+    # Streamlit executes every tab body on each run regardless of which one is
+    # on screen, so running the chart panel here makes chart_result -- the
+    # re-analysis at the selected candle interval -- available to every other
+    # tab without analysing twice.
+    with tabs[0]:
+        chart_col, rail_col = st.columns([3, 1])
+        with chart_col:
+            chart_df, chart_result = _render_chart_panel(
+                symbol, exchange, analysis_type, result
+            )
+        with rail_col:
+            _render_setup_rail(chart_result, chart_df)
+            _render_trade_plan()
 
+    with tabs[1]:
+        _render_overview_tab(symbol, chart_result, chart_df, analysis_type)
+
+    with tabs[2]:
+        _render_metrics(chart_result, analysis_type)
+        _recommendation = (
+            chart_result.get("recommendation")
+            or chart_result.get("summary", "")
+        )
+        if _recommendation:
+            st.markdown("#### Recommendation")
+            for _line in _recommendation.split("\n"):
+                if _line.strip():
+                    st.markdown(_line.strip())
+        if stock_id is not None:
+            st.markdown("---")
+            _render_history_section(stock_id, analysis_type)
+
+    with tabs[3]:
+        if analysis_type == "Demand/Supply Zones":
+            _render_zones_tab(chart_result)
+        else:
+            st.caption("Zone detail applies to the Demand/Supply strategy.")
+
+    with tabs[4]:
+        _render_confluence_tab(chart_result)
+
+    with tabs[5]:
+        _render_trade_plan(full=True)
+
+    with tabs[6]:
+        if stock_id is not None:
+            _render_notes_section(stock_id)
+        else:
+            st.caption(
+                "Notes are saved per watchlist stock. Open this stock from a "
+                "watchlist to add notes."
+            )
+
+
+def _render_chart_panel(
+    symbol: str, exchange: str, analysis_type: str, result: dict[str, Any],
+) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """Chart controls, interval re-analysis and the chart itself.
+
+    Lifted out of ``render_stock_detail`` unchanged when the page gained tabs
+    -- the body below is the original chart section verbatim. It returns the
+    interval-specific frame and analysis result because the other tabs and the
+    Setup Summary rail all read from that re-analysis, not from the dashboard
+    scan's result.
+    """
     # ---------- Chart section ----------
     # -----------------------------------------------------------------------
     # Interval selector — lets the user pick candle size independently of
@@ -463,35 +480,281 @@ def render_stock_detail(
             "Try a different interval or check your internet connection."
         )
 
-    st.markdown("---")
+    return chart_df, chart_result
 
-    # ---------- Key metrics (from the interval-specific re-analysis) ----------
-    _render_metrics(chart_result, analysis_type)
 
-    # M12: base widths for the zones drawn above — always visible, unlike the
-    # chart label which only flags the wide ones.
-    if analysis_type == "Demand/Supply Zones":
-        _render_zone_widths(chart_result)
+# ---------------------------------------------------------------------------
+# Page header and the Setup Summary / Trade Plan rail
+# ---------------------------------------------------------------------------
 
-    st.markdown("---")
+def _market_status_text() -> str:
+    """"Market Open/Closed" plus today's IST date, for the price block."""
+    try:
+        now = get_current_ist_time()
+        state = "Market Open" if is_market_open(now) else "Market Closed"
+        return f"{state} · {now.strftime('%d %b %Y')}"
+    except Exception:
+        return ""
 
-    # ---------- Recommendation (from the interval-specific re-analysis) ----------
-    recommendation = chart_result.get("recommendation") or chart_result.get("summary", "")
-    if recommendation:
-        st.markdown("### Recommendation")
-        for line in recommendation.split("\n"):
-            if line.strip():
-                st.markdown(line.strip())
 
-    # ---------- Historical analysis ----------
-    if stock_id is not None:
-        st.markdown("---")
-        _render_history_section(stock_id, analysis_type)
+def _render_detail_header(
+    symbol: str, exchange: str, analysis_type: str, result: dict[str, Any],
+) -> None:
+    """Symbol, verdict badge, live price and the page actions.
 
-    # ---------- Personal notes ----------
-    if stock_id is not None:
-        st.markdown("---")
-        _render_notes_section(stock_id)
+    The badge is derived from the best zone's category, not from
+    ``result["status"]`` — status is "neutral" for most stocks and would put a
+    WAIT badge on a page whose chart clearly shows a fresh demand zone.
+    """
+    price = result.get("current_price", 0.0) or 0.0
+    change = float(result.get("change", 0.0) or 0.0)
+    change_pct = float(result.get("change_pct", 0.0) or 0.0)
+    company = get_company_name(symbol)
+
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    best = max(zones, key=lambda z: z.get("odd_score", 0)) if zones else {}
+    if best.get("category") == "demand":
+        action, tone = "BUY", "bullish"
+    elif best.get("category") == "supply":
+        action, tone = "SELL", "bearish"
+    else:
+        action, tone = "WAIT", "muted"
+    if best and not best.get("is_tradeable"):
+        action, tone = "WAIT", "warning"
+
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown(
+            "<div style='font-size:0.78rem;color:#9AA0A8;margin-bottom:2px;'>"
+            "Dashboard &nbsp;&rsaquo;&nbsp; Analysis Results &nbsp;&rsaquo;&nbsp; "
+            f"<span style='color:#4A5361;font-weight:600;'>{html.escape(symbol)}"
+            "</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:10px;'>"
+            f"<span style='font-size:1.75rem;font-weight:800;color:#16233A;"
+            f"letter-spacing:-0.2px;'>{html.escape(symbol)}</span>"
+            f"{bias_pill(action, tone)}</div>"
+            f"<div style='font-size:0.86rem;color:#6B7280;margin-top:1px;'>"
+            f"{html.escape(company)} &middot; {html.escape(exchange)} &middot; "
+            f"{html.escape(analysis_type)}</div>",
+            unsafe_allow_html=True,
+        )
+    with right:
+        up = change >= 0
+        colour = "#16794A" if up else "#C23B33"
+        st.markdown(
+            f"<div style='text-align:right;'>"
+            f"<div style='font-size:1.6rem;font-weight:800;color:#16233A;'>"
+            f"&#8377;{price:,.2f}</div>"
+            f"<div style='font-size:0.86rem;color:{colour};font-weight:600;'>"
+            f"{change:+,.2f} ({change_pct:+.2f}%)</div>"
+            f"<div style='font-size:0.74rem;color:#9AA0A8;'>"
+            f"{html.escape(_market_status_text())}</div></div>",
+            unsafe_allow_html=True,
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Back to Results", icon=":material/arrow_back:",
+                         use_container_width=True, key="sd_back_results"):
+                st.session_state.active_page = "analysis_results"
+                st.session_state.selected_stock_symbol = None
+                st.query_params.clear()
+                st.rerun()
+        with b2:
+            if st.button("Dashboard", icon=":material/dashboard:",
+                         use_container_width=True, key="sd_back_dash"):
+                st.session_state.active_page = "dashboard"
+                st.session_state.selected_stock_symbol = None
+                st.query_params.clear()
+                st.rerun()
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+
+def _ma_position(df: "pd.DataFrame | None", price: float, span: int,
+                 exponential: bool) -> tuple[str, str]:
+    """Where price sits against a moving average, as (text, colour).
+
+    Computed here from the chart's own frame rather than read off a zone flag:
+    ``ema20_enhancer`` records whether a ZONE had EMA confluence, which is a
+    different question from where price is right now.
+    """
+    try:
+        if df is None or df.empty or "Close" not in df or price <= 0:
+            return "\u2014", "#A8A8A0"
+        closes = df["Close"].astype(float)
+        if len(closes) < span:
+            return "\u2014", "#A8A8A0"
+        ma = (closes.ewm(span=span, adjust=False).mean() if exponential
+              else closes.rolling(span).mean()).iloc[-1]
+        if pd.isna(ma):
+            return "\u2014", "#A8A8A0"
+        above = price > float(ma)
+        return ("Above price" if above else "Below price",
+                "#16794A" if above else "#C23B33")
+    except Exception:
+        return "\u2014", "#A8A8A0"
+
+
+def _render_setup_rail(result: dict[str, Any], df: "pd.DataFrame | None") -> None:
+    """Setup Summary -- the read-out beside the chart."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    best = max(zones, key=lambda z: z.get("odd_score", 0)) if zones else {}
+    price = float(result.get("current_price") or 0.0)
+
+    with st.container(border=True):
+        section_title("Setup Summary")
+        trend = (result.get("trend") or "\u2014").upper()
+        kv_row("Trend", trend,
+               tone={"UP": "#16794A", "DOWN": "#C23B33"}.get(trend, "#8A8F98"))
+        if best:
+            kv_row("Zone", f"{best.get('zone_type', '')} "
+                           f"({'Fresh' if best.get('is_fresh') else 'Tested'})")
+            kv_row("Zone Strength", str(best.get("zone_strength", "\u2014")))
+            # Scale is 7, not 10 -- the ODD score has seven points available
+            # (freshness 3 + strength 2 + time 2). Showing /10 would misstate
+            # how good a 6.0 actually is.
+            kv_row("ODD Score", f"{best.get('odd_score', 0):.1f} / 7")
+        else:
+            kv_row("Zone", "No tradeable zone")
+        kv_row("RR (Min)", pending="p2")
+
+        ema_txt, ema_col = _ma_position(df, price, 20, True)
+        sma_txt, sma_col = _ma_position(df, price, 50, False)
+        kv_row("EMA 20", ema_txt, tone=ema_col)
+        # The engine's trend clock uses a 50 SMA, not an EMA -- labelled for
+        # what is actually computed.
+        kv_row("SMA 50", sma_txt, tone=sma_col)
+
+        kv_row("Sector", pending="p7")
+        try:
+            bias, _reason = market_bias(indices_cached())
+            kv_row("Market", bias.title(),
+                   tone={"BULLISH": "#16794A",
+                         "BEARISH": "#C23B33"}.get(bias, "#8A8F98"))
+        except Exception:
+            kv_row("Market", "\u2014")
+        kv_row("Status", str(best.get("entry_recommendation", "\u2014"))
+               if best else "\u2014")
+
+
+def _render_trade_plan(full: bool = False) -> None:
+    """Quick Trade Plan -- every field is Phase 2 (M1).
+
+    Rendered with real labels and explicit pending markers rather than
+    omitted, so the layout is settled and the missing inputs stay visible.
+    Nothing here is estimated: an invented entry or stop is worse than a
+    blank one.
+    """
+    with st.container(border=True):
+        section_title("Trade Plan" if full else "Quick Trade Plan")
+        for label in ("Entry Zone", "Stop Loss", "Target 1", "Target 2",
+                      "Risk / Reward", "Position Size"):
+            kv_row(label, pending="p2")
+        if full:
+            st.caption(
+                "Entry, stop, targets and position sizing are Phase 2 (M1) "
+                "and Phase 6 (M31). No values are estimated here."
+            )
+
+
+def _render_overview_tab(
+    symbol: str, result: dict[str, Any], df: "pd.DataFrame | None",
+    analysis_type: str,
+) -> None:
+    """Setup summary, trade plan and key levels, without the chart."""
+    a, b, c = st.columns(3)
+    with a:
+        _render_setup_rail(result, df)
+    with b:
+        _render_trade_plan()
+    with c:
+        with st.container(border=True):
+            section_title("Key Levels")
+            nd, ns = result.get("nearest_demand"), result.get("nearest_supply")
+            # Straight off the nearest zone boundaries: the proximal is the
+            # level price meets first, the distal the one that invalidates it.
+            kv_row("Support 1", f"{nd['proximal']:,.2f}" if nd else "\u2014")
+            kv_row("Support 2", f"{nd['distal']:,.2f}" if nd else "\u2014")
+            kv_row("Resistance 1", f"{ns['proximal']:,.2f}" if ns else "\u2014")
+            kv_row("Resistance 2", f"{ns['distal']:,.2f}" if ns else "\u2014")
+
+
+def _render_zones_tab(result: dict[str, Any]) -> None:
+    """Every drawn zone with its boundaries and score."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    if not zones:
+        st.caption(
+            "No zones passed the display filter for this interval. "
+            f"{result.get('all_zones_count', 0)} were detected in total."
+        )
+        return
+    rows = ""
+    for z in sorted(zones, key=lambda x: x.get("odd_score", 0), reverse=True):
+        tone = "bullish" if z.get("category") == "demand" else "bearish"
+        rows += (
+            "<tr>"
+            f"<td style='padding:6px 8px;'>{bias_pill(z.get('zone_type', ''), tone)}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('proximal', 0):,.2f}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('distal', 0):,.2f}</td>"
+            f"<td style='padding:6px 8px;'><b>{z.get('odd_score', 0):.1f}</b></td>"
+            f"<td style='padding:6px 8px;'>{html.escape(str(z.get('zone_strength', '')))}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('times_tested', 0)}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('base_width_pct', 0):.1f}%</td>"
+            "</tr>"
+        )
+    head = "".join(
+        f"<th style='text-align:left;padding:6px 8px;font-size:0.7rem;"
+        f"color:#8A8F98;border-bottom:1px solid #E7E9ED;'>{h}</th>"
+        for h in ["Type", "Proximal", "Distal", "ODD", "Strength",
+                  "Tested", "Base Width"]
+    )
+    st.markdown(
+        f"<div style='overflow-x:auto;'><table style='width:100%;"
+        f"border-collapse:collapse;font-size:0.8rem;'><tr>{head}</tr>"
+        f"{rows}</table></div>",
+        unsafe_allow_html=True,
+    )
+    _render_zone_widths(result)
+
+
+def _render_confluence_tab(result: dict[str, Any]) -> None:
+    """EMA 20 and Fibonacci confluence, per zone."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    if not zones:
+        st.caption("No zones to report confluence for.")
+        return
+    fib_on = bool(result.get("fib_levels"))
+    if not fib_on:
+        st.caption(
+            "Fibonacci confluence is opt-in \u2014 enable it in the sidebar "
+            "enhancers to populate the Fib columns."
+        )
+    for z in sorted(zones, key=lambda x: x.get("odd_score", 0), reverse=True):
+        with st.container(border=True):
+            section_title(
+                f"{z.get('zone_type', '')} @ {z.get('proximal', 0):,.2f}",
+                hint=f"ODD {z.get('odd_score', 0):.1f}",
+            )
+            kv_row("EMA 20 confluence",
+                   "Yes" if z.get("ema20_enhancer") else "No",
+                   tone="#16794A" if z.get("ema20_enhancer") else "#8A8F98")
+            if fib_on:
+                kv_row("Fibonacci confluence",
+                       "Yes" if z.get("fib_confluence") else "No",
+                       tone="#16794A" if z.get("fib_confluence") else "#8A8F98")
+                kv_row("Strongest level", str(z.get("fib_strongest") or "\u2014"))
+                kv_row("Combined rating", str(z.get("confluence_label") or "None"))
+            else:
+                kv_row("Fibonacci confluence", "Not enabled")
+            kv_row("Closing quality", str(z.get("closing_quality", "unchecked")).title())
+            kv_row("Zone quality", str(z.get("zone_quality") or "Clean"))
+
 
 
 # ---------------------------------------------------------------------------
