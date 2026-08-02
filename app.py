@@ -236,6 +236,15 @@ def main() -> None:
             _adopted = [e for e in _qp_enh.split(",") if e in ENHANCERS]
             st.session_state["enhancers"] = _adopted
             st.session_state["use_fibonacci"] = "Fibonacci Confluence" in _adopted
+        # Zone confirmation mode — carried so the new tab draws the same zones
+        # the opening tab's screener matched on. Only "0"/"1" are accepted;
+        # anything else leaves the default alone, as with the params above.
+        _qp_cf = st.query_params.get("cf")
+        if _qp_cf in ("0", "1"):
+            st.session_state["screener_confirmation"] = _qp_cf == "1"
+            # The sidebar checkbox reads its own widget key, so seed that too
+            # or the box would render unticked while the mode is active.
+            st.session_state["sidebar_screener_confirmation"] = _qp_cf == "1"
 
         st.session_state["_qp_handled"] = True
 

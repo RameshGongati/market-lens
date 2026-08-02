@@ -319,6 +319,12 @@ def render_stock_detail(
     # source-aware fetch below entirely. The zones are then recomputed from
     # that stale data too, so the whole detail view silently shows the wrong
     # source (and, for symbols where Yahoo drops a trading day, a gap).
+    # The confirmation mode is deliberately NOT part of this key. What is
+    # cached is (dataframe, analysis result) — not the figure, which is rebuilt
+    # from them on every rerun. ``confirmation_zones`` is always present in the
+    # result regardless of the checkbox, and the overlay decides at draw time
+    # whether to use it, so the cached value is mode-independent. Keying on the
+    # mode would only force a redundant refetch and re-analysis on every toggle.
     _chart_cache_key = (
         f"detail_cache_{symbol}_{interval_label}_{_use_fib}_{_cache_src_key}"
     )
@@ -795,6 +801,10 @@ _EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
 # bullish-green / cautionary-orange palette so they read at a glance.
 _TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
 _AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+# Confirmation zones are drawn under a lower score bar than everything else on
+# the chart, so their flag uses a distinct blue rather than the green/orange
+# verdict palette — it states a different kind of fact.
+_CONFIRMED_FLAG_COLOR = "#1c6fb0"   # dark blue
 
 # Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
 _TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
@@ -875,6 +885,22 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
     neither is shown — the label is byte-for-byte identical to Stage 2's.
     """
     zones = [*result.get("demand_zones", []), *result.get("supply_zones", [])]
+
+    # Zone confirmation: draw the confirmed zones too, whenever the checkbox is
+    # set — the same live session-state read the screener filter uses, so the
+    # list and the chart can never disagree about which mode is active.
+    #
+    # These are exactly the zones filter_zones refuses to draw: scoring 3.5-5.0
+    # and/or tested more than once. Without this the screener could list a
+    # stock on a zone the chart never showed — observed on LUPIN, whose
+    # confirmed zone 1.7% from price was invisible while three drawn demand
+    # zones sat 34-45% away.
+    if st.session_state.get("screener_confirmation", False):
+        _drawn = {round(float(z["proximal"]), 4) for z in zones}
+        for _cz in result.get("confirmation_zones", []):
+            if round(float(_cz["proximal"]), 4) not in _drawn:
+                zones.append({**_cz, "confirmed_zone": True})
+
     if not zones or df.empty:
         return
 
@@ -936,6 +962,11 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
         # text supports inline <span style="color:..."> for exactly this
         # kind of "mostly one color, one bit highlighted" label.
         flags = ""
+        # Mark the confirmation-only zones so they are never mistaken for the
+        # ordinary 5.0+ set — they are drawn under a lower bar and the label
+        # has to say so.
+        if zone.get("confirmed_zone"):
+            flags += f" | <span style='color:{_CONFIRMED_FLAG_COLOR}'>CONFIRMED</span>"
         if zone.get("marking") == "Exceptional":
             flags += " | Exceptional"
         # M8: closing concept — show Strong/Weak Close, hide Unchecked.

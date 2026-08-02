@@ -80,10 +80,18 @@ def _count_active_screener_filters() -> int:
     opening it — "All" and an empty multiselect both mean no filtering.
     """
     active = 0
-    if st.session_state.get("screener_proximity", "All") != "All":
+    confirm = st.session_state.get("screener_confirmation", False)
+    if confirm:
         active += 1
-    if st.session_state.get("screener_min_score", "All") != "All":
-        active += 1
+        # Proximity is disabled in confirmation mode, so a stale value left
+        # over from the other mode must not be counted as active.
+        if st.session_state.get("screener_confirm_score", "All") != "All":
+            active += 1
+    else:
+        if st.session_state.get("screener_proximity", "All") != "All":
+            active += 1
+        if st.session_state.get("screener_min_score", "All") != "All":
+            active += 1
     if st.session_state.get("screener_zone_strength"):
         active += 1
     return active
@@ -116,12 +124,18 @@ def _screener_summary() -> str:
     was that its state was invisible.
     """
     parts: list[str] = []
-    prox = st.session_state.get("screener_proximity", "All")
-    if prox != "All":
-        parts.append("Inside zone" if prox == "Inside Zone" else f"Within {prox}")
-    score = st.session_state.get("screener_min_score", "All")
-    if score != "All":
-        parts.append(f"Score {score}")
+    if st.session_state.get("screener_confirmation", False):
+        parts.append("Confirmed ≤8%")
+        score = st.session_state.get("screener_confirm_score", "All")
+        if score != "All":
+            parts.append(f"Score {score}")
+    else:
+        prox = st.session_state.get("screener_proximity", "All")
+        if prox != "All":
+            parts.append("Inside zone" if prox == "Inside Zone" else f"Within {prox}")
+        score = st.session_state.get("screener_min_score", "All")
+        if score != "All":
+            parts.append(f"Score {score}")
     strengths = st.session_state.get("screener_zone_strength") or []
     if strengths:
         parts.append(", ".join(strengths))
@@ -516,6 +530,27 @@ def render_sidebar() -> None:
                     "Edit filters", icon=":material/tune:", use_container_width=True
                 )
             with _screener_panel:
+                # Zone confirmation is a different question from the rest of
+                # the screener. The others ask "is price approaching a zone";
+                # this asks "has price already reacted to one and left". Since
+                # a confirmed zone is by definition no longer being approached,
+                # the proximity control is meaningless here and is disabled
+                # rather than left to give misleading results.
+                st.session_state.setdefault("screener_confirmation", False)
+                st.checkbox(
+                    "Zone confirmation",
+                    key="sidebar_screener_confirmation",
+                    help=(
+                        "Show stocks where price entered a zone and closed back "
+                        "out through the proximal — the zone reacted. Limited to "
+                        "moves still within 8% of the proximal."
+                    ),
+                )
+                st.session_state["screener_confirmation"] = st.session_state[
+                    "sidebar_screener_confirmation"
+                ]
+                _confirm_on = st.session_state["screener_confirmation"]
+
                 _PROXIMITY_OPTIONS = ["All", "Inside Zone", "≤3%", "≤5%", "≤10%"]
                 st.session_state.setdefault("screener_proximity", "All")
                 _sp = st.session_state.get("screener_proximity", "All")
@@ -525,20 +560,34 @@ def render_sidebar() -> None:
                     _PROXIMITY_OPTIONS,
                     index=_sp_idx,
                     key="sidebar_screener_proximity",
+                    disabled=_confirm_on,
+                    help="Not used with zone confirmation — 8% is applied instead."
+                    if _confirm_on else None,
                 )
                 st.session_state["screener_proximity"] = st.session_state["sidebar_screener_proximity"]
 
-                _SCORE_OPTIONS = ["All", "7", "6+", "5+"]
-                st.session_state.setdefault("screener_min_score", "All")
-                _ss = st.session_state.get("screener_min_score", "All")
+                # The score ladder changes with the mode. A confirmed zone has
+                # freshness pinned at 1.5, so it can only ever total 2.5, 3.5,
+                # 4.5 or 5.5 — the usual 7/6+/5+ options would match almost
+                # nothing. These three are the reachable values.
+                if _confirm_on:
+                    _SCORE_OPTIONS = ["All", "5.5", "4.5+", "3.5+"]
+                    _score_key = "screener_confirm_score"
+                else:
+                    _SCORE_OPTIONS = ["All", "7", "6+", "5+"]
+                    _score_key = "screener_min_score"
+                st.session_state.setdefault(_score_key, "All")
+                _ss = st.session_state.get(_score_key, "All")
                 _ss_idx = _SCORE_OPTIONS.index(_ss) if _ss in _SCORE_OPTIONS else 0
+                # Widget key includes the mode so switching modes does not
+                # carry "6+" into a ladder that has no such option.
                 st.selectbox(
                     "Min ODD Score",
                     _SCORE_OPTIONS,
                     index=_ss_idx,
-                    key="sidebar_screener_score",
+                    key=f"sidebar_{_score_key}",
                 )
-                st.session_state["screener_min_score"] = st.session_state["sidebar_screener_score"]
+                st.session_state[_score_key] = st.session_state[f"sidebar_{_score_key}"]
 
                 _STRENGTH_OPTIONS = ["Normal", "Strong", "Very Strong"]
                 st.session_state.setdefault("screener_zone_strength", [])
