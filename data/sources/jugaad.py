@@ -10,10 +10,18 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from data.sources.base import DataSource
+from data.sources.base import DataSource, drop_incomplete_bars
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# jugaad-data's stock_df takes no timeout and NSE's per-symbol historical
+# endpoint can stall: a BAJAJHLDNG request was observed hanging for twelve
+# minutes before failing to parse. Analysis iterates over a whole watchlist,
+# so one stalled symbol would block every stock behind it. The call is run on
+# a worker thread and abandoned past this budget — the request itself cannot
+# be cancelled, but the wait is bounded.
+_FETCH_TIMEOUT_SEC = 30
 
 # Period string to days mapping for converting yfinance-style
 # period strings to date ranges that jugaad-data expects.
@@ -124,14 +132,29 @@ class JugaadDataSource(DataSource):
         start_date = end_date - timedelta(days=days)
 
         try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _Timeout
+
             from jugaad_data.nse import stock_df
-            raw = stock_df(
-                symbol=clean_symbol,
-                from_date=start_date,
-                to_date=end_date,
-                series="EQ",
-            )
-            if raw.empty:
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    stock_df,
+                    symbol=clean_symbol,
+                    from_date=start_date,
+                    to_date=end_date,
+                    series="EQ",
+                )
+                try:
+                    raw = future.result(timeout=_FETCH_TIMEOUT_SEC)
+                except _Timeout:
+                    logger.warning(
+                        "NSE did not respond for %s within %ds — giving up on this symbol",
+                        clean_symbol, _FETCH_TIMEOUT_SEC,
+                    )
+                    return pd.DataFrame(
+                        columns=["Open", "High", "Low", "Close", "Volume"]
+                    )
+            if raw is None or raw.empty:
                 logger.warning("No data returned for %s", clean_symbol)
                 return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
 
@@ -170,6 +193,7 @@ class JugaadDataSource(DataSource):
                     "Low": "min", "Close": "last", "Volume": "sum",
                 }).dropna()
 
+            df = drop_incomplete_bars(df)
             logger.info("Fetched %d bars for %s via Jugaad Data", len(df), clean_symbol)
             return df
         except Exception as exc:

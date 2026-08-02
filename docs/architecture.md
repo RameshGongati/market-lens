@@ -175,11 +175,46 @@ Analysis orchestrator: iterates over stocks, fetches data via `DataSourceManager
 - `fetch_by_interval()` — maps UI labels ("Daily", "Weekly", "75m", "15m") to fetch params; handles 75m resampling (5×15m aggregation)
 - `_default_fetch_fn()` — the fallback used when no `fetch_fn` is supplied. Passes `auto_adjust=False` to match `YahooFinanceSource`; keep the two in step
 
+#### `data/sources/base.py`
+The `DataSource` ABC, plus `drop_incomplete_bars()` — a guard both working
+sources apply before returning. It removes any row missing an OHLC value,
+because a partial bar is not merely undrawable: every comparison against NaN
+is False, so `classify_candle` reads a NaN-close bar as a boring doji and it
+quietly becomes a base candle. Volume is not checked; a zero-volume session
+is a real bar.
+
+#### `data/nse_bhavcopy.py`
+NSE publishes one end-of-day file per trading day covering the whole market.
+It is not a data source — it exists only to supply a close for a bar the
+primary source returned unfinished, and is the file the other sources
+ultimately derive from.
+
+- Parses BOTH schemas: `TckrSymb`/`OpnPric`/`ClsPric` (current) and
+  `SYMBOL`/`OPEN`/`CLOSE` (older archives). Wrong column names fail silently
+  rather than loudly, so reading only one would find nothing.
+- Keeps only the `EQ` series — BE and BZ rows share the same ticker.
+- Caches to `~/.market-lens/bhavcopy/<date>.json`. A success is permanent
+  (a published session cannot change); a failure backs off 120s rather than
+  being cached forever.
+
 #### `data/sources/yahoo_finance.py`
 Working source. Uses `yfinance` for quotes and OHLCV history with `auto_adjust=False`, so prices are the actual traded levels rather than dividend-adjusted ones and line up with TradingView / TraderTiger / Zerodha Kite. Zero-volume rows filtered for non-weekly/monthly intervals. Note that Yahoo silently omits whole trading days for some symbols — see the gotchas in `CLAUDE.md`.
 
+`_repair_last_bar()` completes a final daily bar whose close Yahoo left unset
+— which it does for the whole market at once, not per symbol. Order is
+**intraday first, bhavcopy second**: intraday costs ~200ms against ~5s for the
+bhavcopy, comes from the same provider, and was verified to return NSE's exact
+close. The bhavcopy stays as backup because Yahoo keeps only ~60 days of
+hourly data. Repair runs before `drop_incomplete_bars`, so an unrepairable
+bar is discarded rather than invented, and only the last bar is considered.
+
 #### `data/sources/jugaad.py`
 Working source. Reads NSE directly via `jugaad-data`, so prices are unadjusted by nature and recent sessions are more reliable than Yahoo's. NSE reports timestamps in UTC (18:30 UTC = midnight IST next day), so `fetch_history` converts to IST and normalises before indexing — without it every date lands a day early. Live quotes can fail when the market is closed.
+
+`stock_df` takes no timeout and NSE's per-symbol endpoint can stall — twelve
+minutes was observed before a parse failure. The call runs on a worker thread
+with a 30s budget, so one bad symbol cannot block a whole watchlist run. The
+request itself cannot be cancelled; only the wait is bounded.
 
 ### Config (`config/`)
 

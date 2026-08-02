@@ -250,9 +250,17 @@ def _missing_base_marking(
 ) -> tuple[float, float]:
     """M17: Zone boundary marking for missing-base (instant reversal) zones.
 
-    Both the turning-point and first legout candle define the zone:
-      * DEMAND: proximal = body bottom of legout, distal = lowest low of both
-      * SUPPLY: proximal = body top of legout, distal = highest high of both
+    Both the turning-point and first legout candle define the zone, and the
+    proximal takes the more CONSERVATIVE of the two — the edge nearer the
+    distal — so the zone never claims more range than both candles support:
+
+      * DEMAND: proximal = min(body_top_tp, body_top_legout),
+        distal = lowest low of both
+      * SUPPLY: proximal = max(body_bottom_tp, body_bottom_legout),
+        distal = highest high of both
+
+    ``max(open, close)`` is a candle's body top and ``min(open, close)`` its
+    body bottom, which is what the expressions below compute.
     """
     tp_o = float(df["Open"].iloc[turning_point_idx])
     tp_h = float(df["High"].iloc[turning_point_idx])

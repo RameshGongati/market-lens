@@ -16,42 +16,39 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 - ~~M10 Garbage-Area Rejection~~ — Implemented (`44ef8e9`, 2026-07-26). Achievement ratio = legout_move / base_range. Ratio < 0.5 rejects garbage zones; 0.5-1.0 flags "Weak Departure"; >= 1.0 is "Clean". Skipped for missing-base (M17) and near-zero base ranges. Does not modify ODD score. 10 tests added.
 - ~~M12 Narrow Base Width~~ — Implemented (`7e0d79d`, 2026-07-27). `base_width_pct = (base_high - base_low) / proximal * 100`, using the full base range regardless of M13's marking. Information only — no filtering, no score change. Flagged "Wide Base" on the chart above 3% (`WIDE_BASE_THRESHOLD_PCT`, public so the UI imports it), with the raw number always shown in a detail-panel expander. Flag suppressed for missing-base zones: their turning-point candle is exciting by definition, so its range sits near the threshold structurally and the warning was misleading. 6 tests added.
 
+- ~~M17 Docstring Fix~~ — Fixed (`559cb9e`, 2026-08-02). The docstring named
+  the body bottom of the legout for demand proximal; the code computes
+  `min(body_top_tp, body_top_legout)` — the more conservative of the two body
+  tops, the edge nearer the distal. For demand the old text pointed at the
+  opposite end of the body from what is computed, so anyone reasoning about
+  M17 from the docstring had the zone boundary wrong. Docstring only.
+
 ### Remaining
 
-### 1. M17 Docstring Fix
-
-**Gap:** The docstring at `patterns.py:238` says "body bottom of legout" for demand proximal, but the code computes `min(body_top_tp, body_top_legout)` (the more conservative of the two body tops).
-
-**What to fix:**
-```python
-# Current (wrong):
-#   * DEMAND: proximal = body bottom of legout, distal = lowest low of both
-#   * SUPPLY: proximal = body top of legout, distal = highest high of both
-
-# Correct:
-#   * DEMAND: proximal = min(body_top_tp, body_top_legout), distal = lowest low of both
-#   * SUPPLY: proximal = max(body_bottom_tp, body_bottom_legout), distal = highest high of both
-```
-
-**Files:** `analysis/zone_engine/patterns.py` (docstring only, no logic change)
+**Nothing. Phase 1 is COMPLETE** (2026-08-02, tagged `v0.6.0`). The last
+outstanding rule, M65/M66, was dropped by directive — see below.
 
 ---
 
-## Phase 1 Remaining — New Rules
+## Phase 1 — Dropped
 
-### 2. M65/M66 — LOTL Merge + Achievement
+### M65/M66 — LOTL Merge + Achievement (DROPPED, 2026-08-02)
 
-**Priority:** Medium (depends on M8 being fully stable)
+**Dropped by directive.** Implemented once and reverted: it "completely messed
+up the zone markings" on real charts. The branch was reset, so nothing of that
+attempt survives in history.
 
-**Starting point:** `_merge_overlapping_zones()` exists in `filters.py:78-108` but is not called.
+Merging widens a zone to the union of its members, which moves the
+**proximal** — and the proximal is the entry level being traded. Overlapping
+zones are therefore kept separate, each reflecting its own base candles only.
 
-**Steps:**
-1. Wire `_merge_overlapping_zones()` into `filter_zones()` pipeline (after score filter, before nearest-N)
-2. Verify merge logic: combined proximal = nearest-to-price, combined distal = most extreme
-3. Add M66: track which sub-zone had better M8 achievement, inherit best
-4. Start with overlap-only merge (no proximity-based merge)
+`_merge_overlapping_zones()` stays in `filters.py:78-108` but is deliberately
+**not called** from `filter_zones()` — see Gotcha 7 in `CLAUDE.md`. It is not
+dead code awaiting wiring; leave it unwired unless this decision is revisited.
 
-**Files:** `analysis/zone_engine/filters.py`, `analysis/zone_engine/models.py` (if merged zone needs new fields)
+If it ever is revisited: validate merged boundaries against real charts across
+many symbols *before* committing, not just against unit tests. Unit tests
+cannot tell you a zone edge moved to the wrong price.
 
 ---
 
@@ -105,7 +102,114 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ---
 
+## Pending — Discussed, Not Started
+
+### Main-Area UI Pass (PENDING)
+
+The sidebar was redesigned in `6eec011`; the main pages were deliberately
+left alone and now look unstyled beside it.
+
+- ~~**Dropdown borders**~~ — DONE, see *Select Control Borders* below.
+- **Page width cap** (~1400px, centred). `layout="wide"` currently lets
+  dropdowns and containers stretch to the full monitor width.
+- **Card treatment** for the Settings page sections, matching the sidebar.
+- **`STRENGTH_BG` / `STRENGTH_COLORS`** in `analysis/base.py` are Bootstrap 4
+  alert colours (`#d4edda`, `#fff3cd`, `#f8d7da`) and look dated against the
+  current palette. They stay green/amber/red — they are semantic — but the
+  shades want refreshing.
+
+**Constraint:** the main canvas must stay white. `backgroundColor` in
+`.streamlit/config.toml` is app-wide, so tinting it also tints the area the
+Plotly charts render on, whose colours were chosen against white. Put cards
+on a white canvas rather than tinting the canvas.
+
+(By contrast, the unused `stock_df` import in `jugaad.connect` is
+deliberate — an import probe paired with the `except ImportError` below it.
+pyflakes flags it because pyflakes does not honour `# noqa`.)
+
+---
+
 ## Completed Features (Non-GTF)
+
+### Select Control Borders (DONE — `c4d3fa9`, then app-wide, 2026-08-02)
+
+The border was never missing. Streamlit draws a 1px border on every select
+control and colours it **white**, so against the white section cards, the
+white main canvas and the cream popover surface it measured a contrast ratio
+of 1.00–1.08 — invisible. Only the colour changes (`#C6C4BC`, and `#4A5361`
+on hover/focus); the box, radius and metrics stay Streamlit's, so nothing
+shifts by a pixel.
+
+| Surface | Before | After |
+|---------|--------|-------|
+| Sidebar (Data Source, Watchlist) | 1.00 | 1.75 |
+| Screener popover (Proximity, Min ODD Score) | 1.08 | 1.61 |
+| Main area (filter bar, Watchlists page) | 1.00 | 1.75 |
+
+The rule is **deliberately unscoped**. `c4d3fa9` scoped it to the sidebar and
+reached neither the popover (portal, outside the sidebar element — Gotcha 21)
+nor the main filter bar, leaving the same defect one click away in two
+places.
+
+Two selector traps recorded as Gotchas 20/21: this build renders
+`react-aria-ComboBox` with **no BaseWeb elements at all**, so the previous
+`[data-baseweb="select"]` rule matched nothing while looking correct; and
+popover bodies render outside the sidebar. Verify UI selectors against the
+running app — a wrong selector fails silently and looks exactly like a wrong
+value.
+
+### Discarded Quote Fetch Removed (DONE — 2026-08-02)
+
+`yahoo_finance.fetch_quote` assigned `hist = ticker.history(...)` and never
+read it; all eight returned fields come from `fast_info`. Deleted.
+
+Re-measured cold, on two disjoint 8-symbol sets so neither path reuses the
+other's cache: **209ms → 124ms per quote, 85ms saved, 4.2s across a 50-stock
+scan.** The previously recorded "260ms → 42ms, ~11s per scan" was measured
+warm and overstated the gain.
+
+Output verified identical across 8 symbols and all 8 fields against a
+byte-for-byte copy of the old implementation. `fast_info` reports live traded
+values and is not dividend-adjusted, so the `auto_adjust=False`
+unadjusted-price guarantee that `history()` needs does not apply to this path.
+
+### Zone Confirmation Screener (DONE — `f8aae8a`, 2026-08-02)
+
+Was "Trade Confirmation Filter (PENDING)". Full spec in
+`requirements.md` → *Zone Confirmation Screener*. How the open questions were
+resolved:
+
+- **The score blocker** — resolved by the *contained* option: a separate
+  `filter_confirmation_zones` over the same raw zones with its own 3.5 floor.
+  `filter_zones`, `_MIN_DISPLAY_SCORE` and `odd_score` are untouched, so
+  charts and alerts are unaffected. Confirmed by A/B: HEAD and the feature
+  branch run against one cached set of OHLCV frames for 12 stocks produce
+  byte-identical zones, scores, status, trend and summaries with the mode off.
+- **The 5.0 arithmetic was worse than recorded.** The old note covered
+  once-tested zones (2.5/3.5/4.5/5.5). Zones tested 2+ times have freshness
+  0.0 and reach only 1.0–4.0, so the 5.0 cutoff excluded them *entirely* —
+  not just the imperfect ones. 3.5 admits a once-tested zone that earned at
+  least one of strength/time, and a repeatedly-tested zone only at 4.0, its
+  own ladder's maximum.
+- **Recency** — resolved with `_CONFIRMATION_MAX_BARS_SINCE_TEST = 10`.
+  `_bars_since_last_confirmation` replays M3's cycle definition to date the
+  last exit; deliberately kept in the confirmation path rather than added to
+  `Zone`, so scoring is not disturbed.
+- **Nearest-per-side cap of 1** added — the level price would meet next.
+
+Measured on Nifty 50 / Swing Trading / Yahoo: **16 of 50 matched**.
+
+Two traps worth remembering, both cost a debugging round:
+
+1. **The scan and the chart use different windows.** The scan fetches the
+   trading type's timeframe (1y for Swing), the detail chart the interval's
+   (5y for Daily) — see Gotcha 11. A confirmed zone older than the scan
+   window is invisible to the screener but drawn on the chart (RELIANCE:
+   zone formed ~319 bars back, absent from a 246-bar scan). Not introduced
+   here, but this feature makes it visible.
+2. **The View link opens a new tab = a separate Streamlit session.** Until
+   `cf` was added to the deep link, every chart opened from the dashboard
+   rendered with the mode off and showed nothing (Gotcha 13).
 
 ### Telegram Alert System (DONE — `55922c9`..`75b2094`, 2026-07-22)
 - Config UI on Settings page with bot token, recipients, conditions

@@ -211,6 +211,11 @@ def render_stock_card(
         "ps": st.session_state.get("primary_strategy", "Demand/Supply Zones"),
         # Comma-joined; use_fibonacci is derived from this on the far side.
         "enh": ",".join(st.session_state.get("enhancers", [])),
+        # The confirmation mode decides whether the sub-5.0 confirmed zones are
+        # drawn. Without it the new tab starts with the checkbox off and shows
+        # only the ordinary 5.0+ zones — so a stock the screener matched ON a
+        # confirmed zone opens a chart where that zone is absent.
+        "cf": "1" if st.session_state.get("screener_confirmation", False) else "0",
     })
     st.markdown(
         f"""

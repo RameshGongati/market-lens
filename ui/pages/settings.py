@@ -105,7 +105,11 @@ def render_settings() -> None:
         "These actions are irreversible. Analysis history and notes will be permanently deleted."
     )
 
-    dm1, dm2 = st.columns(2)
+    # The trailing spacer column keeps these two off the full page width —
+    # use_container_width fills the COLUMN, so the column is what sizes them.
+    # Equal columns also keep the pair the same width, which reads tidier than
+    # letting each button size itself to its label.
+    dm1, dm2, _dm_spacer = st.columns([1, 1, 2])
     with dm1:
         if st.button("Clear All Analysis History", type="secondary", use_container_width=True):
             try:
@@ -361,8 +365,19 @@ def _render_telegram_alert_settings() -> None:
             help="Controls how often you get re-alerted for the same zone.",
         )
 
-    # -- Save button --
-    if st.button("💾 Save Alert Settings", type="primary", use_container_width=True):
+    # -- Save + test actions on one row --
+    # Only the BUTTONS go inside the columns; their handlers run below so the
+    # success/error messages render at full page width instead of being
+    # squeezed into a narrow column.
+    _act_save, _act_test, _act_spacer = st.columns([1, 1, 2])
+    with _act_save:
+        _save_clicked = st.button(
+            "💾 Save Alert Settings", type="primary", use_container_width=True
+        )
+    with _act_test:
+        _test_clicked = st.button("📤 Send Test Message", use_container_width=True)
+
+    if _save_clicked:
         cfg["enabled"] = enabled
         cfg["telegram"]["bot_token"] = bot_token
         cfg["telegram"]["recipients"] = recipients
@@ -382,9 +397,8 @@ def _render_telegram_alert_settings() -> None:
         save_alert_config(cfg)
         st.success("Alert settings saved.")
 
-    # -- Test message button --
-    st.markdown("#### Test Connection")
-    if st.button("📤 Send Test Message", use_container_width=True):
+    # -- Test message handler (button rendered in the row above) --
+    if _test_clicked:
         if not bot_token.strip():
             st.warning("Enter a bot token first.")
         elif not recipients:
