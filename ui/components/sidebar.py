@@ -698,7 +698,7 @@ def render_sidebar() -> None:
                     if not _has_wl:
                         st.warning("Please select a watchlist first.")
                     else:
-                        st.session_state.active_page = "dashboard"
+                        st.session_state.active_page = "analysis_results"
                         st.session_state.analysing = True
                         update_last_analysis_timestamp()
                         save_preferences({"alerts_on": st.session_state.get("alerts_on", False)})
@@ -722,7 +722,7 @@ def render_sidebar() -> None:
                     else:
                         _has_wl2 = st.session_state.get("selected_predefined_watchlist")
                     if _has_wl2:
-                        st.session_state.active_page = "dashboard"
+                        st.session_state.active_page = "analysis_results"
                         st.session_state.analysing = True
                         update_last_analysis_timestamp()
                         st.rerun()

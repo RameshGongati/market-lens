@@ -7,7 +7,9 @@ from config.settings import SUPPORTED_DATA_SOURCES
 from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
 from storage.database import init_db
 from ui.components.sidebar import render_sidebar
-from ui.pages.dashboard import render_dashboard
+from ui.pages.analysis_results import render_analysis_results
+from ui.pages.dashboard import render_detail_view
+from ui.pages.market_overview import render_market_overview
 from ui.pages.watchlist_manager import render_watchlist_manager
 from ui.pages.settings import render_settings
 from utils.logger import get_logger
@@ -228,6 +230,91 @@ def main() -> None:
                 color: #085041 !important;
                 font-weight: 600;
             }
+
+            /* ---- Main-area layout: dashboard + analysis results ----------
+               Streamlit's default column gap is ~1rem and its vertical block
+               gap is larger, so a row of summary cards sat tight horizontally
+               while stacking loosely against the row below it — the opposite
+               of the design, where cards breathe sideways and sections sit
+               close. These even that out. */
+            [data-testid="stMain"] [data-testid="stHorizontalBlock"] {
+                gap: 0.85rem;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"] {
+                gap: 0.7rem;
+            }
+            /* Bordered containers are the section panels. Match the card
+               radius and border so a panel and a card read as one family. */
+            [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] {
+                border-radius: 12px;
+                border-color: #E4E6E9;
+                background: #FFFFFF;
+            }
+            /* The page is content-dense; wide mode otherwise stretches the
+               tables across an entire ultrawide monitor. */
+            [data-testid="stMainBlockContainer"] {
+                max-width: 1600px;
+                padding-top: 2.2rem;
+            }
+            /* Buttons in the page header rows should match the card height
+               rhythm rather than Streamlit's default chunky padding. */
+            [data-testid="stMain"] .stButton button {
+                border-radius: 9px;
+                border-color: #E4E6E9;
+            }
+
+            /* Streamlit's own ⋮ menu (Rerun / Clear cache / Print / Record /
+               About). config.toml's toolbarMode="minimal" removes the Deploy
+               button but leaves this, and it is framework chrome rather than
+               anything Market Lens offers. Delete this rule to get it back. */
+            [data-testid="stMainMenu"] {
+                display: none;
+            }
+            /* With the toolbar emptied, Streamlit's header is a blank ~3.6rem
+               strip that still floats above the canvas and clipped the page
+               title and the header buttons underneath it. Collapse it to zero
+               and drop its background rather than display:none, so the
+               sidebar's collapse control keeps working. */
+            [data-testid="stHeader"] {
+                height: 0;
+                min-height: 0;
+                background: transparent;
+                pointer-events: none;
+            }
+            /* Float the toolbar clear of the zero-height header so Streamlit's
+               native STOP control stays reachable during a scan. A custom
+               in-page Stop button cannot work: the scan loop blocks the
+               script, so the page never processes the click. Streamlit's own
+               stop signals the script runner directly, which does. With
+               toolbarMode="minimal" and the ⋮ menu hidden, this is the only
+               thing left in the toolbar.
+
+               width/height MUST be pinned to auto. Streamlit styles this
+               element at 100% x 100%; making it position:fixed without
+               overriding that turned it into a full-viewport invisible sheet
+               at z-index 1000 that swallowed every click and scroll on the
+               page. pointer-events stays none on the box and is re-enabled
+               only on its children, so the container can never intercept
+               input again even if its size rule changes. */
+            [data-testid="stToolbar"] {
+                position: fixed;
+                top: 8px;
+                right: 14px;
+                left: auto;
+                bottom: auto;
+                width: auto;
+                height: auto;
+                min-height: 0;
+                z-index: 1000;
+                pointer-events: none;
+            }
+            [data-testid="stToolbar"] > * {
+                pointer-events: auto;
+            }
+            /* Reclaim the space the header used to reserve. */
+            [data-testid="stMainBlockContainer"] {
+                padding-top: 1.6rem;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -291,15 +378,21 @@ def main() -> None:
 
     render_sidebar()
 
+    # Routing. "dashboard" is the market overview landing page; scan results
+    # live on their own page, and the per-stock chart on a third. The detail
+    # view is dispatched here rather than from inside a page, so any page can
+    # navigate to it by setting active_page alone.
     page = st.session_state.active_page
-    if page == "dashboard":
-        render_dashboard()
+    if page == "stock_detail":
+        render_detail_view()
+    elif page == "analysis_results":
+        render_analysis_results()
     elif page == "watchlist_manager":
         render_watchlist_manager()
     elif page == "settings":
         render_settings()
     else:
-        render_dashboard()
+        render_market_overview()
 
 
 if __name__ == "__main__":
