@@ -152,17 +152,25 @@ def main() -> None:
                 font-size: 0.92rem;
                 color: #1E1E23;
             }
-            /* Make the control's edge visible. Streamlit already draws a 1px
-               border, but coloured WHITE on the white section cards — so the
-               DATA SOURCE and WATCHLIST dropdowns read as plain text rather
-               than as controls you can open. Only the colour needs changing;
-               the box, its radius and its metrics are Streamlit's own, so the
-               control does not shift by a pixel. */
-            section[data-testid="stSidebar"] .react-aria-ComboBox > div {
+            /* Make every select control's edge visible. Streamlit already
+               draws a 1px border, but coloured WHITE — against the white
+               section cards, the white main canvas and the cream popover
+               surface alike it measures a contrast ratio of 1.08-1.00, i.e.
+               invisible, so the dropdowns read as plain text rather than as
+               controls you can open. Only the COLOUR changes; the box, its
+               radius and its metrics stay Streamlit's own, so no control
+               shifts by a pixel.
+
+               Deliberately unscoped. A sidebar-scoped rule reached neither
+               the screener popover — st.popover renders its body in a portal
+               outside the sidebar element, however it looks on screen — nor
+               the main filter bar's Status / Strength / Sort by. Scoping this
+               three ways would leave the same defect one click away each
+               time. */
+            .react-aria-ComboBox > div {
                 border-color: #C6C4BC;
             }
-            section[data-testid="stSidebar"] .react-aria-ComboBox > div:hover,
-            section[data-testid="stSidebar"]
+            .react-aria-ComboBox > div:hover,
             .react-aria-ComboBox > div:focus-within {
                 border-color: #4A5361;
             }
