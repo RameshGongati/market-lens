@@ -128,11 +128,9 @@ All constants and priority chain logic match.
 
 Logic correct. Validation requires at least one extended legout candle to clear the turning point's range.
 
-**Note:** The code's docstring at line 238 says "body bottom of legout" for demand proximal, but the code actually computes `min(body_top_tp, body_top_legout)`. The docstring is inaccurate; the code and tests are correct. (Flagged for docstring fix — see REFINEMENT_PLAN.md.)
-
 **Tests:** 13 tests covering DBR, RBD, scoring, no double-counting, legout-must-clear, extended legout, legin/legout extension, same-direction rejection, M2 exceptional, continuation rejection, gap in legout, any-candle fix.
 
-**Status:** INLINE with spec (code correct, docstring needs fix).
+**Status:** INLINE with spec. (The docstring formerly said "body bottom of legout" for demand proximal while the code computed `min(body_top_tp, body_top_legout)`; corrected in `559cb9e`.)
 
 ---
 
@@ -187,7 +185,7 @@ Called at `analysis/demand_supply.py:222`, between detect and filter. Checks `zo
 
 ---
 
-## Phase 1 — Pending Rules
+## Phase 1 — Formerly Pending Rules (COMPLETE)
 
 ### #10 M10 — Garbage-Area Rejection (DONE — `44ef8e9`)
 
@@ -246,13 +244,17 @@ Information-only — never filters a zone and never changes `odd_score`.
 
 ---
 
-### #12 M65/M66 — LOTL Merge + Achievement Weighting (TODO)
+### #12 M65/M66 — LOTL Merge + Achievement Weighting (DROPPED)
 
-**Spec:**
-- **M65:** Merge same-type zones with overlapping price ranges. Combined proximal = nearest-to-price edge, combined distal = most extreme edge. Start with overlap-only merge (no proximity-based merge).
-- **M66:** Track which sub-zone had the better M8 achievement (closing quality). The merged zone inherits the best achievement.
+**Dropped by directive, 2026-08-02.** Implemented once and reverted: merging
+same-type overlapping zones "completely messed up the zone markings" on real
+charts. Merging widens a zone to the union of its members, which moves the
+**proximal** — and the proximal is the entry level being traded. Overlapping
+zones are therefore kept separate, each reflecting its own base candles only.
 
-**Existing code:** `analysis/zone_engine/filters.py:78-108` — `_merge_overlapping_zones()` exists with a merge-intervals algorithm but is NOT called from `filter_zones()`. This is a starting point for M65; needs M66 achievement tracking added.
+`_merge_overlapping_zones()` remains in `analysis/zone_engine/filters.py:78-108`
+but is deliberately **not called** from `filter_zones()` — see Gotcha 7 in
+`CLAUDE.md`. Leave it that way unless this decision is revisited.
 
 ---
 
@@ -489,7 +491,7 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 
 | Item | Gap | Priority |
 |------|-----|----------|
-| — | None open. The last Phase 1 *rule*, M65/M66, is tracked in `REFINEMENT_PLAN.md`, not here. | — |
+| — | None open. **Phase 1 is COMPLETE** — M65/M66 was dropped by directive (see #12). | — |
 
 **Closed gaps:**
 - ~~#6 M17 docstring~~ — Fixed (`559cb9e`); docstring now matches the computed `min(body_top_tp, body_top_legout)` / `max(body_bottom_tp, body_bottom_legout)`
@@ -531,7 +533,7 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 
 | Item | What Exists | What's Missing |
 |------|-------------|----------------|
-| #12 M65/M66 | `_merge_overlapping_zones()` in `filters.py:78-108` (merge-intervals algorithm) | Not called from `filter_zones()`, no M66 achievement tracking |
+| ~~#12 M65/M66~~ | `_merge_overlapping_zones()` in `filters.py:78-108` (merge-intervals algorithm) | DROPPED — deliberately not called; see #12 |
 | #25 M42-M44 | `ema20_confluence()` in `enhancers.py` (basic in/near check) | M43 trending-only filter, M44 multi-TF support |
 | #26 M40/M41 | `TrendFollowingAnalysis` in `trend_following.py` (standalone strategy) | Not wired as +1 enhancer into D/S pipeline |
 | #28 M70/M71 | RSI checkbox in sidebar UI | No analysis logic behind it (inert) |

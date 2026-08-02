@@ -101,9 +101,15 @@ python -m pytest tests/ -v
 | M28  | Time-at-base scoring: 0-3 candles = 2pts, 4-5 = 1pt, 6+ = 0pts |
 | M46  | Wick-based invalidation: any penetration past distal (wick or close) invalidates |
 
+**Phase 1 is COMPLETE** (`v0.6.0`, 2026-08-02). Every rule above is implemented and tested.
+
+## Dropped Rules
+
+- **M65/M66** — LOTL merge + achievement weighting. Dropped by directive after an implementation was reverted for corrupting zone markings. Merging widens a zone to the union of its members, which moves the proximal — the entry level being traded. Overlapping zones stay separate. See Gotcha 7.
+
 ## Next Pending Rules
 
-- **M65/M66** — LOTL merge + achievement weighting
+Phase 2 (M1 — entry/stop-loss/target) is the next phase. Nothing in Phase 1 remains.
 
 See `docs/requirements.md` for the cross-checked GTF roadmap (Phases 1-8) and `docs/REFINEMENT_PLAN.md` for the prioritized implementation plan.
 
@@ -123,7 +129,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 6. **Gap-as-legout:** A gap >= 1.3% between consecutive base candles terminates the base and counts as a legout departure. The gap candle can be boring — the gap itself is the institutional conviction signal.
 
-7. **`_merge_overlapping_zones()` exists but is not called** from `filter_zones()`. The merge-intervals code is present in `filters.py` but the current pipeline keeps overlapping zones separate.
+7. **`_merge_overlapping_zones()` exists but is DELIBERATELY not called** from `filter_zones()`. The merge-intervals code is present in `filters.py`, and wiring it up is M65 — which was implemented once, corrupted the zone markings on real charts, and was reverted and then dropped by directive. This is not dead code awaiting completion: merging widens a zone to the union of its members, which moves the proximal, and the proximal is the entry level being traded. Overlapping zones stay separate, each reflecting its own base candles only. Do not "finish" it.
 
 8. **Data source limitation:** Yahoo Finance and Jugaad Data (NSE) both work. The other 4 sources (NSE India, Zerodha, Upstox, TradingView) are scaffolded but require credentials or unavailable libraries.
 

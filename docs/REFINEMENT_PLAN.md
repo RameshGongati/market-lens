@@ -25,34 +25,30 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 
 ### Remaining
 
-Nothing in the "Immediate" list. **Phase 1 is not closed** — M65/M66 below is
-still outstanding, and it is the last item in the phase.
+**Nothing. Phase 1 is COMPLETE** (2026-08-02, tagged `v0.6.0`). The last
+outstanding rule, M65/M66, was dropped by directive — see below.
 
 ---
 
-## Phase 1 Remaining — New Rules
+## Phase 1 — Dropped
 
-### 2. M65/M66 — LOTL Merge + Achievement
+### M65/M66 — LOTL Merge + Achievement (DROPPED, 2026-08-02)
 
-**Priority:** Medium (depends on M8 being fully stable)
+**Dropped by directive.** Implemented once and reverted: it "completely messed
+up the zone markings" on real charts. The branch was reset, so nothing of that
+attempt survives in history.
 
-> **Attempted once and reverted.** A previous implementation (capping the
-> merged span) was removed at the user's request — it "completely messed up
-> the zone markings" on real charts. The branch was reset, so nothing of it
-> survives in history. Before retrying: merging changes the drawn boundaries
-> of zones the user reads daily, so validate against real charts across many
-> symbols *before* committing, not just against unit tests. Widening a zone's
-> proximal moves the entry level, which is the number being traded.
+Merging widens a zone to the union of its members, which moves the
+**proximal** — and the proximal is the entry level being traded. Overlapping
+zones are therefore kept separate, each reflecting its own base candles only.
 
-**Starting point:** `_merge_overlapping_zones()` exists in `filters.py:78-108` but is not called.
+`_merge_overlapping_zones()` stays in `filters.py:78-108` but is deliberately
+**not called** from `filter_zones()` — see Gotcha 7 in `CLAUDE.md`. It is not
+dead code awaiting wiring; leave it unwired unless this decision is revisited.
 
-**Steps:**
-1. Wire `_merge_overlapping_zones()` into `filter_zones()` pipeline (after score filter, before nearest-N)
-2. Verify merge logic: combined proximal = nearest-to-price, combined distal = most extreme
-3. Add M66: track which sub-zone had better M8 achievement, inherit best
-4. Start with overlap-only merge (no proximity-based merge)
-
-**Files:** `analysis/zone_engine/filters.py`, `analysis/zone_engine/models.py` (if merged zone needs new fields)
+If it ever is revisited: validate merged boundaries against real charts across
+many symbols *before* committing, not just against unit tests. Unit tests
+cannot tell you a zone edge moved to the wrong price.
 
 ---
 
