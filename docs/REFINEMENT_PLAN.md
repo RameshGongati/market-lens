@@ -16,24 +16,17 @@ Prioritized implementation roadmap derived from the cross-check of the master re
 - ~~M10 Garbage-Area Rejection~~ — Implemented (`44ef8e9`, 2026-07-26). Achievement ratio = legout_move / base_range. Ratio < 0.5 rejects garbage zones; 0.5-1.0 flags "Weak Departure"; >= 1.0 is "Clean". Skipped for missing-base (M17) and near-zero base ranges. Does not modify ODD score. 10 tests added.
 - ~~M12 Narrow Base Width~~ — Implemented (`7e0d79d`, 2026-07-27). `base_width_pct = (base_high - base_low) / proximal * 100`, using the full base range regardless of M13's marking. Information only — no filtering, no score change. Flagged "Wide Base" on the chart above 3% (`WIDE_BASE_THRESHOLD_PCT`, public so the UI imports it), with the raw number always shown in a detail-panel expander. Flag suppressed for missing-base zones: their turning-point candle is exciting by definition, so its range sits near the threshold structurally and the warning was misleading. 6 tests added.
 
+- ~~M17 Docstring Fix~~ — Fixed (`559cb9e`, 2026-08-02). The docstring named
+  the body bottom of the legout for demand proximal; the code computes
+  `min(body_top_tp, body_top_legout)` — the more conservative of the two body
+  tops, the edge nearer the distal. For demand the old text pointed at the
+  opposite end of the body from what is computed, so anyone reasoning about
+  M17 from the docstring had the zone boundary wrong. Docstring only.
+
 ### Remaining
 
-### 1. M17 Docstring Fix
-
-**Gap:** The docstring at `patterns.py:238` says "body bottom of legout" for demand proximal, but the code computes `min(body_top_tp, body_top_legout)` (the more conservative of the two body tops).
-
-**What to fix:**
-```python
-# Current (wrong):
-#   * DEMAND: proximal = body bottom of legout, distal = lowest low of both
-#   * SUPPLY: proximal = body top of legout, distal = highest high of both
-
-# Correct:
-#   * DEMAND: proximal = min(body_top_tp, body_top_legout), distal = lowest low of both
-#   * SUPPLY: proximal = max(body_bottom_tp, body_bottom_legout), distal = highest high of both
-```
-
-**Files:** `analysis/zone_engine/patterns.py` (docstring only, no logic change)
+Nothing in the "Immediate" list. **Phase 1 is not closed** — M65/M66 below is
+still outstanding, and it is the last item in the phase.
 
 ---
 

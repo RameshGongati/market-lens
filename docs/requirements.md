@@ -489,9 +489,10 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 
 | Item | Gap | Priority |
 |------|-----|----------|
-| #6 M17 | Code docstring at `patterns.py:238` says "body bottom of legout" but code computes `min(body_top_tp, body_top_legout)` | Minor fix |
+| — | None open. The last Phase 1 *rule*, M65/M66, is tracked in `REFINEMENT_PLAN.md`, not here. | — |
 
 **Closed gaps:**
+- ~~#6 M17 docstring~~ — Fixed (`559cb9e`); docstring now matches the computed `min(body_top_tp, body_top_legout)` / `max(body_bottom_tp, body_bottom_legout)`
 - ~~#3 M3 habitation~~ — Deemed unnecessary; enter+exit cycle counting handles all real-world cases
 - ~~#7 M46 wick breaches~~ — Resolved by changing invalidation to wick-based (`458ba6c`); wick past distal = zone dead, no need for a counter
 
