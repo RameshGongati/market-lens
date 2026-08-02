@@ -41,16 +41,26 @@ config/
 data/
   manager.py                    # DataSourceManager, timeframe-aware fetching, intraday fallback
   nse_bhavcopy.py               # NSE end-of-day file; backup close for an unfinished bar
+  market_indices.py             # NIFTY 50 / BANK NIFTY snapshots + 20-EMA market bias
+  earnings_calendar.py          # Results calendar, disk-cached daily (~/.market-lens/earnings)
   sources/base.py               # DataSource ABC + drop_incomplete_bars() guard
   sources/yahoo_finance.py      # Working source; unadjusted prices (auto_adjust=False)
   sources/jugaad.py             # Working source; NSE direct, UTC->IST dates, 30s timeout
   stock_list.json               # 2,374 NSE stocks
   predefined_watchlists.json    # NIFTY50, BANKNIFTY, F&O index watchlists
 ui/
-  components/stock_detail.py    # Full detail view with Plotly charts + overlays
-  components/stock_card.py      # Dashboard grid cards with deep-link
+  components/panels.py          # Shared surfaces: stat_card, filter_chip, kv_row,
+                                #   page_title, pending_panel, scan_progress, SVG icons
+  components/stock_detail.py    # Chart page: 7 tabs + Setup Summary / Trade Plan rail
+  components/stock_card.py      # Grid cards + build_detail_url() deep-link builder
   components/sidebar.py         # Two-axis control panel, market status, watchlist picker
-  pages/dashboard.py            # Analysis loop, results grid, screener
+  pages/dashboard.py            # Scan engine (run_scan, scan_context) + shared helpers.
+                                #   NOT a page — see Gotcha 22
+  pages/market_overview.py      # Dashboard landing page (market strip, top opportunities)
+  pages/analysis_results.py     # Scan results: cards, filters, ranked table, View links
+  pages/alerts_page.py          # Zone-proximity matches + Telegram alert history
+  pages/reports_page.py         # F&O results monitor (earnings calendar)
+  pages/placeholders.py         # Trade Journal — routed, awaiting requirements
 storage/database.py             # SQLite CRUD (5 tables)
 utils/
   helpers.py                    # Currency formatting, stock list loading, company names
@@ -159,7 +169,19 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 21. **Popover content renders in a portal OUTSIDE the sidebar.** `st.popover` bodies land under `[data-testid="stPopoverBody"]` at body level, so `section[data-testid="stSidebar"] ...` rules do not reach the screener's dropdowns even though they appear inside the sidebar visually.
 
-22. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes need a heredoc (`git commit -F - <<'EOF'`) or the shell mis-parses them as paths.
+22. **`dashboard.py` is not a page.** It holds the scan (`run_scan`, `scan_context`) and the helpers the pages share — the screener predicate, exports, the per-stock detail view, single-stock analysis for deep links. `app.main()` routes seven states: `dashboard` → `market_overview.render_market_overview`, plus `analysis_results`, `stock_detail`, `alerts`, `reports`, `trade_journal`, `watchlist_manager`, `settings`. `_render_filter_sort_bar` and `_render_results_grid` are still in `dashboard.py` but UNREACHABLE — they lost their caller in the page split and are kept pending review, not because anything calls them.
+
+23. **Every helper in `panels.py` must emit newline-free HTML.** A multi-line f-string produced a whitespace-only line whenever an optional slot (the icon) was empty, and a blank line TERMINATES a markdown HTML block — everything indented after it was then parsed as an indented code block, so cards without an icon rendered their own source as visible text. Cards with icons rendered fine, which is why it survived review.
+
+24. **Never make Streamlit's toolbar `position: fixed` without pinning its size.** Streamlit styles `[data-testid="stToolbar"]` at `width/height: 100%`; going fixed resolves those against the VIEWPORT, turning it into a full-screen invisible sheet at `z-index: 1000` that swallows every click and scroll. Geometry is pinned to `auto` and `pointer-events` is `none` on the container with `auto` only on its children. After any change adding `position: fixed` or `z-index`, probe `document.elementFromPoint` at several page coordinates — a visibility check is not a usability check.
+
+25. **`st.tabs` cannot preselect a tab** — whatever is listed first is what opens. The chart page lists Chart first for that reason, even though the design puts Overview first.
+
+26. **`get_all_alerts()` / `get_unread_alerts()` return DICTS, not objects.** `getattr(row, "message", None) or str(row)` therefore always misses and falls through to printing the entire row — id, stock_id, is_read and all — as the alert text. Invisible until an alert exists.
+
+27. **Result-calendar fetches must pass `cache_only=True` on render.** `earnings_calendar.get_earnings` fetches anything uncached, which on page open is 39s for Nifty 50 and ~164s for the 208-stock F&O universe. Fetching is an explicit user action (the Refresh button), never a side effect of navigation. As with the bhavcopy cache, `_DISK_CACHE` is module-level so tests can redirect it — a fixture written into the real cache is served back as a genuine result date.
+
+28. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes break BOTH layers: the heredoc alone is not enough, because `wsl -- bash -c '...'` is itself single-quoted and an apostrophe inside terminates it, silently truncating the message at that word. Write the message to a file and use `git commit -F <file>`.
 
 ## Critical Instruction
 

@@ -500,6 +500,67 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 
 ---
 
+## UI — Multi-Page Application (DONE — `96d5c36`..`4405fd6`, 2026-08-03)
+
+The single-page dashboard became seven routed pages. `dashboard.py` stopped
+being a page and now holds the scan plus the helpers the pages share — see
+Gotcha 22 in `CLAUDE.md`.
+
+| Page | Module | Content |
+|------|--------|---------|
+| Dashboard | `market_overview.py` | Market bias (NIFTY vs 20 EMA), NIFTY 50 / BANK NIFTY with sparklines, valid + high-ODD setup counts, four zone-state pills, top opportunities, recent alerts, quick tools |
+| Analysis Results | `analysis_results.py` | Scan summary cards, Status/Strength/Sort, removable screener chips, ranked table with search + paging, per-row View deep link |
+| Stock Detail | `stock_detail.py` | 7 tabs (Chart first — Gotcha 25) with a Setup Summary / Quick Trade Plan rail |
+| Alerts | `alerts_page.py` | Live zone-proximity matches and the Telegram delivery history |
+| Reports | `reports_page.py` | F&O results monitor — see below |
+| Trade Journal | `placeholders.py` | Routed, awaiting requirements |
+| Watchlists / Settings | unchanged | |
+
+**Scan progress** is a standalone page — donut, stock count and five
+milestones. The milestones are paced off the percentage and named for the run
+as a whole, because all five stages actually execute per stock inside one loop
+iteration; a checklist ticking on real phase transitions would reset fifty
+times. The measured quantities are the count and the percentage. Streamlit's
+native Stop is used because a custom in-page button cannot work — the loop
+blocks the script, so the page never processes the click.
+
+**Placeholders** carry their real label and name the phase that will fill
+them, never a zero: entry/stop/target and risk-reward (Phase 2), HTF/ITF trend
+(Phase 3), everything sector-related (Phase 7).
+
+---
+
+## Reports — F&O Results Monitor (DONE Phase 1 — `4405fd6`, 2026-08-03)
+
+Earnings/results tracking on live yfinance data.
+
+**Live:** next result date, consensus EPS and revenue estimates, countdown and
+status, most recent reported EPS with surprise %, close-to-close price
+reaction, sector (from the shipped sector watchlists), upcoming calendar,
+recent releases, and a per-sector reaction heatmap.
+
+**Caching is structural, not an optimisation.** One symbol costs ~790ms
+(`calendar` + `earnings_dates`), so the 208-stock F&O universe is ~164s. The
+page renders from a disk cache at `~/.market-lens/earnings` and fetches only
+on an explicit Refresh — `get_earnings(..., cache_only=True)` on render, or
+opening the page fetches everything uncached inline. See Gotcha 27. The cache
+is keyed by calendar day.
+
+**High Impact rule** (transparent by design — every threshold appears verbatim
+in the badge tooltip):
+
+| Case | Condition |
+|------|-----------|
+| Upcoming | due within 2 days **AND** in the F&O universe **AND** (in a major index/sector list **OR** revenue estimate >= 10,000 Cr) |
+| Released | EPS surprise >= 5% **OR** price reaction >= 3% |
+
+**Deliberately blank in Phase 1:** Session (BMO/AMO) — yfinance has no
+reliable Indian pre/post-market marker; OI / Vol Spike — needs an F&O
+derivatives pipeline. Both are stated in the page's Important Notes. Result
+alert subscriptions are Phase 2; the page shows the existing zone-alert count.
+
+---
+
 ## Alerts — Telegram Zone Proximity Notifications (DONE — `55922c9`..`75b2094`)
 
 ### Alert Configuration (DONE)

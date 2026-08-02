@@ -104,14 +104,83 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ## Pending — Discussed, Not Started
 
+### UI Redesign — Open Decisions (PENDING, 2026-08-03)
+
+Awaiting a call from the user; nothing blocked on implementation.
+
+| # | Item | Options |
+|---|------|---------|
+| 1 | **Sidebar dark navy rail** | Cards restyled as navy panels **(A, recommended)** vs flattened to labelled sections (B) |
+| 2 | Sidebar popovers / dropdown lists | Light **(recommended)** vs dark. They render in a portal outside the sidebar, so "dark" also darkens the main-area Export popover and the results-page dropdowns — see Gotcha 21 |
+| 3 | Run Analysis indigo `#5B5BD6` | Sidebar-only override **(recommended)** vs changing `primaryColor` app-wide, which recolours main-area primary buttons |
+| 4 | Market status block | Mockup form (red CLOSED chip + NIFTY level and change) **(recommended)** vs today's amber card |
+| 5 | **Overview tab on the stock detail page** | It duplicates the chart rail — Setup Summary and Quick Trade Plan render in both, and only Key Levels is unique. Drop it (move Key Levels into the rail), keep it as a chart-free small-screen view, or repurpose it |
+
+### Dead Code — Awaiting Review (PENDING)
+
+`_render_filter_sort_bar` and `_render_results_grid` in `ui/pages/dashboard.py`
+are defined but unreachable. They lost their caller when the results grid moved
+to `ui/pages/analysis_results.py` in `96d5c36`. Exports, filters and sorting
+were rebuilt on the new page; the zone-proximity alert banner they also
+contained was NOT, and is now the Alerts page (`0fb5106`).
+
+Roughly 130 lines. Left in place at the user's request pending review — the
+decision is whether anything in them is still wanted before deletion.
+
+### Reports Page — Phase 2 (PENDING)
+
+Phase 1 shipped the results monitor on live yfinance data. Deferred:
+
+- **OI / Vol Spike column** — needs an F&O derivatives pipeline
+  (`jugaad_data.derivatives_df` / `bhavcopy_fo_raw`) with its own history and
+  cache. Column is present and blank.
+- **BMO / AMO session column** — yfinance carries no reliable Indian
+  pre/post-market marker. NSE publishes board-meeting intimations with the
+  session, but only as unstructured announcements. Column is present and
+  blank; do not guess it.
+- **Result alert subscriptions** — "result today", "result tomorrow", "EPS
+  surprise", "price reaction after result". Phase 1 shows the existing
+  zone-alert count only.
+- **Full F&O refresh does not switch the view.** The refresh button fills the
+  cache for all 208 symbols but leaves the `Only F&O` toggle off, so the table
+  still shows the smaller universe and the refresh appears to have done
+  nothing. Should enable the toggle on completion — one line.
+- **Sector coverage.** Sectors come from the seven shipped sector watchlists,
+  which cover 129 of the 208 F&O stocks; the rest show `—` and do not
+  contribute to the reaction heatmap. Either extend the lists or accept the
+  gaps. `yfinance info["sector"]` is the alternative but costs a network call
+  per symbol and uses US-style taxonomy.
+- **EPS surprise outliers.** Loss-making comparison quarters produce values
+  like `-143.5%` (observed on INDIGO), which trip the 5% High Impact
+  threshold. Consider capping or special-casing.
+
+### Trade Journal Page (PENDING)
+
+Routed and reachable, renders a "not built yet" placeholder. Awaiting the
+requirements for what it should show.
+
+### Alerts Never Persist for Index Watchlists (PENDING)
+
+`check_and_trigger_alerts` only writes an alert when `stock.id` is set.
+Predefined index watchlists build their stocks with `id=0`, so scanning
+Nifty 50 produces zone-proximity matches on the Alerts page but writes no
+history and sends no Telegram message. Pre-existing behaviour, made visible
+by the Alerts page in `0fb5106`. Decide whether index scans should alert.
+
+### Zone Confirmation Grading (PENDING)
+
+The results table grades confirmation as Strong (confirmed-zone score >= 4.5)
+or Moderate. That threshold is a placeholder chosen during implementation and
+was never confirmed against the GTF methodology.
+
 ### Main-Area UI Pass (PENDING)
 
 The sidebar was redesigned in `6eec011`; the main pages were deliberately
 left alone and now look unstyled beside it.
 
 - ~~**Dropdown borders**~~ — DONE, see *Select Control Borders* below.
-- **Page width cap** (~1400px, centred). `layout="wide"` currently lets
-  dropdowns and containers stretch to the full monitor width.
+- ~~**Page width cap**~~ — DONE in `96d5c36`; `stMainBlockContainer` is capped
+  at 1600px.
 - **Card treatment** for the Settings page sections, matching the sidebar.
 - **`STRENGTH_BG` / `STRENGTH_COLORS`** in `analysis/base.py` are Bootstrap 4
   alert colours (`#d4edda`, `#fff3cd`, `#f8d7da`) and look dated against the
