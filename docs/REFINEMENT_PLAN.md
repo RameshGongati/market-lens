@@ -120,6 +120,7 @@ Listed in recommended implementation order within each phase. See `requirements.
 The sidebar was redesigned in `6eec011`; the main pages were deliberately
 left alone and now look unstyled beside it.
 
+- ~~**Dropdown borders**~~ — DONE, see *Select Control Borders* below.
 - **Page width cap** (~1400px, centred). `layout="wide"` currently lets
   dropdowns and containers stretch to the full monitor width.
 - **Card treatment** for the Settings page sections, matching the sidebar.
@@ -133,14 +134,6 @@ left alone and now look unstyled beside it.
 Plotly charts render on, whose colours were chosen against white. Put cards
 on a white canvas rather than tinting the canvas.
 
-### Discarded Quote Fetch (PENDING — one line)
-
-`yahoo_finance.fetch_quote` assigns `hist = ticker.history(...)` and never
-reads it; every returned value comes from `fast_info`. It is a full chart API
-request per quote: **260ms with it, 42ms without**, and `fetch_quote` runs
-once per stock, so a 50-stock scan wastes roughly 11 seconds. Deleting the
-line changes no output.
-
 (By contrast, the unused `stock_df` import in `jugaad.connect` is
 deliberate — an import probe paired with the `except ImportError` below it.
 pyflakes flags it because pyflakes does not honour `# noqa`.)
@@ -148,6 +141,48 @@ pyflakes flags it because pyflakes does not honour `# noqa`.)
 ---
 
 ## Completed Features (Non-GTF)
+
+### Select Control Borders (DONE — `c4d3fa9`, then app-wide, 2026-08-02)
+
+The border was never missing. Streamlit draws a 1px border on every select
+control and colours it **white**, so against the white section cards, the
+white main canvas and the cream popover surface it measured a contrast ratio
+of 1.00–1.08 — invisible. Only the colour changes (`#C6C4BC`, and `#4A5361`
+on hover/focus); the box, radius and metrics stay Streamlit's, so nothing
+shifts by a pixel.
+
+| Surface | Before | After |
+|---------|--------|-------|
+| Sidebar (Data Source, Watchlist) | 1.00 | 1.75 |
+| Screener popover (Proximity, Min ODD Score) | 1.08 | 1.61 |
+| Main area (filter bar, Watchlists page) | 1.00 | 1.75 |
+
+The rule is **deliberately unscoped**. `c4d3fa9` scoped it to the sidebar and
+reached neither the popover (portal, outside the sidebar element — Gotcha 21)
+nor the main filter bar, leaving the same defect one click away in two
+places.
+
+Two selector traps recorded as Gotchas 20/21: this build renders
+`react-aria-ComboBox` with **no BaseWeb elements at all**, so the previous
+`[data-baseweb="select"]` rule matched nothing while looking correct; and
+popover bodies render outside the sidebar. Verify UI selectors against the
+running app — a wrong selector fails silently and looks exactly like a wrong
+value.
+
+### Discarded Quote Fetch Removed (DONE — 2026-08-02)
+
+`yahoo_finance.fetch_quote` assigned `hist = ticker.history(...)` and never
+read it; all eight returned fields come from `fast_info`. Deleted.
+
+Re-measured cold, on two disjoint 8-symbol sets so neither path reuses the
+other's cache: **209ms → 124ms per quote, 85ms saved, 4.2s across a 50-stock
+scan.** The previously recorded "260ms → 42ms, ~11s per scan" was measured
+warm and overstated the gain.
+
+Output verified identical across 8 symbols and all 8 fields against a
+byte-for-byte copy of the old implementation. `fast_info` reports live traded
+values and is not dividend-adjusted, so the `auto_adjust=False`
+unadjusted-price guarantee that `history()` needs does not apply to this path.
 
 ### Zone Confirmation Screener (DONE — `f8aae8a`, 2026-08-02)
 
