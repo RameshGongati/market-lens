@@ -55,7 +55,6 @@ logger = get_logger(__name__)
 
 _MAJOR_LISTS = ("Nifty 50", "Nifty Bank")
 _ROWS_PER_PAGE = [10, 20, 30, 50, 75, 100]
-_SESSION_KEY = "reports_rows"
 
 
 def _universe() -> tuple[list[str], str]:
@@ -87,14 +86,25 @@ def render_reports_page() -> None:
 
     _render_header(source_label, symbols)
 
-    # cache_only is load-bearing, not an optimisation: without it, opening the
-    # page fetches every uncached symbol inline — 39s for Nifty 50, ~164s for
-    # the F&O universe — which is the exact behaviour the refresh button
+    # Read the disk cache for the CURRENT universe on every render.
+    #
+    # This used to be memoised in session state and only filled when empty,
+    # which broke the "Only F&O" toggle: the first render cached the 50 Nifty
+    # rows, and switching to the 208-stock universe found that dict already
+    # populated, so it was never reloaded. The header correctly said "F&O
+    # universe · 208 stocks" while the table showed 50 — all 208 were sitting
+    # on disk, unread.
+    #
+    # There is nothing to memoise anyway. cache_only never touches the
+    # network; it is a handful of small JSON reads, measured at ~1ms for 50
+    # symbols, and the refresh path writes to the same disk cache, so a
+    # session copy could only ever go stale.
+    #
+    # cache_only itself is load-bearing, not an optimisation: without it,
+    # opening the page fetches every uncached symbol inline — 39s for Nifty
+    # 50, ~164s for the F&O universe — the exact behaviour the refresh button
     # exists to avoid.
-    rows = st.session_state.get(_SESSION_KEY) or {}
-    if not rows:
-        rows = get_earnings(symbols, cache_only=True)
-        st.session_state[_SESSION_KEY] = rows
+    rows = get_earnings(symbols, cache_only=True)
 
     fresh, total = cache_status(symbols)
     if fresh < total:
@@ -146,7 +156,26 @@ def render_reports_page() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_header(source_label: str, symbols: list[str]) -> None:
+    # Both rows are created up front so the layout is fixed — title and
+    # buttons on top, toggles beneath — but the TOGGLES are written into
+    # first, and that ordering is load-bearing.
+    #
+    # Streamlit discards the state of any widget that was not instantiated
+    # during a run. The buttons below can end the run early (a refresh used to
+    # call st.rerun, and Dashboard still does), which meant the toggles were
+    # never created on that pass and "Only F&O" was silently reset — the
+    # universe fell back from 208 to the default watchlist the moment you
+    # pressed Refresh.
     left, right = st.columns([3, 2])
+    opts = st.columns([1, 1, 4])
+
+    with opts[0]:
+        st.toggle("Only F&O", key="reports_only_fno",
+                  help="Widen the table to every F&O stock.")
+    with opts[1]:
+        st.toggle("Upcoming only", key="reports_upcoming_only",
+                  help="Hide results that have already been released.")
+
     with left:
         st.markdown(
             "<div style='font-size:0.78rem;color:#9AA0A8;margin-bottom:2px;'>"
@@ -183,17 +212,9 @@ def _render_header(source_label: str, symbols: list[str]) -> None:
                 st.session_state.active_page = "dashboard"
                 st.rerun()
 
-    opts = st.columns([1, 1, 4])
-    with opts[0]:
-        st.toggle("Only F&O", key="reports_only_fno",
-                  help="Widen the table to every F&O stock.")
-    with opts[1]:
-        st.toggle("Upcoming only", key="reports_upcoming_only",
-                  help="Hide results that have already been released.")
-
 
 def _refresh(symbols: list[str], force: bool) -> None:
-    """Fetch calendars with the standalone progress card, then rerun."""
+    """Fetch calendars with the standalone progress card."""
     from ui.components.panels import scan_progress
 
     holder = st.empty()
@@ -204,13 +225,17 @@ def _refresh(symbols: list[str], force: bool) -> None:
             unsafe_allow_html=True,
         )
 
-    rows = get_earnings(symbols, force=force, progress=_tick)
+    # get_earnings writes every fetched row to the disk cache, which is what
+    # the page reads on the next render — so nothing needs storing in session
+    # here. Keeping a session copy is what let the table fall out of step with
+    # the selected universe.
+    get_earnings(symbols, force=force, progress=_tick)
     holder.empty()
-    merged = dict(st.session_state.get(_SESSION_KEY) or {})
-    merged.update(rows)
-    st.session_state[_SESSION_KEY] = merged
     st.session_state["reports_last_refresh"] = date.today().isoformat()
-    st.rerun()
+    # Deliberately NO st.rerun(). The page reads the disk cache further down
+    # this same run, so the freshly fetched rows are picked up without one —
+    # and a rerun here ended the script before the toggles below were
+    # instantiated, which reset the F&O selection every time you refreshed.
 
 
 # ---------------------------------------------------------------------------
