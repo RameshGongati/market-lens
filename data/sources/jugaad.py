@@ -10,7 +10,11 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from data.sources.base import DataSource, drop_incomplete_bars
+from data.sources.base import (
+    DataSource,
+    drop_incomplete_bars,
+    fill_missing_sessions,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -194,6 +198,15 @@ class JugaadDataSource(DataSource):
                 }).dropna()
 
             df = drop_incomplete_bars(df)
+
+            # stock_raw splits the range with break_dates and fetches the
+            # chunks in parallel, concatenating whatever comes back — a
+            # 5-year daily request is 61 calls to NSE and the chunk holding
+            # the newest session is routinely lost to rate limiting. The
+            # bhavcopy fill rebuilds whichever recent sessions went missing.
+            if interval == "1d":
+                df = fill_missing_sessions(df, clean_symbol)
+
             logger.info("Fetched %d bars for %s via Jugaad Data", len(df), clean_symbol)
             return df
         except Exception as exc:
