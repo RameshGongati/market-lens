@@ -1,23 +1,32 @@
-"""Alerts page — zone-proximity matches and the triggered alert history.
+"""Alerts page — one feed of zone-proximity matches and Telegram deliveries.
 
 Restores the alert surface that lived on the old dashboard above the results
 grid. That banner was rendered by ``dashboard._render_filter_sort_bar``, which
 lost its only caller when the results grid moved to its own page, so the
-alerts silently stopped appearing. Rather than putting the banner back on a
-page that no longer lists stocks, it becomes a page of its own.
+alerts silently stopped appearing.
 
-Two different things are shown, and they answer different questions:
+Two kinds of alert share one deduplicated, sortable feed:
 
-* **Near zones now** — live matches from the current scan, recomputed against
-  ``config/alert_config.json`` every render. This is what *would* fire, and it
-  exists whether or not alerting is switched on.
-* **Alert history** — rows written to the ``alerts`` table by
-  ``alerts.manager.check_and_trigger_alerts``, which is also what was
-  delivered to Telegram. This is what *did* fire.
+* **Near now** — live matches recomputed from the current scan against
+  ``config/alert_config.json`` every render. What *would* fire, present
+  whether or not alerting is switched on.
+* **Sent** — what ``alert_monitor.py`` actually delivered to Telegram, read
+  from that same config file. What *did* fire.
 
-A stock can appear in the first and not the second: alerts only persist when
-the stock came from a saved watchlist (``stock.id`` is set) and alerting was
-enabled at scan time.
+One row per symbol. See :func:`_feed_rows` for which copy survives.
+
+**Where "Sent" comes from, and why not the database.** The ``alerts`` table is
+permanently empty for index and F&O scans: ``create_alert`` needs a real
+``stock_id``, foreign keys are enforced, and predefined-watchlist stocks carry
+id 0. The monitor runs outside Streamlit and records deliveries as cooldown
+keys in the config file, never touching the table. So the feed reads the
+config — see :func:`telegram_sent_alerts`.
+
+**Freshness.** ``load_alert_config()`` reads from disk on every call and the
+monitor writes the moment it delivers, so nothing is cached between them: any
+rerun shows new alerts. Re-running the scan is not required and would not
+help — the sent history does not come from the scan. The Refresh button
+exists only because an idle page does not re-render on its own.
 """
 
 from __future__ import annotations
@@ -29,7 +38,7 @@ import streamlit as st
 
 from alerts.zone_alert_checker import check_zone_alerts
 from config.alert_settings import load_alert_config
-from storage.database import get_unread_alerts, mark_all_alerts_read
+from storage.database import get_unread_alerts
 from ui.components.panels import (
     bias_pill,
     page_title,
@@ -131,16 +140,29 @@ def render_alerts_page() -> None:
         )
         page_title("Alerts", "Zone proximity matches and delivery history",
                    icon="bell")
+        # The newest delivery time doubles as a freshness indicator: if a
+        # Telegram alert just arrived and this still shows an older time,
+        # Refresh has not been pressed yet.
+        _newest = max((s["sent_at"] for s in telegram_sent_alerts()),
+                      default="")
+        if _newest:
+            st.caption(f"Most recent Telegram alert: {_fmt_stamp(_newest)}")
     with right:
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Mark all read", icon=":material/mark_email_read:",
-                         use_container_width=True, key="al_mark_read"):
-                try:
-                    mark_all_alerts_read()
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not mark alerts read: {exc}")
+            # A rerun is all that is needed: load_alert_config() reads the
+            # file on every call and the monitor writes to it the moment it
+            # delivers, so nothing is cached between the two. Re-running the
+            # scan is NOT required — the sent history does not come from the
+            # scan. This button exists because an idle page does not re-render
+            # on its own, not because anything needs invalidating.
+            #
+            # It replaces a "Mark all read" button that acted on the alerts
+            # DB table, which is permanently empty here (see
+            # telegram_sent_alerts) — it could never do anything.
+            if st.button("Refresh", icon=":material/refresh:",
+                         use_container_width=True, key="al_refresh"):
+                st.rerun()
         with b2:
             if st.button("Back to Dashboard", icon=":material/arrow_back:",
                          use_container_width=True, key="al_back"):
@@ -191,23 +213,37 @@ def _safe_config() -> dict:
 
 
 def _feed_rows(matches: list, sent: list[dict]) -> list[dict]:
-    """One list holding both kinds of alert.
+    """One row per SYMBOL, holding both kinds of alert.
 
-    They answer different questions — a live match is what WOULD fire from
-    the last scan, a sent row is what the monitor DID deliver — so each row
-    keeps an origin badge rather than being silently merged into one meaning.
+    A stock alerts repeatedly — once per zone, and again each day the cooldown
+    resets — so the raw history carries 209 entries for 112 symbols. Listing
+    every one buries the stocks you have not seen under repeats of the ones
+    you have. The feed therefore collapses to one row per symbol.
 
-    Distance is computed for sent rows too, whenever the symbol is in the
-    current scan: without it, sorting by proximity would only order half the
-    feed and the other half would clump arbitrarily at the end.
+    Which copy survives:
+
+    * the **latest** ``sent_at`` wins among sent entries, so the row shows the
+      most recent delivery and the zone level that was alerted then;
+    * a **live match takes precedence for the market data** — category, price,
+      distance and ODD score come from the current scan when the symbol is in
+      it, because a level recorded days ago is not where the zone sits now;
+    * the latest delivery time is kept either way, so a symbol that is both
+      near a zone now and alerted earlier shows both facts in one row.
+
+    Distance is computed for sent-only rows whenever the symbol is in the
+    current scan: without it, sorting by proximity would order half the feed
+    and clump the rest arbitrarily at the end.
     """
     results = st.session_state.get("analysis_results", {}) or {}
-    rows: list[dict] = []
+    merged: dict[str, dict] = {}
 
     for m in matches:
         zone = getattr(m, "zone", {}) or {}
-        rows.append({
-            "symbol": str(getattr(m, "symbol", "")),
+        symbol = str(getattr(m, "symbol", ""))
+        if not symbol:
+            continue
+        merged[symbol] = {
+            "symbol": symbol,
             "origin": "Near now",
             "category": zone.get("category", ""),
             "proximal": float(zone.get("proximal", 0) or 0),
@@ -215,27 +251,44 @@ def _feed_rows(matches: list, sent: list[dict]) -> list[dict]:
             "price": float(getattr(m, "current_price", 0) or 0),
             "distance": float(getattr(m, "distance_pct", 0) or 0),
             "sent_at": "",
-        })
+        }
 
     for s in sent:
-        sym = s["symbol"]
-        res = results.get(sym) or {}
-        price = float(res.get("current_price") or 0)
+        symbol = s["symbol"]
+        existing = merged.get(symbol)
+
+        # A live match already holds the current market data for this symbol.
+        # Take only the delivery time from the sent entry — the level recorded
+        # when the alert fired is not where the zone sits now.
+        if existing is not None and existing["origin"] != "Sent":
+            if s["sent_at"] > existing["sent_at"]:
+                existing["sent_at"] = s["sent_at"]
+                existing["origin"] = "Near now + Sent"
+            continue
+
+        # Sent-only symbol. A newer delivery replaces the row WHOLESALE, level
+        # included — keeping the old level beside a new timestamp would show a
+        # zone that was not the one most recently alerted.
+        if existing is not None and existing["sent_at"] >= s["sent_at"]:
+            continue
+
+        price = float((results.get(symbol) or {}).get("current_price") or 0)
         proximal = s["proximal"]
-        distance = (
-            abs(price - proximal) / price * 100 if price and proximal else None
-        )
-        rows.append({
-            "symbol": sym,
+        merged[symbol] = {
+            "symbol": symbol,
             "origin": "Sent",
             "category": "",
             "proximal": proximal,
             "score": 0.0,
             "price": price,
-            "distance": distance,
+            "distance": (
+                abs(price - proximal) / price * 100
+                if price and proximal else None
+            ),
             "sent_at": s["sent_at"],
-        })
-    return rows
+        }
+
+    return list(merged.values())
 
 
 def _sort_rows(rows: list[dict], how: str) -> list[dict]:
@@ -338,14 +391,17 @@ def _render_feed(matches: list, sent: list[dict]) -> None:
     )
 
 
+def _fmt_stamp(stamp: str) -> str:
+    """An ISO timestamp as "03 Aug 06:42", or the raw head if unparseable."""
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(stamp).strftime("%d %b %H:%M")
+    except Exception:
+        return stamp[:16]
+
+
 def _when(stamp: str) -> str:
     """Readable delivery time, or an em dash for live rows."""
     if not stamp:
         return "<span style='color:#A8A8A0;'>&mdash;</span>"
-    try:
-        from datetime import datetime
-        return html.escape(
-            datetime.fromisoformat(stamp).strftime("%d %b %H:%M")
-        )
-    except Exception:
-        return html.escape(stamp[:16])
+    return html.escape(_fmt_stamp(stamp))
