@@ -22,6 +22,8 @@ from storage.database import get_all_alerts
 from ui.components.stock_card import build_detail_url
 from ui.components.panels import (
     bias_pill,
+    page_slice,
+    pagination_bar,
     filter_chip,
     kv_row,
     page_title,
@@ -40,7 +42,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_PAGE_SIZES = [10, 25, 50, 100]
+_PAGE_SIZES = [10, 20, 30, 50, 75, 100]
 
 # Tradeability buckets on the scan-summary row. A setup counts as "valid" only
 # when the trend-alignment rule passes AND the zone clears the display floor;
@@ -92,6 +94,13 @@ def render_analysis_results() -> None:
         produced = run_scan(ctx)
         if produced is not None:
             st.session_state["_last_scan_label"] = _now_label()
+        # Rerun once the scan finishes. app.main() renders the sidebar BEFORE
+        # routing here, so the Alerts badge was computed against the previous
+        # (usually empty) results and stayed stale until some later
+        # interaction forced a redraw — the scan produced alerts the nav could
+        # not show. One extra pass is cheap: run_scan has already cleared the
+        # analysing flag, so this cannot loop.
+        st.rerun()
 
     results: dict[str, dict] = st.session_state.get("analysis_results", {}) or {}
 
@@ -462,15 +471,12 @@ def _render_ranked_table(results: dict[str, dict]) -> None:
     screened = {s: r for s, r in results.items() if _passes_screener(r)}
     rows = _apply_view_filters(_row_data(screened))
 
-    top = st.columns([2, 1, 1])
+    top = st.columns([3, 1])
     with top[0]:
         section_title(f"Ranked Opportunities ({len(rows)})")
     with top[1]:
         query = st.text_input("Search", key="ar_search", placeholder="Search symbol…",
                               label_visibility="collapsed")
-    with top[2]:
-        per_page = st.selectbox("Per page", _PAGE_SIZES, key="ar_pagesize",
-                                label_visibility="collapsed")
 
     if query:
         rows = [r for r in rows if query.strip().upper() in r["symbol"].upper()]
@@ -478,11 +484,10 @@ def _render_ranked_table(results: dict[str, dict]) -> None:
         st.caption("No stocks match the current filters.")
         return
 
-    pages = max(1, (len(rows) + per_page - 1) // per_page)
-    page = st.session_state.get("ar_page", 1)
-    page = min(max(1, page), pages)
-    start = (page - 1) * per_page
-    window = rows[start:start + per_page]
+    # Slice computed here, bar drawn after the table — both share the "ar"
+    # key so the rows and the "Showing X to Y" caption cannot disagree.
+    start, end = page_slice(len(rows), "ar", default_size=20)
+    window = rows[start:end]
 
     headers = ["#", "Symbol", "Price", "Trend", "Zone", "Zone Status",
                "ODD Score", "Strength", "Confirmation", "RR (Min)", "Action",
@@ -542,24 +547,7 @@ def _render_ranked_table(results: dict[str, dict]) -> None:
         unsafe_allow_html=True,
     )
 
-    nav = st.columns([3, 1, 1, 1])
-    with nav[0]:
-        st.caption(
-            f"Showing {start + 1} to {min(start + per_page, len(rows))} "
-            f"of {len(rows)} results"
-        )
-    with nav[1]:
-        if st.button("Prev", key="ar_prev", disabled=page <= 1,
-                     use_container_width=True):
-            st.session_state["ar_page"] = page - 1
-            st.rerun()
-    with nav[2]:
-        st.caption(f"Page {page} / {pages}")
-    with nav[3]:
-        if st.button("Next", key="ar_next", disabled=page >= pages,
-                     use_container_width=True):
-            st.session_state["ar_page"] = page + 1
-            st.rerun()
+    pagination_bar(len(rows), "ar", tuple(_PAGE_SIZES), 20)
 
 
 def _render_legend(results: dict[str, dict]) -> None:

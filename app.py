@@ -266,6 +266,60 @@ def main() -> None:
                 border-color: #E4E6E9;
             }
 
+            /* Pagination row — hooked on the marker emitted by
+               panels.pagination_bar. Streamlit's default button is sized for
+               a text label, so at page-number size the strip read as a row of
+               large plain boxes overlapping the table's scrollbar. Keep the
+               0.09px value in step with that marker. */
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) .stButton button {
+                min-height: 32px;
+                height: 32px;
+                padding: 0 2px;
+                font-size: 0.82rem;
+                border-radius: 7px;
+                border-color: #DFE3E8;
+                color: #4A5361;
+            }
+            /* The current page is the one filled control in the strip, so it
+               reads as position rather than as an action.
+
+               The label colour MUST be restated here. The rule above sets a
+               dark grey on every button in the strip, primary included, which
+               put dark text on a dark fill and made the selected page number
+               invisible. */
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"] {
+                background-color: #17509E;
+                border-color: #17509E;
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"] p {
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"]:hover {
+                background-color: #123E7C;
+                border-color: #123E7C;
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) .stButton button:hover {
+                border-color: #2F80ED;
+                color: #2F80ED;
+            }
+
             /* Streamlit's own ⋮ menu (Rerun / Clear cache / Print / Record /
                About). config.toml's toolbarMode="minimal" removes the Deploy
                button but leaves this, and it is framework chrome rather than

@@ -125,10 +125,29 @@ def _render_secondary_nav() -> None:
         ("Settings", "settings", ":material/settings:"),
     )
     for label, page, icon in items:
-        # The count rides in the label because Streamlit buttons take no
-        # badge slot, and a separate element beside the button would not stay
-        # aligned as the sidebar narrows.
-        text = f"{label}  ·  {count}" if page == "alerts" and count else label
+        # The Alerts count is drawn as a red pill by CSS rather than put in
+        # the label. Streamlit buttons have no badge slot, and BOTH markdown
+        # routes fail here: this build silently drops :red-badge[] and :red[]
+        # from a button label, rendering a plain "Alerts 17" — verified in the
+        # DOM. So a marker element is emitted immediately before the button
+        # and app.py hangs a ::after on the next sibling, with the count baked
+        # into the rule because CSS cannot read application state.
+        if page == "alerts" and count:
+            st.markdown(
+                "<div style='letter-spacing:0.13px;height:0;margin:0;'></div>"
+                "<style>"
+                "section[data-testid=\"stSidebar\"] "
+                "[data-testid=\"stElementContainer\"]:has("
+                "[style*=\"letter-spacing: 0.13px\"]) + "
+                "[data-testid=\"stElementContainer\"] .stButton button p::after"
+                "{content:\"" + str(count) + "\";background:#B3261E;"
+                "color:#FFFFFF;border-radius:10px;padding:1px 7px;"
+                "margin-left:8px;font-size:0.7rem;font-weight:700;"
+                "vertical-align:middle;}"
+                "</style>",
+                unsafe_allow_html=True,
+            )
+        text = label
         if st.button(
             text,
             icon=icon,

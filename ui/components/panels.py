@@ -238,6 +238,143 @@ def filter_chip(label: str, value: str, icon: str = "") -> None:
     )
 
 
+_PAGE_SIZES = (10, 20, 30, 50, 75, 100)
+
+
+def _page_window(current: int, pages: int, span: int = 1) -> list[int | None]:
+    """Page numbers to show, with ``None`` marking an ellipsis.
+
+    Always includes the first and last page plus *span* either side of the
+    current one, so the strip stays a fixed width whether there are 8 pages
+    or 800 — rendering every page number would wrap the row and, on the F&O
+    universe, produce more buttons than table rows.
+    """
+    if pages <= 7:
+        return list(range(1, pages + 1))
+
+    slots: list[int | None] = [1]
+    lo, hi = max(2, current - span), min(pages - 1, current + span)
+    if lo > 2:
+        slots.append(None)
+    slots.extend(range(lo, hi + 1))
+    if hi < pages - 1:
+        slots.append(None)
+    slots.append(pages)
+    return slots
+
+
+def page_slice(
+    total: int, key: str, default_size: int = 25,
+) -> tuple[int, int]:
+    """The ``(start, end)`` slice for the current page — renders nothing.
+
+    Separate from :func:`pagination_bar` because the slice is needed BEFORE
+    the table is drawn while the bar belongs BELOW it. Both read the same
+    session keys, so the rows shown always match the caption underneath them.
+
+    The page is CLAMPED here on every call rather than only when the arrows
+    are pressed. Raising the page size, or filtering the table down, can leave
+    the stored page past the end — the caller would then slice an empty window
+    and show a blank table with no indication why.
+    """
+    page_key, size_key = f"{key}_page", f"{key}_size"
+    st.session_state.setdefault(page_key, 1)
+    per_page = st.session_state.get(size_key, default_size)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(max(1, int(st.session_state.get(page_key, 1))), pages)
+    st.session_state[page_key] = page
+    return (page - 1) * per_page, min(page * per_page, total)
+
+
+def pagination_bar(
+    total: int,
+    key: str,
+    sizes: tuple[int, ...] = _PAGE_SIZES,
+    default_size: int = 25,
+) -> None:
+    """Footer pagination bar, drawn below a table.
+
+    Layout follows the design: a "Showing X to Y of N results" caption on the
+    left, numbered pages in the middle, and a rows-per-page selector on the
+    right. Call :func:`page_slice` with the same ``key`` to get the rows.
+    """
+    page_key, size_key = f"{key}_page", f"{key}_size"
+    per_page = st.session_state.get(size_key, default_size)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(max(1, int(st.session_state.get(page_key, 1))), pages)
+
+    # Clear the table's horizontal scrollbar, which sits directly above and
+    # was being overlapped by the buttons.
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    # Marker that lets app.py shrink the buttons inside this row only.
+    # Streamlit's default button is sized for a text label and looked like a
+    # row of large plain boxes at page-number size. A class would read better,
+    # but the markdown sanitiser strips class and id while preserving inline
+    # style, so the letter-spacing value is the hook (see Gotcha 20). Keep
+    # this value in step with the selector in app.py.
+    st.markdown(
+        "<div style='letter-spacing:0.09px;height:0;margin:0;'></div>",
+        unsafe_allow_html=True,
+    )
+
+    left, mid, right = st.columns([2.4, 4.4, 1.9])
+
+    with left:
+        first = (page - 1) * per_page + 1 if total else 0
+        last = min(page * per_page, total)
+        st.markdown(
+            f"<div style='padding-top:9px;font-size:0.8rem;color:#71757C;'>"
+            f"Showing <b>{first}</b> to <b>{last}</b> of <b>{total}</b> results"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with mid:
+        slots = _page_window(page, pages)
+        # Arrows share the strip so the control reads as one unit.
+        cells = st.columns(len(slots) + 2, gap="small")
+        with cells[0]:
+            if st.button("‹", key=f"{key}_prev", disabled=page <= 1,
+                         use_container_width=True, help="Previous page"):
+                st.session_state[page_key] = page - 1
+                st.rerun()
+        for slot, col in zip(slots, cells[1:-1]):
+            with col:
+                if slot is None:
+                    st.markdown(
+                        "<div style='text-align:center;padding-top:9px;"
+                        "color:#9AA0A8;'>…</div>", unsafe_allow_html=True,
+                    )
+                elif slot == page:
+                    st.button(str(slot), key=f"{key}_p{slot}",
+                              use_container_width=True, type="primary")
+                elif st.button(str(slot), key=f"{key}_p{slot}",
+                               use_container_width=True):
+                    st.session_state[page_key] = slot
+                    st.rerun()
+        with cells[-1]:
+            if st.button("›", key=f"{key}_next", disabled=page >= pages,
+                         use_container_width=True, help="Next page"):
+                st.session_state[page_key] = page + 1
+                st.rerun()
+
+    with right:
+        lbl, sel = st.columns([1.1, 1])
+        with lbl:
+            st.markdown(
+                "<div style='padding-top:9px;font-size:0.8rem;"
+                "color:#71757C;text-align:right;'>Rows per page:</div>",
+                unsafe_allow_html=True,
+            )
+        with sel:
+            st.selectbox(
+                "Rows per page", sizes,
+                index=sizes.index(default_size) if default_size in sizes else 0,
+                key=size_key, label_visibility="collapsed",
+            )
+
+
 def spacer(px: int = 14) -> None:
     """Explicit vertical gap between major sections.
 

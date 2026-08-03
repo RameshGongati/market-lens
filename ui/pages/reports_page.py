@@ -41,6 +41,8 @@ from data.earnings_calendar import (
 from storage.database import get_all_alerts
 from ui.components.panels import (
     bias_pill,
+    page_slice,
+    pagination_bar,
     page_title,
     section_title,
     spacer,
@@ -52,7 +54,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 _MAJOR_LISTS = ("Nifty 50", "Nifty Bank")
-_ROWS_PER_PAGE = [12, 25, 50, 100]
+_ROWS_PER_PAGE = [10, 20, 30, 50, 75, 100]
 _SESSION_KEY = "reports_rows"
 
 
@@ -307,16 +309,13 @@ def _render_summary_cards(table: list[dict]) -> None:
 
 
 def _render_table(table: list[dict]) -> None:
-    top = st.columns([2, 1, 1])
+    top = st.columns([3, 1])
     with top[0]:
         section_title(f"Results ({len(table)})")
     with top[1]:
         query = st.text_input("Search", key="rp_search",
                               placeholder="Search symbol…",
                               label_visibility="collapsed")
-    with top[2]:
-        per_page = st.selectbox("Rows", _ROWS_PER_PAGE, key="rp_rows",
-                                label_visibility="collapsed")
     if query:
         q = query.strip().upper()
         table = [r for r in table if q in r["symbol"].upper()
@@ -325,9 +324,10 @@ def _render_table(table: list[dict]) -> None:
         st.caption("Nothing matches.")
         return
 
-    pages = max(1, (len(table) + per_page - 1) // per_page)
-    page = min(max(1, st.session_state.get("rp_page", 1)), pages)
-    window = table[(page - 1) * per_page: page * per_page]
+    # The bar is rendered AFTER the table but computes the slice first, so
+    # the rows shown always match the "Showing X to Y" caption below them.
+    start, end = page_slice(len(table), "rp", default_size=20)
+    window = table[start:end]
 
     headers = ["Symbol", "Company", "Sector", "Result Date", "Session",
                "Countdown", "Impact", "Expected EPS", "Expected Rev (Cr)",
@@ -387,22 +387,7 @@ def _render_table(table: list[dict]) -> None:
         unsafe_allow_html=True,
     )
 
-    nav = st.columns([3, 1, 1, 1])
-    with nav[0]:
-        st.caption(f"Showing {(page - 1) * per_page + 1} to "
-                   f"{min(page * per_page, len(table))} of {len(table)}")
-    with nav[1]:
-        if st.button("Prev", key="rp_prev", disabled=page <= 1,
-                     use_container_width=True):
-            st.session_state["rp_page"] = page - 1
-            st.rerun()
-    with nav[2]:
-        st.caption(f"Page {page} / {pages}")
-    with nav[3]:
-        if st.button("Next", key="rp_next", disabled=page >= pages,
-                     use_container_width=True):
-            st.session_state["rp_page"] = page + 1
-            st.rerun()
+    pagination_bar(len(table), "rp", tuple(_ROWS_PER_PAGE), 20)
 
 
 def _render_upcoming(rows: dict) -> None:
