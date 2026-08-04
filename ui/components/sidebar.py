@@ -444,12 +444,9 @@ def render_sidebar() -> None:
             # ---------- Watchlist ----------
             with st.container(border=True):
                 _section_header("WATCHLIST", "watchlist")
-                # Segmented control rather than three stacked radios: the radios
-                # took three lines in a rail that already scrolls well past one
-                # screen, and read as a form rather than a switch.
                 _WL_SOURCES = ["My Watchlists", "Index Watchlists", "All NSE Stocks"]
                 _WL_SHORT = {
-                    "My Watchlists": "Mine",
+                    "My Watchlists": "Custom",
                     "Index Watchlists": "Index",
                     "All NSE Stocks": "All NSE",
                 }
@@ -457,20 +454,20 @@ def render_sidebar() -> None:
                 _current_wl = st.session_state.get("watchlist_source", "Index Watchlists")
                 if _current_wl not in _WL_SOURCES:
                     _current_wl = "Index Watchlists"
-                wl_source = st.segmented_control(
-                    "Watchlist source",
-                    _WL_SOURCES,
-                    default=_current_wl,
-                    format_func=lambda s: _WL_SHORT.get(s, s),
-                    key="sidebar_wl_source",
-                    label_visibility="collapsed",
-                    width="stretch",
-                )
-                # segmented_control returns None if the user clears the selection;
-                # a watchlist source is required, so fall back to the previous one.
-                if wl_source is None:
-                    wl_source = _current_wl
+
+                source_col, list_col = st.columns([0.95, 1.75])
+                with source_col:
+                    wl_source = st.selectbox(
+                        "Watchlist source",
+                        _WL_SOURCES,
+                        index=_WL_SOURCES.index(_current_wl),
+                        format_func=lambda s: _WL_SHORT.get(s, s),
+                        key="sidebar_wl_source",
+                        label_visibility="collapsed",
+                    )
                 st.session_state["watchlist_source"] = wl_source
+
+                _watchlist_caption = ""
 
                 if wl_source == "My Watchlists":
                     try:
@@ -486,18 +483,20 @@ def render_sidebar() -> None:
                             wl_idx = wl_ids.index(current_wl_id) if current_wl_id in wl_ids else 0
                         except (ValueError, TypeError):
                             wl_idx = 0
-                        selected_wl_name = st.selectbox(
-                            "Select watchlist",
-                            wl_names,
-                            index=wl_idx,
-                            key="sidebar_watchlist_select",
-                            label_visibility="collapsed",
-                        )
+                        with list_col:
+                            selected_wl_name = st.selectbox(
+                                "Select watchlist",
+                                wl_names,
+                                index=wl_idx,
+                                key="sidebar_watchlist_select",
+                                label_visibility="collapsed",
+                            )
                         selected_wl_id = wl_ids[wl_names.index(selected_wl_name)]
                         st.session_state.selected_watchlist_id = selected_wl_id
                         save_preferences({"selected_watchlist_id": selected_wl_id})
                     else:
-                        st.caption("No watchlists yet. Create one in Watchlists.")
+                        with list_col:
+                            st.caption("No custom watchlists yet.")
                         st.session_state.selected_watchlist_id = None
                 elif wl_source == "Index Watchlists":
                     predefined = load_predefined_watchlists()
@@ -505,21 +504,31 @@ def render_sidebar() -> None:
                         pd_names = [w["name"] for w in predefined]
                         current_pd = st.session_state.get("selected_predefined_watchlist", pd_names[0])
                         pd_idx = pd_names.index(current_pd) if current_pd in pd_names else 0
-                        selected_pd = st.selectbox(
-                            "Select index watchlist",
-                            pd_names,
-                            index=pd_idx,
-                            key="sidebar_predefined_select",
-                            label_visibility="collapsed",
-                        )
+                        with list_col:
+                            selected_pd = st.selectbox(
+                                "Select index watchlist",
+                                pd_names,
+                                index=pd_idx,
+                                key="sidebar_predefined_select",
+                                label_visibility="collapsed",
+                            )
                         st.session_state["selected_predefined_watchlist"] = selected_pd
                         wl_data = predefined[pd_names.index(selected_pd)]
-                        st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
+                        _watchlist_caption = (
+                            f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)"
+                        )
 
                         # Sits at the BOTTOM of the watchlist card rather than as
                         # a standalone full-width button, and keeps a text label —
                         # an icon-only control here would be as easy to miss as
                         # the Screener chevron was.
+                        if _watchlist_caption:
+                            st.markdown(
+                                f"<div style='margin-top:-7px;margin-bottom:8px;"
+                                f"font-size:0.84rem;color:#8A8F98;'>"
+                                f"{_watchlist_caption}</div>",
+                                unsafe_allow_html=True,
+                            )
                         if st.button(
                             "Refresh from NSE",
                             icon=":material/refresh:",
@@ -552,24 +561,32 @@ def render_sidebar() -> None:
                             if result["updated"]:
                                 st.rerun()
                     else:
-                        st.caption("No predefined watchlists available.")
+                        with list_col:
+                            st.caption("No index watchlists available.")
                 else:
                     batches = get_nse_stock_batches()
                     batch_labels = [b["label"] for b in batches]
                     current_batch = st.session_state.get("selected_nse_batch", batch_labels[0])
                     batch_idx = batch_labels.index(current_batch) if current_batch in batch_labels else 0
-                    selected_batch = st.selectbox(
-                        "Select stock range",
-                        batch_labels,
-                        index=batch_idx,
-                        key="sidebar_nse_batch_select",
-                        label_visibility="collapsed",
-                    )
+                    with list_col:
+                        selected_batch = st.selectbox(
+                            "Select stock range",
+                            batch_labels,
+                            index=batch_idx,
+                            key="sidebar_nse_batch_select",
+                            label_visibility="collapsed",
+                        )
                     st.session_state["selected_nse_batch"] = selected_batch
                     batch_data = batches[batch_labels.index(selected_batch)]
                     st.session_state["selected_nse_batch_start"] = batch_data["start"]
                     st.session_state["selected_nse_batch_end"] = batch_data["end"]
-                    st.caption(f"{batch_data['end'] - batch_data['start']} stocks in this batch")
+                    st.markdown(
+                        f"<div style='margin-top:-7px;font-size:0.84rem;"
+                        f"color:#8A8F98;'>"
+                        f"{batch_data['end'] - batch_data['start']} stocks in this batch"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
 
             # ---------- Screener ----------
             # Promoted out of a bare expander into its own coloured card. It used
@@ -853,5 +870,4 @@ def _render_brand_and_status() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
-
 
