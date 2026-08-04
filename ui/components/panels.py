@@ -89,6 +89,42 @@ _ICON_PATHS: dict[str, str] = {
     "check": "<polyline points='4.5 12.5 9.5 17.5 19.5 6.5'/>",
     "logo": ("<circle cx='12' cy='12' r='8.6'/>"
              "<polyline points='7.5 14.2 10.6 10.8 13.2 13 16.6 8.9'/>"),
+    "settings": (
+        "<circle cx='12' cy='12' r='3.2'/>"
+        "<path d='M19.1 14.7a1.6 1.6 0 0 0 .32 1.77l.06.06a1.94 1.94 0 1 1-2.75 2.75l-.06-.06a"
+        "1.6 1.6 0 0 0-1.77-.32 1.6 1.6 0 0 0-.97 1.47v.16a1.94 1.94 0 0 1-3.88 0v-.09a1.6 1.6 "
+        "0 0 0-1.05-1.46 1.6 1.6 0 0 0-1.77.32l-.06.06a1.94 1.94 0 1 1-2.75-2.75l.06-.06a1.6 "
+        "1.6 0 0 0 .32-1.77 1.6 1.6 0 0 0-1.47-.97h-.16a1.94 1.94 0 0 1 0-3.88h.09a1.6 1.6 0 0 "
+        "0 1.46-1.05 1.6 1.6 0 0 0-.32-1.77l-.06-.06a1.94 1.94 0 1 1 2.75-2.75l.06.06a1.6 1.6 "
+        "0 0 0 1.77.32h.08a1.6 1.6 0 0 0 .97-1.47v-.16a1.94 1.94 0 0 1 3.88 0v.09a1.6 1.6 0 0 "
+        "0 .97 1.46 1.6 1.6 0 0 0 1.77-.32l.06-.06a1.94 1.94 0 1 1 2.75 2.75l-.06.06a1.6 1.6 0 "
+        "0 0-.32 1.77v.08a1.6 1.6 0 0 0 1.47.97h.16a1.94 1.94 0 0 1 0 3.88h-.09a1.6 1.6 0 0 "
+        "0-1.46.97z'/>"
+    ),
+    "database": ("<ellipse cx='12' cy='5.5' rx='7.5' ry='2.8'/>"
+                 "<path d='M4.5 5.5v13c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-13'/>"
+                 "<path d='M4.5 12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8'/>"),
+    "activity": "<polyline points='2.5 12.5 7 12.5 9.5 6 14 18 16.5 12.5 21.5 12.5'/>",
+    "palette": ("<path d='M12 3a9 9 0 1 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-.95-.5-1.3-.3-.35-.5-.8"
+                "-.5-1.2 0-1.1.9-2 2-2h2.2A3.8 3.8 0 0 0 21 10.8C21 6.5 16.9 3 12 3z'/>"
+                "<circle cx='7.4' cy='11.6' r='1.1' fill='currentColor' stroke='none'/>"
+                "<circle cx='9.9' cy='7.6' r='1.1' fill='currentColor' stroke='none'/>"
+                "<circle cx='15' cy='7.9' r='1.1' fill='currentColor' stroke='none'/>"),
+    "monitor": ("<rect x='2.5' y='4' width='19' height='12.5' rx='2'/>"
+                "<line x1='8' y1='20.5' x2='16' y2='20.5'/>"
+                "<line x1='12' y1='16.5' x2='12' y2='20.5'/>"),
+    "sliders": ("<line x1='3.5' y1='8' x2='20.5' y2='8'/><circle cx='9' cy='8' r='2.3'/>"
+                "<line x1='3.5' y1='16' x2='20.5' y2='16'/><circle cx='15' cy='16' r='2.3'/>"),
+    "send": ("<line x1='21' y1='3' x2='10.5' y2='13.5'/>"
+             "<polygon points='21 3 14.6 21 10.5 13.5 3 9.4'/>"),
+    "rocket": ("<path d='M12 2.6c3 2.1 4.9 5.6 4.9 9.4L14.4 15h-4.8L7.1 12c0-3.8 1.9-7.3 "
+               "4.9-9.4z'/><circle cx='12' cy='9.9' r='1.8'/>"
+               "<path d='M9.6 16.4 7 19l1.6 1.6M14.4 16.4 17 19l-1.6 1.6'/>"),
+    "info": ("<circle cx='12' cy='12' r='8.5'/><line x1='12' y1='11.2' x2='12' y2='16.6'/>"
+             "<circle cx='12' cy='7.9' r='1' fill='currentColor' stroke='none'/>"),
+    "download": ("<polyline points='7.5 11 12 15.5 16.5 11'/>"
+                 "<line x1='12' y1='4' x2='12' y2='15.5'/>"
+                 "<path d='M4.5 17.5V19a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-1.5'/>"),
 }
 
 
@@ -209,19 +245,36 @@ def page_title(title: str, subtitle: str = "", icon: str = "logo") -> None:
     )
 
 
-def filter_chip(label: str, value: str, icon: str = "") -> None:
+def filter_chip(
+    label: str, value: str = "", icon: str = "", pending: str = "", sub: str = "",
+) -> None:
     """Compact read-out box for the results page's filter strip.
 
     Shorter than :func:`stat_card` on purpose: these echo the scan's settings
     and sat at the same 96px height as the metric cards below them, so two
     visually identical rows of boxes competed for attention when only the
     second carries numbers.
+
+    ``pending`` takes a key from :data:`PENDING_PHASES` and swaps the value for
+    the placeholder, the same contract as :func:`stat_card`.
     """
     glyph = _icon_svg(icon, size=14, colour="#6B7280") if icon else ""
     badge_html = (
         f"<span style='display:inline-flex;align-items:center;"
         f"justify-content:center;width:22px;height:22px;border-radius:6px;"
         f"background:#F0F2F5;flex:0 0 22px;'>{glyph}</span>" if glyph else ""
+    )
+    if pending:
+        shown = pending_value(pending)
+        note_text = PENDING_PHASES.get(pending, PENDING_PHASES["new"])
+        note_style = f"color:{_PENDING_COLOR};font-style:italic;"
+    else:
+        shown = html.escape(str(value))
+        note_text = sub
+        note_style = "color:#8A8F98;"
+    note = (
+        f"<div style='font-size:0.66rem;margin-top:1px;line-height:1.25;"
+        f"{note_style}'>{html.escape(note_text)}</div>" if note_text else ""
     )
     st.markdown(
         f"<div style='background:#FFFFFF;border:1px solid {_BORDER};"
@@ -232,8 +285,36 @@ def filter_chip(label: str, value: str, icon: str = "") -> None:
         f"color:#7A7A72;text-transform:uppercase;font-weight:700;'>"
         f"{html.escape(label)}</span></div>"
         f"<div style='font-size:0.95rem;font-weight:700;color:#26262B;"
-        f"margin-top:3px;line-height:1.2;'>{html.escape(str(value))}</div>"
+        f"margin-top:3px;line-height:1.2;'>{shown}</div>{note}"
         f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def panel_head(title: str, sub: str = "", icon: str = "", tone: Tone = "info") -> None:
+    """Panel heading with a tinted icon tile, title and caption beneath.
+
+    :func:`section_title` is a bare line of bold text, which is right for a
+    panel that sits inside another surface. These are the top-level cards on
+    the settings page, where the icon tile is what separates one card from the
+    next at a glance.
+    """
+    accent, _tint, soft, _solid = _TONES.get(tone, _TONES["info"])
+    glyph = _icon_svg(icon, size=17, colour=accent) if icon else ""
+    tile = (
+        f"<span style='display:inline-flex;align-items:center;"
+        f"justify-content:center;width:30px;height:30px;border-radius:8px;"
+        f"background:{soft};flex:0 0 30px;'>{glyph}</span>" if glyph else ""
+    )
+    caption = (
+        f"<div style='font-size:0.74rem;color:#8A8F98;margin-top:1px;"
+        f"line-height:1.3;'>{html.escape(sub)}</div>" if sub else ""
+    )
+    st.markdown(
+        f"<div style='display:flex;align-items:center;gap:10px;"
+        f"margin:0 0 10px 0;'>{tile}<div style='min-width:0;'>"
+        f"<div style='font-size:0.95rem;font-weight:700;color:#1E1E23;"
+        f"line-height:1.25;'>{html.escape(title)}</div>{caption}</div></div>",
         unsafe_allow_html=True,
     )
 
