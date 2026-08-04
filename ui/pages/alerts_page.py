@@ -305,10 +305,23 @@ def _sort_rows(rows: list[dict], how: str) -> list[dict]:
         return sorted(rows, key=lambda r: -r["score"])
     if how == "Symbol A-Z":
         return sorted(rows, key=lambda r: r["symbol"])
-    # Latest first: live matches are from the current scan, so they lead;
-    # sent rows follow, newest delivery first.
-    return sorted(rows, key=lambda r: (r["origin"] == "Sent",
-                                       _neg_time(r["sent_at"])))
+    # Latest first = most recent DELIVERY first, whatever the origin.
+    #
+    # This used to sort on origin BEFORE time — every live match above every
+    # sent row — so an alert that reached Telegram seconds ago could not get
+    # to the top of a list called "Latest first" while a single live match
+    # existed. After a Nifty 50 scan that pushed each new delivery tens of
+    # rows down an unpaginated 127-row table, which reads exactly like the
+    # alert never arriving.
+    #
+    # A row with no delivery is not old, it has no event time at all, so those
+    # go last ordered by distance — sorting them as the epoch would claim an
+    # age they do not have, and leaving them tied leaves them in dict order.
+    return sorted(rows, key=lambda r: (
+        not r["sent_at"],
+        _neg_time(r["sent_at"]),
+        r["distance"] if r["distance"] is not None else float("inf"),
+    ))
 
 
 def _neg_time(stamp: str) -> str:
