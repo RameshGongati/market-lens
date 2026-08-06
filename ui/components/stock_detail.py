@@ -37,7 +37,21 @@ from utils.market_hours import get_current_ist_time, is_market_open
 
 logger = get_logger(__name__)
 
-_STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
+_CHART_UP_COLOR = "#16794A"
+_CHART_DOWN_COLOR = "#C23B33"
+_CHART_BLUE = "#2F80ED"
+_CHART_ORANGE = "#EF9F27"
+_CHART_PURPLE = "#7B61E3"
+_CHART_NEUTRAL = "#6B7280"
+_CHART_GRID = "#E8EDF4"
+_CHART_AXIS = "#4A5361"
+_CHART_SPIKE = "#8A8F98"
+
+_STATUS_COLOR = {
+    "bullish": _CHART_UP_COLOR,
+    "bearish": _CHART_DOWN_COLOR,
+    "neutral": _CHART_ORANGE,
+}
 
 def _crosshair_js(show_date: bool) -> str:
     """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off.
@@ -146,6 +160,16 @@ _PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365, "2Y": 730, "3
 
 # Interval-selector labels list — stable order for the radio widget.
 _INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
+
+
+def _source_symbol(symbol: str, exchange: str, source_name: str) -> str:
+    """Format a chart fetch symbol for the selected data source."""
+    if source_name == "Yahoo Finance":
+        suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
+        return f"{symbol}{suffix}"
+    if source_name == "TradingView":
+        return f"{exchange.upper()}:{symbol}"
+    return symbol
 
 
 def _make_analyser_for_chart(primary_strategy: str):
@@ -282,8 +306,8 @@ def _render_chart_panel(
 
     # The data source participates in the chart cache key below, so switching
     # source refetches rather than replaying the previous source's bars.
-    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
-    _cache_src_key = _cache_src.replace(" ", "_")
+    _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    _cache_src_key = _src_name.replace(" ", "_")
 
     # Chart controls: Chart Type | Candle Interval
     ct_col, iv_col = st.columns([2, 5])
@@ -347,13 +371,11 @@ def _render_chart_panel(
     )
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
-        suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-        full_symbol = f"{symbol}{suffix}"
         # Fetch through the data source the user actually selected. Without an
         # explicit fetch_fn, fetch_by_interval falls back to _default_fetch_fn,
         # which is hard-wired to Yahoo Finance — the chart would silently ignore
         # a Jugaad/NSE selection and show different prices than the analysis.
-        _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+        full_symbol = _source_symbol(symbol, exchange, _src_name)
         _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
         with st.spinner(f"Fetching {interval_label} data for {symbol}…"):
             try:
@@ -362,6 +384,7 @@ def _render_chart_panel(
                 # Surface the failure instead of quietly charting Yahoo data.
                 st.warning(f"Could not use {_src_name} ({exc}); showing Yahoo Finance data.")
                 _chart_fetch_fn = None
+                full_symbol = _source_symbol(symbol, exchange, "Yahoo Finance")
             _chart_df, _fetch_meta = fetch_by_interval(
                 full_symbol, interval_label, fetch_fn=_chart_fetch_fn,
             )
@@ -411,7 +434,7 @@ def _render_chart_panel(
     _chart_is_tf = chart_result.get("strategy") == "Trend Following"
     chart_header = "### Price Chart"
     if _chart_trend:
-        _tc = _TREND_BADGE_COLORS.get(_chart_trend, "#6c757d")
+        _tc = _TREND_BADGE_COLORS.get(_chart_trend, _CHART_NEUTRAL)
         chart_header += (
             f" <span style='color:{_tc};font-size:0.65em;background:{_tc}22;"
             f"padding:2px 8px;border-radius:8px;border:1px solid {_tc};'>"
@@ -419,7 +442,9 @@ def _render_chart_panel(
         )
     if _chart_is_tf:
         _chart_signal = chart_result.get("signal", "HOLD")
-        _sc = {"BUY": "#28a745", "SELL": "#dc3545"}.get(_chart_signal, "#6c757d")
+        _sc = {"BUY": _CHART_UP_COLOR, "SELL": _CHART_DOWN_COLOR}.get(
+            _chart_signal, _CHART_NEUTRAL
+        )
         chart_header += (
             f" <span style='color:{_sc};font-size:0.65em;background:{_sc}22;"
             f"padding:2px 8px;border-radius:8px;border:1px solid {_sc};'>"
@@ -464,7 +489,7 @@ def _render_chart_panel(
             )
         elif analysis_type == "Trend Following (SMA50/EMA20)":
             st.caption(
-                "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
+                "50 SMA (orange) and 200 SMA (blue) — cross marker shown "
                 "if within the displayed window."
             )
         show_tooltip = load_preferences().get("show_candle_tooltip", True)
@@ -926,8 +951,8 @@ def _build_chart(
                 low=df["Low"],
                 close=df["Close"],
                 name=symbol,
-                increasing_line_color="#28a745",
-                decreasing_line_color="#dc3545",
+                increasing_line_color=_CHART_UP_COLOR,
+                decreasing_line_color=_CHART_DOWN_COLOR,
                 showlegend=False,
             ),
             row=1, col=1,
@@ -938,9 +963,9 @@ def _build_chart(
                 x=df.index,
                 y=df["Close"],
                 name="Close",
-                line={"color": "#1f77b4", "width": 2},
+                line={"color": _CHART_BLUE, "width": 2.2},
                 fill="tozeroy",
-                fillcolor="rgba(31,119,180,0.08)",
+                fillcolor="rgba(47,128,237,0.10)",
                 showlegend=False,
             ),
             row=1, col=1,
@@ -959,15 +984,15 @@ def _build_chart(
         _add_tf_sma_lines(fig, df)
         _add_tf_cross_marker(fig, df, result)
     elif analysis_type == "Long Term Investment":
-        _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
+        _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", _CHART_BLUE)
     elif analysis_type == "Short Term Investment":
-        _add_sma_line(fig, df, result.get("sma_50"), "SMA 50", "#ff7f0e")
+        _add_sma_line(fig, df, result.get("sma_50"), "SMA 50", _CHART_ORANGE)
     elif analysis_type == "Intraday Trading":
         _add_vwap_line(fig, df, result.get("vwap"))
 
     # --- Volume bars ---
     vol_colors = [
-        "#28a745" if c >= o else "#dc3545"
+        _CHART_UP_COLOR if c >= o else _CHART_DOWN_COLOR
         for c, o in zip(df["Close"], df["Open"])
     ]
     fig.add_trace(
@@ -977,7 +1002,7 @@ def _build_chart(
             name="Volume",
             marker_color=vol_colors,
             showlegend=False,
-            opacity=0.7,
+            opacity=0.62,
         ),
         row=2, col=1,
     )
@@ -1001,37 +1026,27 @@ def _build_chart(
                 x=df.index,
                 y=rsi_series,
                 name="RSI",
-                line={"color": "#9b59b6", "width": 1.5},
+                line={"color": _CHART_PURPLE, "width": 1.5},
                 showlegend=False,
             ),
             row=3, col=1,
         )
-        fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color=_CHART_DOWN_COLOR, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color=_CHART_UP_COLOR, row=3, col=1)
 
     fig.update_layout(
-        height=500 + (120 if show_rsi else 0),
+        height=560 + (120 if show_rsi else 0),
         template="plotly_white",
-        margin={"t": 40, "b": 20, "l": 60, "r": 20},
+        margin={"t": 40, "b": 20, "l": 55, "r": 80},
         hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font={"color": _CHART_AXIS},
         xaxis=dict(
             rangeslider=dict(visible=False),
-            showspikes=True,
-            spikemode="across",
-            spikethickness=1,
-            spikecolor="grey",
-            spikedash="dash",
-            spikesnap="data",
         ),
-        yaxis=dict(
-            showspikes=True,
-            spikemode="across",
-            spikethickness=1,
-            spikecolor="grey",
-            spikedash="dash",
-            spikesnap="cursor",
-            side="left",
-        ),
+        yaxis=dict(side="left"),
     )
     # Place the rangeslider at the very bottom of the chart (below the last subplot)
     bottom_xaxis = f"xaxis{rows}"   # "xaxis2" for 2-row, "xaxis3" for 3-row
@@ -1040,7 +1055,35 @@ def _build_chart(
     )
     if interval_label not in ("Weekly", "Monthly"):
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-    fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=_CHART_GRID,
+        zeroline=False,
+        showline=True,
+        linecolor="#CDD6E3",
+        tickfont={"color": _CHART_AXIS},
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor=_CHART_SPIKE,
+        spikedash="dash",
+        spikesnap="data",
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=_CHART_GRID,
+        zeroline=False,
+        showline=True,
+        linecolor="#CDD6E3",
+        tickfont={"color": _CHART_AXIS},
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor=_CHART_SPIKE,
+        spikedash="dash",
+        spikesnap="cursor",
+    )
+    fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     if show_rsi:
         fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
@@ -1049,38 +1092,47 @@ def _build_chart(
 
 
 # Rule: zone styling — semi-transparent fills (demand=green, supply=red),
-# subtle boundary-line colors that echo the fill, and dark text colors for
-# the right-edge labels so they stay readable over the candlesticks.
-_ZONE_FILL_COLORS = {"demand": "rgba(40,167,69,0.15)", "supply": "rgba(220,53,69,0.15)"}
-_ZONE_LINE_COLORS = {"demand": "rgba(40,167,69,0.55)", "supply": "rgba(220,53,69,0.55)"}
-_ZONE_TEXT_COLORS = {"demand": "#1e7e34", "supply": "#a71d2a"}  # dark green / dark red
+# subtle boundary-line colors that echo the fill, and readable label colors
+# that match the brighter Pattern Detail chart palette.
+_ZONE_FILL_COLORS = {
+    "demand": "rgba(34,165,91,0.14)",
+    "supply": "rgba(235,87,87,0.13)",
+}
+_ZONE_LINE_COLORS = {
+    "demand": "rgba(34,165,91,0.50)",
+    "supply": "rgba(235,87,87,0.50)",
+}
+_ZONE_TEXT_COLORS = {"demand": _CHART_UP_COLOR, "supply": _CHART_DOWN_COLOR}
 
-# Stage 2: trend-context moving-average reference lines (thin, muted so
-# they don't compete visually with the candles or zone overlays).
-_SMA50_LINE_COLOR = "#9e9e9e"   # thin grey — the 50 SMA "clock method" input
-_EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
+# Stage 2: trend-context moving-average reference lines.
+_SMA50_LINE_COLOR = _CHART_ORANGE  # thin orange — the 50 SMA "clock method" input
+_EMA20_LINE_COLOR = _CHART_BLUE    # thin blue — the EMA 20 confluence input
 
 # Stage 2: zone-label flag colors — TRADEABLE/AVOID echo the trend badge's
 # bullish-green / cautionary-orange palette so they read at a glance.
-_TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
-_AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+_TRADEABLE_FLAG_COLOR = _CHART_UP_COLOR
+_AVOID_FLAG_COLOR = "#EF7A1A"
 # Confirmation zones are drawn under a lower score bar than everything else on
 # the chart, so their flag uses a distinct blue rather than the green/orange
 # verdict palette — it states a different kind of fact.
-_CONFIRMED_FLAG_COLOR = "#1c6fb0"   # dark blue
+_CONFIRMED_FLAG_COLOR = _CHART_BLUE
 
 # Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
-_TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
+_TREND_BADGE_COLORS = {
+    "UP": _CHART_UP_COLOR,
+    "DOWN": _CHART_DOWN_COLOR,
+    "SIDEWAYS": _CHART_NEUTRAL,
+}
 
 # Stage 3 (opt-in): Fibonacci retracement line styling — per the documented
 # importance ranking, the golden ratio (0.618) is drawn solid and slightly
 # thicker than the others (which are dashed) so it stands out as the most
 # important retracement level on the chart.
 _FIB_LINE_STYLES: dict[float, dict[str, Any]] = {
-    0.382: {"color": "#add8e6", "dash": "dash", "width": 1},    # light blue dashed
-    0.5:   {"color": "#ff7f0e", "dash": "dash", "width": 1},    # orange dashed
-    0.618: {"color": "#d4af37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
-    0.786: {"color": "#9b59b6", "dash": "dash", "width": 1},    # purple dashed
+    0.382: {"color": "#56CCF2", "dash": "dash", "width": 1},    # light blue dashed
+    0.5:   {"color": _CHART_ORANGE, "dash": "dash", "width": 1},  # orange dashed
+    0.618: {"color": "#D4AF37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
+    0.786: {"color": _CHART_PURPLE, "dash": "dash", "width": 1},  # purple dashed
 }
 
 
@@ -1327,7 +1379,7 @@ def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
 
 
 def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
-    """Draw the 50 SMA (orange, prominent) and 200 SMA (navy, prominent) for
+    """Draw the 50 SMA (orange, prominent) and 200 SMA (blue, prominent) for
     a Trend Following chart.
 
     Both are computed fresh on the visible ``df`` window.  They are drawn
@@ -1348,7 +1400,7 @@ def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
             x=df.index,
             y=sma_fast_series,
             name=f"SMA {SMA_FAST}",
-            line={"color": "#ff7f0e", "width": 2.0},   # orange — the fast SMA
+            line={"color": _CHART_ORANGE, "width": 2.0},
             showlegend=True,
         ),
         row=1, col=1,
@@ -1358,7 +1410,7 @@ def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
             x=df.index,
             y=sma_slow_series,
             name=f"SMA {SMA_SLOW}",
-            line={"color": "#1a237e", "width": 2.0},   # navy blue — the slow SMA
+            line={"color": _CHART_BLUE, "width": 2.0},
             showlegend=True,
         ),
         row=1, col=1,
@@ -1399,7 +1451,7 @@ def _add_tf_cross_marker(
         return
 
     is_golden = cross_type == "golden"
-    marker_color = "#28a745" if is_golden else "#dc3545"
+    marker_color = _CHART_UP_COLOR if is_golden else _CHART_DOWN_COLOR
     marker_symbol = "triangle-up" if is_golden else "triangle-down"
     label = "Golden Cross" if is_golden else "Death Cross"
     text_pos = "top center" if is_golden else "bottom center"
@@ -1552,7 +1604,7 @@ def _add_vwap_line(
             x=df.index,
             y=vwap_series,
             name="VWAP",
-            line={"color": "#9b59b6", "width": 1.5, "dash": "dot"},
+            line={"color": _CHART_PURPLE, "width": 1.5, "dash": "dot"},
             showlegend=True,
         ),
         row=1, col=1,
