@@ -5,12 +5,15 @@ import streamlit as st
 from config.credentials import load_credentials
 from config.settings import SUPPORTED_DATA_SOURCES
 from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
-from storage.database import init_db
+from storage.database import get_pattern_scan, init_db
 from ui.components.sidebar import render_sidebar
 from ui.pages.alerts_page import render_alerts_page
 from ui.pages.analysis_results import render_analysis_results
 from ui.pages.dashboard import render_detail_view
 from ui.pages.market_overview import render_market_overview
+from ui.pages.pattern_detail import render_pattern_detail
+from ui.pages.pattern_results import render_pattern_results
+from ui.pages.pattern_scanner import render_pattern_scanner
 from ui.pages.placeholders import render_trade_journal_page
 from ui.pages.reports_page import render_reports_page
 from ui.pages.watchlist_manager import render_watchlist_manager
@@ -44,6 +47,18 @@ def init_session_state() -> None:
         "analysing": False,
         "selected_stock_symbol": None,
         "analysis_results": {},
+        "pattern_scan_settings": {},
+        "pattern_scan_id": "",
+        "pattern_scan_source_name": "",
+        "pattern_scan_results": [],
+        "pattern_chart_data": {},
+        "pattern_zone_results": {},
+        "pattern_scan_errors": {},
+        "pattern_scan_fallback_symbols": [],
+        "pattern_scanning": False,
+        "selected_pattern_symbol": None,
+        "pattern_watch_symbols": set(),
+        "pattern_reviewed_symbols": set(),
         "notifications": [],
     }
     for key, value in defaults.items():
@@ -420,11 +435,45 @@ def main() -> None:
 
         st.session_state["_qp_handled"] = True
 
+    # Pattern Detail new-tab support. Pattern results live in session_state in
+    # the opening tab, so a fresh tab restores them from the local scan cache
+    # using the compact scan id carried in the URL.
+    _qp_pattern_scan = st.query_params.get("pattern_scan")
+    _qp_pattern_symbol = st.query_params.get("pattern_symbol")
+    if _qp_pattern_scan and _qp_pattern_symbol and not st.session_state.get("_qp_pattern_handled"):
+        st.session_state["_qp_pattern_scan_id"] = _qp_pattern_scan
+        st.session_state["pattern_scan_id"] = _qp_pattern_scan
+        st.session_state.selected_pattern_symbol = _qp_pattern_symbol
+        st.session_state.active_page = "pattern_detail"
+        st.session_state["_qp_pattern_handled"] = True
+
     try:
         init_db()
     except Exception as exc:
         st.error(f"Database initialisation failed: {exc}")
         logger.exception("Database init error")
+
+    _scan_id = st.session_state.get("_qp_pattern_scan_id")
+    if _scan_id and not st.session_state.get("_qp_pattern_loaded"):
+        try:
+            cached_scan = get_pattern_scan(str(_scan_id))
+        except Exception as exc:
+            logger.warning("Could not restore pattern scan %s: %s", _scan_id, exc)
+            cached_scan = None
+        if cached_scan:
+            st.session_state["pattern_scan_settings"] = cached_scan.get("settings", {})
+            st.session_state["pattern_scan_results"] = cached_scan.get("matches", [])
+            st.session_state["pattern_scan_universe_label"] = cached_scan.get(
+                "universe_label", ""
+            )
+            st.session_state["_pattern_last_scan_label"] = cached_scan.get(
+                "created_at", ""
+            )
+            source_name = cached_scan.get("source_name")
+            if source_name in SUPPORTED_DATA_SOURCES:
+                st.session_state["selected_data_source"] = source_name
+                st.session_state["pattern_scan_source_name"] = source_name
+        st.session_state["_qp_pattern_loaded"] = True
 
     try:
         saved = load_credentials()
@@ -442,6 +491,12 @@ def main() -> None:
     page = st.session_state.active_page
     if page == "stock_detail":
         render_detail_view()
+    elif page == "pattern_scanner":
+        render_pattern_scanner()
+    elif page == "pattern_results":
+        render_pattern_results()
+    elif page == "pattern_detail":
+        render_pattern_detail()
     elif page == "analysis_results":
         render_analysis_results()
     elif page == "alerts":

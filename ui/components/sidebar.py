@@ -404,6 +404,20 @@ def render_sidebar() -> None:
                     ):
                         st.session_state.active_page = _page
                         st.rerun()
+            _pattern_active = _current_page in {
+                "pattern_scanner",
+                "pattern_results",
+                "pattern_detail",
+            }
+            if st.button(
+                "Pattern Scanner",
+                icon=":material/query_stats:",
+                use_container_width=True,
+                type="primary" if _pattern_active else "secondary",
+                key="nav_pattern_scanner",
+            ):
+                st.session_state.active_page = "pattern_scanner"
+                st.rerun()
 
         # ---------- Panel 2: analysis controls ----------
         with st.container(border=True):
@@ -870,4 +884,3 @@ def _render_brand_and_status() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
-

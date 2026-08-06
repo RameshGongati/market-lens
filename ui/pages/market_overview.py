@@ -187,7 +187,7 @@ def render_market_overview() -> None:
         # place, one of which silently discarded the scan you already had.
         # This one only navigates; the results page decides whether it needs
         # to scan.
-        cols = st.columns(2)
+        cols = st.columns(3)
         with cols[0]:
             st.button(
                 "Analysis Results", icon=":material/table_view:",
@@ -196,6 +196,14 @@ def render_market_overview() -> None:
                 help="Open the latest scan results.",
             )
         with cols[1]:
+            st.button(
+                "Pattern Scan Results", icon=":material/query_stats:",
+                use_container_width=True, key="mo_pattern_results",
+                disabled=not bool(st.session_state.get("pattern_scan_results")),
+                on_click=_go_pattern_results,
+                help="Open the latest Pattern Scanner results.",
+            )
+        with cols[2]:
             st.button(
                 "Schedule scan", icon=":material/event:",
                 use_container_width=True, key="mo_sched", disabled=True,
@@ -478,3 +486,8 @@ def _go_results() -> None:
     start one.
     """
     st.session_state.active_page = "analysis_results"
+
+
+def _go_pattern_results() -> None:
+    """Open the latest Pattern Scanner results without rescanning."""
+    st.session_state.active_page = "pattern_results"

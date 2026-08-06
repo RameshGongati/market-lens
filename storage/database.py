@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator
+from uuid import uuid4
 
+from analysis.pattern_models import PatternMatch
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -81,6 +83,15 @@ def init_db() -> None:
                 note_text  TEXT    NOT NULL,
                 created_at TEXT    NOT NULL,
                 updated_at TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pattern_scans (
+                id             TEXT PRIMARY KEY,
+                settings_json  TEXT NOT NULL DEFAULT '{}',
+                universe_label TEXT NOT NULL DEFAULT '',
+                source_name    TEXT NOT NULL DEFAULT '',
+                results_json   TEXT NOT NULL DEFAULT '[]',
+                created_at     TEXT NOT NULL
             );
             """
         )
@@ -281,6 +292,63 @@ def compare_analysis_results(
         "dominant_status": dominant,
         "trend_direction": direction,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pattern Scanner cache
+# ---------------------------------------------------------------------------
+
+def save_pattern_scan(
+    settings: dict[str, Any],
+    universe_label: str,
+    source_name: str,
+    matches: list[PatternMatch],
+) -> str:
+    """Persist a Pattern Scanner result set for cross-tab navigation."""
+    scan_id = uuid4().hex
+    payload = [m.to_dict() for m in matches]
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO pattern_scans
+               (id, settings_json, universe_label, source_name, results_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id,
+                json.dumps(settings),
+                universe_label,
+                source_name,
+                json.dumps(payload),
+                _now(),
+            ),
+        )
+        conn.execute(
+            """DELETE FROM pattern_scans WHERE id NOT IN (
+               SELECT id FROM pattern_scans ORDER BY created_at DESC LIMIT 20
+            )"""
+        )
+    return scan_id
+
+
+def get_pattern_scan(scan_id: str) -> dict[str, Any] | None:
+    """Return a cached pattern scan, or None when the id is unknown."""
+    if not scan_id:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM pattern_scans WHERE id = ?",
+            (scan_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    raw_matches = json.loads(data.get("results_json") or "[]")
+    data["settings"] = json.loads(data.get("settings_json") or "{}")
+    data["matches"] = [
+        PatternMatch.from_dict(m)
+        for m in raw_matches
+        if isinstance(m, dict)
+    ]
+    return data
 
 
 def clear_all_analysis_history() -> None:
