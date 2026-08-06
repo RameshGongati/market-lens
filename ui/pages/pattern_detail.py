@@ -76,7 +76,7 @@ def render_pattern_detail() -> None:
 
     spacer(8)
     st.info(
-        "Triangles show contraction, not guaranteed direction. Zone context "
+        "Patterns show structure, not guaranteed direction. Zone context "
         "increases usefulness. Always wait for confirmation and manage risk."
     )
 
@@ -86,7 +86,7 @@ def _render_header(match: PatternMatch) -> None:
     with left:
         page_title(
             f"Pattern Detail - {match.symbol}",
-            "Deep dive into the detected triangle setup, zone context, breakout levels, and confirmation signals.",
+            "Deep dive into the detected setup, zone context, trigger levels, and confirmation signals.",
             icon="target",
         )
     with right:
@@ -145,7 +145,7 @@ def _render_chart(
         key=f"pattern_chart_{match.symbol}_{match.pattern_type}",
         config={"scrollZoom": True},
     )
-    st.caption("Pattern labels appear at the right edge of active triangle and zone levels.")
+    st.caption("Pattern labels appear at the right edge of active pattern and zone levels.")
 
 
 def _fetch_detail_frame(match: PatternMatch) -> pd.DataFrame | None:
@@ -264,15 +264,16 @@ def _add_pattern_lines(fig: go.Figure, match: PatternMatch) -> None:
             col=1,
         )
     apex = match.apex_point
+    trigger_label = str(match.metadata.get("trigger_label") or "Apex")
     fig.add_trace(
         go.Scatter(
             x=[apex.timestamp],
             y=[apex.price],
             mode="markers+text",
-            text=["Apex"],
+            text=[trigger_label],
             textposition="top center",
             marker={"color": "#7B61E3", "size": 11, "symbol": "circle-open", "line": {"width": 2}},
-            name="Apex",
+            name=trigger_label,
             showlegend=False,
         ),
         row=1,
@@ -320,7 +321,7 @@ def _add_swing_markers(fig: go.Figure, match: PatternMatch) -> None:
                 y=[p.price for p in highs],
                 mode="markers",
                 marker={"color": "#C23B33", "size": 7, "symbol": "triangle-down"},
-                name="Lower Highs",
+                name="Resistance Points",
             ),
             row=1,
             col=1,
@@ -332,7 +333,7 @@ def _add_swing_markers(fig: go.Figure, match: PatternMatch) -> None:
                 y=[p.price for p in lows],
                 mode="markers",
                 marker={"color": "#16794A", "size": 7, "symbol": "triangle-up"},
-                name="Higher Lows",
+                name="Support Points",
             ),
             row=1,
             col=1,
@@ -400,9 +401,13 @@ def _render_anatomy(match: PatternMatch) -> None:
 def _render_breakout_checklist(match: PatternMatch) -> None:
     with st.container(border=True):
         section_title("Breakout Checklist")
+        direction = _match_direction(match)
+        upper_label = "Break above upper boundary"
+        lower_label = "Break below lower boundary"
+        primary_break = lower_label if direction == "short" else upper_label
         checked = {
-            "Break above upper trendline": match.breakout_bias == "Up Break",
-            "Volume expansion on break": match.stage == "Breakout Confirmed" and not match.volume_contraction,
+            primary_break: match.stage == "Breakout Confirmed",
+            "Volume confirms the break": match.stage == "Breakout Confirmed" and not match.volume_contraction,
             "Zone confirmation": match.zone_context in ("Near Demand Zone", "Near Supply Zone"),
             "Candle close confirmation": match.stage == "Breakout Confirmed",
         }
@@ -430,7 +435,7 @@ def _render_status(match: PatternMatch) -> None:
                 f"width:30px;height:30px;border-radius:50%;background:{fill};color:{tone};"
                 f"font-weight:800;border:1px solid {tone};'>{idx + 1}</span>"
                 f"<div style='font-size:0.72rem;margin-top:4px;color:#4A5361;'>"
-                f"{html.escape(label)}</div></div>",
+                f"{html.escape('Near Trigger' if label == 'Near Apex' else label)}</div></div>",
                 unsafe_allow_html=True,
             )
 
@@ -440,10 +445,10 @@ def _render_risk_plan(match: PatternMatch) -> None:
         section_title("Risk Plan")
         direction = _match_direction(match)
         if direction == "short":
-            kv_row("Entry Trigger", "Break below lower trendline")
+            kv_row("Entry Trigger", "Break below lower boundary")
             kv_row("Stop Loss", f"Above {match.breakout_level:,.2f}")
         elif direction == "long":
-            kv_row("Entry Trigger", "Break above upper trendline")
+            kv_row("Entry Trigger", "Break above upper boundary")
             kv_row("Stop Loss", f"Below {match.breakdown_level:,.2f}")
         else:
             kv_row("Entry Trigger", "Wait for confirmed break")
@@ -461,7 +466,7 @@ def _render_key_level_cards(match: PatternMatch) -> None:
     supply = _zone_price(match.nearest_supply_zone) or "No nearby supply"
     values = [
         ("Current Price", f"{match.current_price:,.2f}", f"{match.change:+.2f} ({match.change_pct:+.2f}%)", "info"),
-        ("Apex Distance", f"{match.apex_proximity:.1f}%", "Lower means closer", "purple"),
+        ("Trigger Distance", f"{match.apex_proximity:.1f}%", "Lower means closer", "purple"),
         ("Demand Zone", str(demand), match.zone_context, "bullish"),
         ("Supply Zone", str(supply), match.zone_context, "bearish"),
         ("Reward / Risk", f"{match.risk_reward:.2f}:1" if match.risk_reward else "N/A", "Indicative only", "warning"),
@@ -526,10 +531,50 @@ def _render_action_panel(match: PatternMatch, zone_result: dict[str, Any]) -> No
                 reviewed.add(match.symbol)
                 st.session_state["pattern_reviewed_symbols"] = reviewed
                 st.success("Marked as reviewed.")
-        st.caption("This page is designed for triangle patterns. Future pattern families can reuse the same layout with type-specific anatomy and logic.")
+        st.caption("Pattern-specific anatomy, levels, zones, and risk context are shown for the selected setup.")
 
 
 def _anatomy_lines(pattern_type: str) -> list[str]:
+    if pattern_type == "VCP / Tight Base":
+        return [
+            "Volatility contracts through smaller price swings.",
+            "Volume should cool during the base.",
+            "Pivot is the upper edge of the tight base.",
+            "Breakout needs a candle close beyond the pivot.",
+            "Invalidation usually sits below the base support.",
+        ]
+    if pattern_type in ("Rectangle Range", "Bullish Rectangle Breakout", "Bearish Rectangle Breakdown"):
+        return [
+            "Repeated support and resistance define the range.",
+            "Breakout confirms only after a close outside the box.",
+            "A retest holding the old boundary improves quality.",
+            "Range height gives an indicative target projection.",
+            "Failed re-entry into the box weakens the setup.",
+        ]
+    if pattern_type in ("Bull Flag", "Bear Flag", "Bull Pennant", "Bear Pennant"):
+        return [
+            "A sharp impulse move forms the flagpole.",
+            "Price pauses in a compact flag or pennant.",
+            "Volume ideally contracts during the pause.",
+            "Continuation confirms when price clears the pause boundary.",
+            "Invalidation sits beyond the opposite side of the pause.",
+        ]
+    if pattern_type == "Double Bottom":
+        return [
+            "Two similar lows show sellers failing near support.",
+            "The neckline is resistance between the two lows.",
+            "Breakout above the neckline confirms the reversal attempt.",
+            "Demand-zone context improves the bullish setup.",
+            "Invalidation sits below the double-bottom support.",
+        ]
+    if pattern_type == "Double Top":
+        return [
+            "Two similar highs show buyers failing near resistance.",
+            "The neckline is support between the two highs.",
+            "Breakdown below the neckline confirms the reversal attempt.",
+            "Supply-zone context improves the bearish setup.",
+            "Invalidation sits above the double-top resistance.",
+        ]
     if pattern_type == "Ascending Triangle":
         return [
             "Flat resistance along the upper boundary.",
@@ -568,9 +613,22 @@ def _match_direction(match: PatternMatch) -> str | None:
         return "long"
     if match.breakout_bias == "Down Break":
         return "short"
-    if match.pattern_type == "Ascending Triangle":
+    if match.pattern_type in (
+        "Ascending Triangle",
+        "VCP / Tight Base",
+        "Bullish Rectangle Breakout",
+        "Bull Flag",
+        "Bull Pennant",
+        "Double Bottom",
+    ):
         return "long"
-    if match.pattern_type == "Descending Triangle":
+    if match.pattern_type in (
+        "Descending Triangle",
+        "Bearish Rectangle Breakdown",
+        "Bear Flag",
+        "Bear Pennant",
+        "Double Top",
+    ):
         return "short"
     return None
 
@@ -612,7 +670,7 @@ def _detail_pdf_bytes(match: PatternMatch) -> bytes:
         ["Pattern", match.pattern_type],
         ["Stage", match.stage],
         ["Confidence", f"{match.confidence_score:.0f}%"],
-        ["Apex Proximity", f"{match.apex_proximity:.1f}%"],
+        ["Trigger Distance", f"{match.apex_proximity:.1f}%"],
         ["Breakout Bias", match.breakout_bias],
         ["Zone Context", match.zone_context],
         ["Breakout Level", f"{match.breakout_level:,.2f}"],

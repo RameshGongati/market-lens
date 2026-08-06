@@ -11,28 +11,50 @@ from typing import Any, Callable, Iterable
 import pandas as pd
 
 from analysis.demand_supply import DemandSupplyAnalysis
-from analysis.pattern_detectors import detect_triangle_patterns
+from analysis.pattern_detectors import (
+    detect_double_patterns,
+    detect_flag_pennant_patterns,
+    detect_range_breakout_patterns,
+    detect_triangle_patterns,
+    detect_vcp_patterns,
+)
+from analysis.pattern_detectors.pattern_types import (
+    ALL_CHART_PATTERNS_FAMILY,
+    ALL_CHART_PATTERN_TYPES,
+    ALL_CHART_PATTERN_TYPES_LABEL,
+    ALL_PATTERN_TYPES,
+    BEAR_FLAG_TYPE,
+    BEAR_PENNANT_TYPE,
+    BEAR_RECTANGLE_TYPE,
+    BULL_FLAG_TYPE,
+    BULL_PENNANT_TYPE,
+    BULL_RECTANGLE_TYPE,
+    DOUBLE_TYPES,
+    DOUBLE_BOTTOM_TYPE,
+    DOUBLE_FAMILY,
+    DOUBLE_TOP_TYPE,
+    FLAG_TYPES,
+    FLAG_FAMILY,
+    PATTERN_FAMILIES,
+    PATTERN_TYPES_BY_FAMILY,
+    RANGE_TYPES,
+    RANGE_FAMILY,
+    RECTANGLE_RANGE_TYPE,
+    TRIANGLE_FAMILY,
+    TRIANGLE_TYPES,
+    VCP_TYPES,
+    VCP_FAMILY,
+    VCP_TYPE,
+    is_all_pattern_type,
+    normalise_pattern_family,
+    normalise_pattern_type,
+)
 from analysis.pattern_models import PatternMatch
 from data.manager import build_source_manager, fetch_by_interval
 from utils.helpers import get_company_name
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-PATTERN_FAMILIES = [
-    "Triangle Patterns",
-    "Wedge Patterns",
-    "Pennant Patterns",
-    "VCP / Volatility Contraction",
-    "Inside Bar / NR7",
-]
-
-TRIANGLE_TYPES = [
-    "All Triangle Patterns",
-    "Symmetrical Triangle",
-    "Ascending Triangle",
-    "Descending Triangle",
-]
 
 DETECTION_STAGES = ["Forming", "Near Apex", "Breakout Confirmed"]
 TIMEFRAMES = ["Daily", "Weekly", "75m", "15m"]
@@ -63,8 +85,8 @@ class PatternScanOutput:
 def default_settings() -> dict[str, Any]:
     """Default Pattern Scanner settings for a new session."""
     return {
-        "pattern_family": "Triangle Patterns",
-        "pattern_type": "All Triangle Patterns",
+        "pattern_family": ALL_CHART_PATTERNS_FAMILY,
+        "pattern_type": ALL_CHART_PATTERN_TYPES_LABEL,
         "detection_stages": list(DETECTION_STAGES),
         "timeframe": "Daily",
         "scope": "Current Watchlist",
@@ -74,6 +96,14 @@ def default_settings() -> dict[str, Any]:
         "require_zone_context": False,
         "selected_filters": [],
     }
+
+
+def pattern_types_for_family(family: str) -> list[str]:
+    """Return selectable pattern-type labels for a pattern family."""
+    return PATTERN_TYPES_BY_FAMILY.get(
+        normalise_pattern_family(family),
+        ALL_CHART_PATTERN_TYPES,
+    )
 
 
 def run_pattern_scan(
@@ -96,8 +126,8 @@ def run_pattern_scan(
         output.errors["source"] = str(exc)
         return output
 
-    family = settings.get("pattern_family", "Triangle Patterns")
-    pattern_type = settings.get("pattern_type", "All Triangle Patterns")
+    family = normalise_pattern_family(settings.get("pattern_family"))
+    pattern_type = normalise_pattern_type(settings.get("pattern_type"))
     timeframe = settings.get("timeframe", "Daily")
 
     for idx, stock in enumerate(stock_list, start=1):
@@ -167,17 +197,89 @@ def _detect_family(
     pattern_type: str,
     zone_result: dict[str, Any] | None,
 ) -> list[PatternMatch]:
-    if family != "Triangle Patterns":
-        return []
-    return detect_triangle_patterns(
-        data,
-        symbol=symbol,
-        company_name=company_name,
-        exchange=exchange,
-        timeframe=timeframe,
-        pattern_type=pattern_type,
-        zone_result=zone_result,
-    )
+    family = normalise_pattern_family(family)
+    pattern_type = normalise_pattern_type(pattern_type)
+    matches: list[PatternMatch] = []
+    if _should_scan_family(family, TRIANGLE_FAMILY, pattern_type, TRIANGLE_TYPES):
+        if is_all_pattern_type(pattern_type) or pattern_type in TRIANGLE_TYPES:
+            triangle_type = (
+                pattern_type
+                if pattern_type in TRIANGLE_TYPES
+                else "All Triangle Patterns"
+            )
+            matches.extend(
+                detect_triangle_patterns(
+                    data,
+                    symbol=symbol,
+                    company_name=company_name,
+                    exchange=exchange,
+                    timeframe=timeframe,
+                    pattern_type=triangle_type,
+                    zone_result=zone_result,
+                )
+            )
+    if _should_scan_family(family, VCP_FAMILY, pattern_type, VCP_TYPES):
+        matches.extend(
+            detect_vcp_patterns(
+                data,
+                symbol=symbol,
+                company_name=company_name,
+                exchange=exchange,
+                timeframe=timeframe,
+                zone_result=zone_result,
+            )
+        )
+    if _should_scan_family(family, RANGE_FAMILY, pattern_type, RANGE_TYPES):
+        range_type = pattern_type if pattern_type in RANGE_TYPES else RANGE_TYPES[0]
+        matches.extend(
+            detect_range_breakout_patterns(
+                data,
+                symbol=symbol,
+                company_name=company_name,
+                exchange=exchange,
+                timeframe=timeframe,
+                pattern_type=range_type,
+                zone_result=zone_result,
+            )
+        )
+    if _should_scan_family(family, FLAG_FAMILY, pattern_type, FLAG_TYPES):
+        flag_type = pattern_type if pattern_type in FLAG_TYPES else FLAG_TYPES[0]
+        matches.extend(
+            detect_flag_pennant_patterns(
+                data,
+                symbol=symbol,
+                company_name=company_name,
+                exchange=exchange,
+                timeframe=timeframe,
+                pattern_type=flag_type,
+                zone_result=zone_result,
+            )
+        )
+    if _should_scan_family(family, DOUBLE_FAMILY, pattern_type, DOUBLE_TYPES):
+        double_type = pattern_type if pattern_type in DOUBLE_TYPES else DOUBLE_TYPES[0]
+        matches.extend(
+            detect_double_patterns(
+                data,
+                symbol=symbol,
+                company_name=company_name,
+                exchange=exchange,
+                timeframe=timeframe,
+                pattern_type=double_type,
+                zone_result=zone_result,
+            )
+        )
+    return matches
+
+
+def _should_scan_family(
+    selected_family: str,
+    detector_family: str,
+    pattern_type: str,
+    family_types: list[str],
+) -> bool:
+    if selected_family not in (ALL_CHART_PATTERNS_FAMILY, detector_family):
+        return False
+    return is_all_pattern_type(pattern_type) or pattern_type in family_types
 
 
 def _zone_context_result(symbol: str, hist: pd.DataFrame) -> dict[str, Any]:
@@ -238,7 +340,7 @@ def apply_result_filters(
     filtered = list(matches)
     if pattern_family != "All Families":
         filtered = [m for m in filtered if m.pattern_family == pattern_family]
-    if pattern_type != "All Triangle Patterns":
+    if not is_all_pattern_type(pattern_type):
         filtered = [m for m in filtered if m.pattern_type == pattern_type]
     if stages:
         filtered = [m for m in filtered if m.stage in stages]
@@ -262,7 +364,7 @@ def apply_result_filters(
 
     if sort_by == "Confidence":
         filtered.sort(key=lambda m: m.confidence_score, reverse=True)
-    elif sort_by == "Apex Proximity":
+    elif sort_by in ("Apex Proximity", "Trigger Distance"):
         filtered.sort(key=lambda m: m.apex_proximity)
     elif sort_by == "Symbol":
         filtered.sort(key=lambda m: m.symbol)
@@ -287,7 +389,7 @@ def matches_to_export_rows(matches: list[PatternMatch]) -> list[dict[str, Any]]:
                 "Timeframe": m.timeframe,
                 "Freshness": m.freshness_candles,
                 "Confidence %": m.confidence_score,
-                "Apex Proximity %": round(m.apex_proximity, 1),
+                "Trigger Distance %": round(m.apex_proximity, 1),
                 "Breakout Bias": m.breakout_bias,
                 "Zone Context": m.zone_context,
                 "Volume Contraction": "Yes" if m.volume_contraction else "No",

@@ -12,11 +12,11 @@ import streamlit as st
 
 from analysis.pattern_models import PatternMatch
 from analysis.pattern_scanner import (
+    ALL_PATTERN_TYPES,
     DETECTION_STAGES,
     PATTERN_FAMILIES,
     SUGGESTED_FILTERS,
     TIMEFRAMES,
-    TRIANGLE_TYPES,
     apply_result_filters,
     default_settings,
     matches_to_export_rows,
@@ -39,7 +39,7 @@ from ui.pages.pattern_common import (
 )
 
 _PAGE_SIZES = (10, 20, 30, 50, 75, 100)
-_SORT_OPTIONS = ["Freshest First", "Confidence", "Apex Proximity", "Breakout Candidates", "Symbol"]
+_SORT_OPTIONS = ["Freshest First", "Confidence", "Trigger Distance", "Breakout Candidates", "Symbol"]
 
 
 def render_pattern_results() -> None:
@@ -71,7 +71,7 @@ def render_pattern_results() -> None:
     filtered = apply_result_filters(
         matches,
         pattern_family=st.session_state.get("pr_family", "All Families"),
-        pattern_type=st.session_state.get("pr_type", "All Triangle Patterns"),
+        pattern_type=st.session_state.get("pr_type", "All Pattern Types"),
         stages=st.session_state.get("pr_stages", list(DETECTION_STAGES)),
         timeframe=st.session_state.get("pr_timeframe", "All Timeframes"),
         recent_only=st.session_state.get("pr_recent_only", True),
@@ -94,7 +94,7 @@ def render_pattern_results() -> None:
 
 def _seed_result_filters(settings: dict[str, Any]) -> None:
     st.session_state.setdefault("pr_family", "All Families")
-    st.session_state.setdefault("pr_type", settings.get("pattern_type", "All Triangle Patterns"))
+    st.session_state.setdefault("pr_type", settings.get("pattern_type", "All Pattern Types"))
     st.session_state.setdefault("pr_stages", settings.get("detection_stages", list(DETECTION_STAGES)))
     st.session_state.setdefault("pr_timeframe", settings.get("timeframe", "Daily"))
     st.session_state.setdefault("pr_recent_only", settings.get("recent_only", True))
@@ -107,8 +107,8 @@ def _seed_result_filters(settings: dict[str, Any]) -> None:
 def _render_header(settings: dict[str, Any]) -> None:
     left, right = st.columns([2.2, 1.65])
     with left:
-        family = settings.get("pattern_family", "Triangle Patterns")
-        title = "Triangle Pattern Results" if family == "Triangle Patterns" else f"{family} Results"
+        family = settings.get("pattern_family", "All Chart Patterns")
+        title = "Pattern Results" if family == "All Chart Patterns" else f"{family} Results"
         page_title(
             title,
             "Recent pattern appearances detected across your selected watchlist.",
@@ -202,11 +202,11 @@ def _render_summary_cards(matches: list[PatternMatch]) -> None:
     cards = [
         ("Total Matches", counts["total"], "Across scanned symbols", "search", "purple"),
         ("Forming", counts["forming"], "Patterns forming", "activity", "bullish"),
-        ("Near Apex", counts["near_apex"], "Approaching apex", "target", "warning"),
+        ("Near Trigger", counts["near_apex"], "Approaching trigger", "target", "warning"),
         ("Breakout Confirmed", counts["breakout"], "Breakouts detected", "trend_up", "info"),
-        ("Symmetrical", counts["symmetrical"], f"{counts['symmetrical'] / total:.0%} of matches", "layers", "purple"),
-        ("Ascending", counts["ascending"], f"{counts['ascending'] / total:.0%} of matches", "trend_up", "bullish"),
-        ("Descending", counts["descending"], f"{counts['descending'] / total:.0%} of matches", "trend_down", "bearish"),
+        ("Contraction", counts["contraction"], f"{counts['contraction'] / total:.0%} of matches", "layers", "purple"),
+        ("Continuation", counts["continuation"], f"{counts['continuation'] / total:.0%} of matches", "trend_up", "bullish"),
+        ("Reversal", counts["reversal"], f"{counts['reversal'] / total:.0%} of matches", "trend_down", "bearish"),
     ]
     for col, (label, value, sub, icon, tone) in zip(cols, cards):
         with col:
@@ -218,7 +218,9 @@ def _render_filter_row() -> None:
     with top[0]:
         st.selectbox("Pattern Family", ["All Families", *PATTERN_FAMILIES], key="pr_family")
     with top[1]:
-        st.selectbox("Pattern Type", TRIANGLE_TYPES, key="pr_type")
+        if st.session_state.get("pr_type") not in ALL_PATTERN_TYPES:
+            st.session_state["pr_type"] = "All Pattern Types"
+        st.selectbox("Pattern Type", ALL_PATTERN_TYPES, key="pr_type")
     with top[2]:
         st.multiselect("Detection Stage", DETECTION_STAGES, key="pr_stages")
     with top[3]:
@@ -277,7 +279,7 @@ def _render_results_table(matches: list[PatternMatch]) -> None:
         "Stage",
         "Fresh",
         "Confidence",
-        "Apex",
+        "Trigger",
         "Breakout Bias",
         "Zone Context",
         "Volume",
@@ -348,7 +350,7 @@ def _render_results_table(matches: list[PatternMatch]) -> None:
             )
         with cols[7]:
             st.markdown(
-                f"<div class='pr-cell pr-nowrap'>{match.apex_proximity:.0f}%</div>",
+            f"<div class='pr-cell pr-nowrap'>{match.apex_proximity:.1f}%</div>",
                 unsafe_allow_html=True,
             )
         with cols[8]:
@@ -467,10 +469,10 @@ def _render_result_helpers(matches: list[PatternMatch]) -> None:
     with st.container(border=True):
         section_title("How to read these results")
         lines = [
-            ("Triangles show contraction", "Price is consolidating between converging trendlines."),
-            ("Direction on breakout only", "Bias is pressure, not confirmed direction."),
+            ("Patterns show structure", "Price is compressing, pausing, ranging, or retesting a trigger."),
+            ("Direction on trigger only", "Bias is pressure, not confirmed direction."),
             ("Check zone context", "Demand/supply zones improve pattern usefulness."),
-            ("Watch volume contraction", "Lower volume during contraction supports cleaner breaks."),
+            ("Watch volume", "Contraction before and expansion on the break support cleaner setups."),
         ]
         for title, caption in lines:
             st.markdown(
@@ -486,9 +488,11 @@ def _render_result_helpers(matches: list[PatternMatch]) -> None:
         counts = pattern_counts(matches)
         total = max(len(matches), 1)
         for label, count, colour in [
-            ("Symmetrical", counts["symmetrical"], "#5A47B8"),
-            ("Ascending", counts["ascending"], "#16794A"),
-            ("Descending", counts["descending"], "#C23B33"),
+            ("Triangle", counts["triangle"], "#5A47B8"),
+            ("VCP / Base", counts["vcp"], "#16794A"),
+            ("Range", counts["range"], "#2F80ED"),
+            ("Flag / Pennant", counts["flag"], "#B4791A"),
+            ("Double Top/Bottom", counts["double"], "#C23B33"),
         ]:
             pct = count / total * 100
             st.markdown(
@@ -510,7 +514,7 @@ def _render_result_helpers(matches: list[PatternMatch]) -> None:
         breakout = sum(1 for m in matches if m.stage == "Breakout Confirmed")
         for line in [
             f"Top confidence: {best.symbol} at {best.confidence_score:.0f}%.",
-            f"{near} setups are near apex.",
+            f"{near} setups are near trigger.",
             f"{breakout} setups already have a confirmed break.",
         ]:
             st.markdown(
@@ -552,7 +556,7 @@ def _render_export_bar(matches: list[PatternMatch]) -> None:
 
 def _clear_result_filters() -> None:
     st.session_state["pr_family"] = "All Families"
-    st.session_state["pr_type"] = "All Triangle Patterns"
+    st.session_state["pr_type"] = "All Pattern Types"
     st.session_state["pr_stages"] = list(DETECTION_STAGES)
     st.session_state["pr_timeframe"] = "All Timeframes"
     st.session_state["pr_recent_only"] = False
@@ -571,7 +575,8 @@ def _stage_pill(stage: str) -> str:
         "Near Apex": "warning",
         "Breakout Confirmed": "purple",
     }.get(stage, "neutral")
-    return bias_pill(stage, tone)  # type: ignore[arg-type]
+    label = "Near Trigger" if stage == "Near Apex" else stage
+    return bias_pill(label, tone)  # type: ignore[arg-type]
 
 
 def _bias_tone(text: str) -> str:
@@ -595,7 +600,17 @@ def _pattern_cell(pattern_type: str) -> str:
         "Symmetrical Triangle": "SYM",
         "Ascending Triangle": "ASC",
         "Descending Triangle": "DSC",
-    }.get(pattern_type, "Tri")
+        "VCP / Tight Base": "VCP",
+        "Rectangle Range": "RNG",
+        "Bullish Rectangle Breakout": "BRK",
+        "Bearish Rectangle Breakdown": "BDN",
+        "Bull Flag": "FLG",
+        "Bear Flag": "FLG",
+        "Bull Pennant": "PEN",
+        "Bear Pennant": "PEN",
+        "Double Bottom": "DBL",
+        "Double Top": "DBL",
+    }.get(pattern_type, "PAT")
     return (
         f"<span style='display:inline-block;background:#EEF4FF;color:#2F5FE0;"
         f"border:1px solid #DCE6FA;border-radius:6px;padding:2px 6px;"
@@ -626,7 +641,7 @@ def _progress_card(universe: str, symbol: str, done: int, total: int) -> str:
         "<div style='height:10px;background:#EEF0F3;border-radius:999px;overflow:hidden;'>"
         f"<div style='height:10px;width:{pct:.1f}%;background:#2F5FE0;border-radius:999px;'></div></div>"
         f"<div style='font-size:0.82rem;color:#4A5361;margin-top:12px;'>"
-        f"Currently checking <b>{html.escape(symbol)}</b> for recent triangle structures.</div>"
+        f"Currently checking <b>{html.escape(symbol)}</b> for recent pattern structures.</div>"
         "</div></div>"
     )
 
@@ -648,7 +663,7 @@ def _pdf_bytes(matches: list[PatternMatch]) -> bytes:
         return b"ReportLab is not available."
 
     rows = matches_to_export_rows(matches)
-    data = [["Rank", "Symbol", "Pattern", "Stage", "Confidence", "Apex", "Bias"]]
+    data = [["Rank", "Symbol", "Pattern", "Stage", "Confidence", "Trigger", "Bias"]]
     for row in rows[:80]:
         data.append(
             [
@@ -657,7 +672,7 @@ def _pdf_bytes(matches: list[PatternMatch]) -> bytes:
                 row["Pattern"],
                 row["Stage"],
                 f"{row['Confidence %']}%",
-                f"{row['Apex Proximity %']}%",
+                f"{row['Trigger Distance %']}%",
                 row["Breakout Bias"],
             ]
         )

@@ -54,6 +54,22 @@ def pattern_counts(matches: list[PatternMatch]) -> dict[str, int]:
         "forming": sum(1 for m in matches if m.stage == "Forming"),
         "near_apex": sum(1 for m in matches if m.stage == "Near Apex"),
         "breakout": sum(1 for m in matches if m.stage == "Breakout Confirmed"),
+        "triangle": sum(1 for m in matches if m.pattern_family == "Triangle Patterns"),
+        "vcp": sum(1 for m in matches if m.pattern_family == "VCP / Tight Base"),
+        "range": sum(1 for m in matches if m.pattern_family == "Range Breakouts"),
+        "flag": sum(1 for m in matches if m.pattern_family == "Flag / Pennant"),
+        "double": sum(1 for m in matches if m.pattern_family == "Double Top / Bottom"),
+        "contraction": sum(
+            1
+            for m in matches
+            if m.pattern_family in ("Triangle Patterns", "VCP / Tight Base")
+        ),
+        "continuation": sum(
+            1
+            for m in matches
+            if m.pattern_family in ("Flag / Pennant", "Range Breakouts")
+        ),
+        "reversal": sum(1 for m in matches if m.pattern_family == "Double Top / Bottom"),
         "symmetrical": sum(1 for m in matches if m.pattern_type == "Symmetrical Triangle"),
         "ascending": sum(1 for m in matches if m.pattern_type == "Ascending Triangle"),
         "descending": sum(1 for m in matches if m.pattern_type == "Descending Triangle"),
@@ -106,8 +122,8 @@ def _current_watchlist() -> tuple[str, list[SimpleNamespace]]:
 def serialise_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Store only plain values in session state."""
     return {
-        "pattern_family": settings.get("pattern_family", "Triangle Patterns"),
-        "pattern_type": settings.get("pattern_type", "All Triangle Patterns"),
+        "pattern_family": settings.get("pattern_family", "All Chart Patterns"),
+        "pattern_type": settings.get("pattern_type", "All Chart Pattern Types"),
         "detection_stages": list(settings.get("detection_stages") or []),
         "timeframe": settings.get("timeframe", "Daily"),
         "scope": settings.get("scope", "Current Watchlist"),

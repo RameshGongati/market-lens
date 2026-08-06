@@ -8,13 +8,15 @@ from typing import Any
 import streamlit as st
 
 from analysis.pattern_scanner import (
+    ALL_CHART_PATTERNS_FAMILY,
+    ALL_CHART_PATTERN_TYPES_LABEL,
     DETECTION_STAGES,
     PATTERN_FAMILIES,
     SCOPES,
     SUGGESTED_FILTERS,
     TIMEFRAMES,
-    TRIANGLE_TYPES,
     default_settings,
+    pattern_types_for_family,
 )
 from ui.components.panels import filter_chip, page_title, section_title, spacer, stat_card
 from ui.pages.pattern_common import (
@@ -66,13 +68,20 @@ def render_pattern_scanner() -> None:
 
 def _seed_setup_state() -> None:
     saved = st.session_state.get("pattern_scan_settings") or default_settings()
-    family = saved.get("pattern_family", "Triangle Patterns")
-    ptype = saved.get("pattern_type", "All Triangle Patterns")
+    family = saved.get("pattern_family", ALL_CHART_PATTERNS_FAMILY)
+    ptype = saved.get("pattern_type", ALL_CHART_PATTERN_TYPES_LABEL)
     timeframe = saved.get("timeframe", "Daily")
     scope = saved.get("scope", "Current Watchlist")
     stages = [s for s in saved.get("detection_stages", list(DETECTION_STAGES)) if s in DETECTION_STAGES]
-    st.session_state.setdefault("ps_family", family if family in PATTERN_FAMILIES else "Triangle Patterns")
-    st.session_state.setdefault("ps_type", ptype if ptype in TRIANGLE_TYPES else "All Triangle Patterns")
+    family = family if family in PATTERN_FAMILIES else ALL_CHART_PATTERNS_FAMILY
+    type_options = pattern_types_for_family(family)
+    st.session_state.setdefault("ps_family", family)
+    st.session_state.setdefault("ps_type", ptype if ptype in type_options else type_options[0])
+    if st.session_state.get("ps_family") not in PATTERN_FAMILIES:
+        st.session_state["ps_family"] = ALL_CHART_PATTERNS_FAMILY
+    type_options = pattern_types_for_family(st.session_state.get("ps_family", ALL_CHART_PATTERNS_FAMILY))
+    if st.session_state.get("ps_type") not in type_options:
+        st.session_state["ps_type"] = type_options[0]
     st.session_state.setdefault("ps_stages", stages or list(DETECTION_STAGES))
     st.session_state.setdefault("ps_timeframe", timeframe if timeframe in TIMEFRAMES else "Daily")
     st.session_state.setdefault("ps_scope", scope if scope in SCOPES else "Current Watchlist")
@@ -91,8 +100,8 @@ def _current_settings() -> dict[str, Any]:
     selected = [label for label in SUGGESTED_FILTERS if st.session_state.get(_filter_key(label))]
     return serialise_settings(
         {
-            "pattern_family": st.session_state.get("ps_family", "Triangle Patterns"),
-            "pattern_type": st.session_state.get("ps_type", "All Triangle Patterns"),
+            "pattern_family": st.session_state.get("ps_family", ALL_CHART_PATTERNS_FAMILY),
+            "pattern_type": st.session_state.get("ps_type", ALL_CHART_PATTERN_TYPES_LABEL),
             "detection_stages": st.session_state.get("ps_stages", list(DETECTION_STAGES)),
             "timeframe": st.session_state.get("ps_timeframe", "Daily"),
             "scope": st.session_state.get("ps_scope", "Current Watchlist"),
@@ -147,7 +156,7 @@ def _render_summary_cards(
         ("Active Timeframe", settings["timeframe"], "Higher timeframe bias", "calendar", "purple"),
         ("Fresh Signals", str(counts["total"]), "Last pattern scan", "activity", "bullish"),
         ("Breakout Candidates", str(counts["breakout"]), "Breakout confirmed", "trend_up", "warning"),
-        ("Near Apex Setups", str(counts["near_apex"]), "Approaching apex", "target", "purple"),
+        ("Near Trigger Setups", str(counts["near_apex"]), "Approaching trigger", "target", "purple"),
     ]
     for col, (label, value, sub, icon, tone) in zip(cols, cards):
         with col:
@@ -160,12 +169,13 @@ def _render_pattern_selection(settings: dict[str, Any]) -> None:
     with top[0]:
         st.selectbox("Pattern Family", PATTERN_FAMILIES, key="ps_family")
     with top[1]:
-        disabled = st.session_state.get("ps_family") != "Triangle Patterns"
+        type_options = pattern_types_for_family(st.session_state.get("ps_family", ALL_CHART_PATTERNS_FAMILY))
+        if st.session_state.get("ps_type") not in type_options:
+            st.session_state["ps_type"] = type_options[0]
         st.selectbox(
             "Pattern Type",
-            TRIANGLE_TYPES,
+            type_options,
             key="ps_type",
-            disabled=disabled,
         )
     with top[2]:
         st.multiselect(
@@ -193,17 +203,16 @@ def _render_pattern_selection(settings: dict[str, Any]) -> None:
         )
     with bottom[1]:
         st.toggle("Require volatility contraction", key="ps_require_volatility")
-        if st.session_state.get("ps_family") != "Triangle Patterns":
-            st.info("Only Triangle Patterns are implemented in this first scanner release.")
 
 
 def _render_logic_preview() -> None:
     section_title("Pattern Logic Preview")
-    cols = st.columns(3)
+    cols = st.columns(4)
     previews = [
         ("Symmetrical Triangle", "Lower highs + higher lows", "sym"),
-        ("Ascending Triangle", "Flat top + rising lows", "asc"),
-        ("Descending Triangle", "Falling highs + flat base", "desc"),
+        ("VCP / Tight Base", "Range and volume contract", "vcp"),
+        ("Rectangle Breakout", "Flat support + resistance", "range"),
+        ("Flag / Double Bottom", "Pause or reversal trigger", "flag"),
     ]
     for col, (title, caption, kind) in zip(cols, previews):
         with col:
@@ -211,7 +220,7 @@ def _render_logic_preview() -> None:
     st.markdown(
         "<div style='border-top:1px solid #EEF0F3;margin-top:10px;padding-top:10px;"
         "text-align:center;font-size:0.82rem;color:#2F5FE0;font-weight:600;'>"
-        "View all triangle patterns logic -></div>",
+        "Core patterns monitor contraction, ranges, continuations, and reversals -></div>",
         unsafe_allow_html=True,
     )
 
@@ -240,12 +249,12 @@ def _render_suggested_filters() -> None:
 def _render_pattern_notes() -> None:
     section_title("Pattern Notes")
     notes = [
-        "Triangles show contraction, not guaranteed direction.",
-        "Symmetrical Triangle = lower highs + higher lows.",
-        "Ascending Triangle = flat top + rising lows.",
-        "Descending Triangle = falling highs + flat base.",
-        "Best used with volume contraction and demand/supply zone context.",
-        "Direction should be confirmed only after breakout or breakdown.",
+        "Patterns flag probability, not certainty.",
+        "VCP/Tight Base = volatility and volume contraction.",
+        "Rectangle = repeated support/resistance with breakout or retest.",
+        "Flag/Pennant = strong impulse followed by a compact pause.",
+        "Double Top/Bottom = failed second test plus neckline trigger.",
+        "Best setups align with volume, zones, and clear invalidation.",
     ]
     for note in notes:
         st.markdown(
@@ -286,7 +295,7 @@ def _render_action_area(universe_label: str, stocks: list[Any]) -> None:
                 "<span style='display:inline-flex;align-items:center;justify-content:center;"
                 "width:46px;height:46px;border-radius:12px;background:#F4F7FE;"
                 "border:1px solid #DCE6FA;color:#2F5FE0;font-weight:800;'>&#10003;</span>"
-                "<span><b style='font-size:1.05rem;color:#16233A;'>Ready to scan for triangle patterns?</b>"
+                "<span><b style='font-size:1.05rem;color:#16233A;'>Ready to scan for chart patterns?</b>"
                 f"<div style='font-size:0.8rem;color:#6B7280;'>"
                 f"{html.escape(universe_label)} &middot; {len(stocks)} symbols &middot; "
                 f"{html.escape(settings['timeframe'])} &middot; last {settings['freshness_window']} candles</div></span>"
@@ -300,7 +309,7 @@ def _render_action_area(universe_label: str, stocks: list[Any]) -> None:
                     st.session_state["pattern_saved_template"] = settings
                     st.success("Template saved for this session.")
             with b2:
-                disabled = settings["pattern_family"] != "Triangle Patterns" or not stocks
+                disabled = not stocks
                 if st.button(
                     "Start Pattern Scan",
                     icon=":material/play_arrow:",
@@ -333,6 +342,36 @@ def _logic_card(title: str, caption: str, kind: str) -> None:
 
 
 def _triangle_svg(kind: str) -> str:
+    if kind == "vcp":
+        return (
+            "<svg width='132' height='92' viewBox='0 0 132 92' fill='none' "
+            "xmlns='http://www.w3.org/2000/svg' style='display:block;margin:0 auto;'>"
+            "<polyline points='18,26 34,78 49,36 64,70 78,46 92,64 106,54 118,58' "
+            "stroke='#5B6472' stroke-width='2' fill='none'/>"
+            "<path d='M18 24 L118 54' stroke='#2F5FE0' stroke-width='2' stroke-dasharray='5 4'/>"
+            "<path d='M18 80 L118 60' stroke='#22A55B' stroke-width='2' stroke-dasharray='5 4'/>"
+            "<path d='M103 54 L121 54' stroke='#EF9F27' stroke-width='2'/>"
+            "</svg>"
+        )
+    if kind == "range":
+        return (
+            "<svg width='132' height='92' viewBox='0 0 132 92' fill='none' "
+            "xmlns='http://www.w3.org/2000/svg' style='display:block;margin:0 auto;'>"
+            "<path d='M18 26 L112 26 M18 74 L112 74' stroke='#2F5FE0' stroke-width='2' stroke-dasharray='5 4'/>"
+            "<polyline points='20,70 34,30 48,72 62,31 78,70 92,29 106,72 118,24' "
+            "stroke='#5B6472' stroke-width='2' fill='none'/>"
+            "<path d='M112 24 L124 18' stroke='#22A55B' stroke-width='2'/>"
+            "</svg>"
+        )
+    if kind == "flag":
+        return (
+            "<svg width='132' height='92' viewBox='0 0 132 92' fill='none' "
+            "xmlns='http://www.w3.org/2000/svg' style='display:block;margin:0 auto;'>"
+            "<path d='M22 76 L52 24' stroke='#22A55B' stroke-width='4'/>"
+            "<path d='M52 24 L112 38 M48 42 L108 56' stroke='#2F5FE0' stroke-width='2' stroke-dasharray='5 4'/>"
+            "<polyline points='54,28 68,42 82,32 96,50 110,40' stroke='#5B6472' stroke-width='2' fill='none'/>"
+            "</svg>"
+        )
     if kind == "asc":
         upper = "M20 24 L112 24"
         lower = "M20 82 L112 36"
