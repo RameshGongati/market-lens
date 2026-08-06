@@ -86,6 +86,16 @@ def render_reports_page() -> None:
 
     _render_header(source_label, symbols)
 
+    # Perform any requested refresh HERE, at page level, so the progress card
+    # gets the full page width. The buttons that ask for it live inside a
+    # three-way split of the header's right-hand column, and a card created
+    # there inherits that width.
+    requested = st.session_state.pop("reports_refresh", None)
+    if requested == "selected":
+        _refresh(symbols, force=False)
+    elif requested == "full":
+        _refresh(sorted(fno_symbols()), force=False)
+
     # Read the disk cache for the CURRENT universe on every render.
     #
     # This used to be memoised in session state and only filled when empty,
@@ -190,10 +200,17 @@ def _render_header(source_label: str, symbols: list[str]) -> None:
         )
     with right:
         c1, c2, c3 = st.columns(3)
+        # These only RECORD the request; render_reports_page performs it.
+        #
+        # Calling _refresh here ran it inside this column, and st.empty()
+        # belongs to whatever container is open when it is created — so the
+        # progress card was laid out in a strip a third of the button row
+        # wide. It is built for min(720px, 100%), and 100% of ~110px wraps
+        # every word to one character per line.
         with c1:
             if st.button("Refresh calendar", icon=":material/refresh:",
                          use_container_width=True, key="rp_refresh"):
-                _refresh(symbols, force=False)
+                st.session_state["reports_refresh"] = "selected"
         with c2:
             with st.popover("Full F&O", icon=":material/download:",
                             use_container_width=True):
@@ -205,7 +222,7 @@ def _render_header(source_label: str, symbols: list[str]) -> None:
                 if st.button("Refresh full F&O calendar",
                              key="rp_refresh_fno",
                              use_container_width=True):
-                    _refresh(sorted(fno_symbols()), force=False)
+                    st.session_state["reports_refresh"] = "full"
         with c3:
             if st.button("Dashboard", icon=":material/arrow_back:",
                          use_container_width=True, key="rp_back"):
