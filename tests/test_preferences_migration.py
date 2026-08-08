@@ -123,7 +123,14 @@ def test_non_dict_json_returns_defaults() -> None:
 def test_no_file_returns_defaults() -> None:
     prefs = load_preferences()
     assert prefs["trading_type"] == "Options Trading"
+    assert prefs["scan_progress_style"] == "speedometer"
     assert "selected_analysis_type" not in prefs
+
+
+def test_scan_progress_style_preference_is_preserved() -> None:
+    _write_prefs({"scan_progress_style": "pulse"})
+    prefs = load_preferences()
+    assert prefs["scan_progress_style"] == "pulse"
 
 
 # ---------------------------------------------------------------------------

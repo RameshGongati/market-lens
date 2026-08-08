@@ -232,14 +232,9 @@ def render_stock_detail(
     # re-analysis at the selected candle interval -- available to every other
     # tab without analysing twice.
     with tabs[0]:
-        chart_col, rail_col = st.columns([3, 1])
-        with chart_col:
-            chart_df, chart_result = _render_chart_panel(
-                symbol, exchange, analysis_type, result
-            )
-        with rail_col:
-            _render_setup_rail(chart_result, chart_df)
-            _render_trade_plan()
+        chart_df, chart_result = _render_chart_panel(
+            symbol, exchange, analysis_type, result
+        )
 
     with tabs[1]:
         _render_overview_tab(symbol, chart_result, chart_df, analysis_type)
@@ -341,12 +336,13 @@ def _render_chart_panel(
     selected_period = "1Y"
     if chart_type != "TradingView":
         _period_options = list(_PERIOD_DAYS.keys())
-        selected_period = st.selectbox(
+        selected_period = st.segmented_control(
             "Period",
             _period_options,
-            index=_period_options.index("1Y"),
-            key="chart_period_select",
-        )
+            default="1Y",
+            key="chart_period_segmented",
+            width="stretch",
+        ) or "1Y"
 
     # -----------------------------------------------------------------------
     # Fetch + re-analyse for the selected interval (with per-stock caching).
@@ -1134,6 +1130,7 @@ _FIB_LINE_STYLES: dict[float, dict[str, Any]] = {
     0.618: {"color": "#D4AF37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
     0.786: {"color": _CHART_PURPLE, "dash": "dash", "width": 1},  # purple dashed
 }
+_ZONE_LABEL_XSHIFT = 18
 
 
 def _fmt_zone_score(score: float) -> str:
@@ -1324,6 +1321,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
             x=x1, y=label_y,
             xref="x", yref="y",
             xanchor="left", yanchor="middle",
+            xshift=_ZONE_LABEL_XSHIFT,
             text=(
                 f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} "
                 f"| {zone['zone_strength']}{flags}"

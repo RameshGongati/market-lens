@@ -25,6 +25,8 @@ from typing import Literal
 
 import streamlit as st
 
+from config.preferences import SCAN_PROGRESS_STYLE_OPTIONS, load_preferences
+
 # Phase labels shown under a pending value. Keyed by the roadmap phase that
 # supplies the data — see docs/requirements.md.
 PENDING_PHASES: dict[str, str] = {
@@ -508,78 +510,342 @@ def kv_row(label: str, value: str = "", pending: str = "", tone: str = "") -> No
     )
 
 
-# Presentation milestones for the scan page.
-#
-# These are NOT backend phases. Every one of them happens inside a single
-# iteration of the scan loop, once per stock — so a checklist that ticked on
-# real phase transitions would reset and re-tick fifty times and read as
-# flicker. The measured quantities are the stock count and the percentage,
-# which is what the headline shows; these rows are paced off that percentage
-# and named to describe the run as a whole rather than to claim a phase
-# boundary was observed.
-_SCAN_MILESTONES: list[tuple[float, str]] = [
-    (0.0, "Preparing market data"),
-    (20.0, "Scanning watchlist"),
-    (45.0, "Applying filters"),
-    (70.0, "Calculating scores"),
-    (90.0, "Building results"),
-]
-
-
-def _milestone_row(label: str, state: str) -> str:
-    """One checklist row: done (tick), active (ring), or pending (hollow)."""
-    if state == "done":
-        mark = (
-            "<span style='display:inline-flex;align-items:center;"
-            "justify-content:center;width:18px;height:18px;border-radius:50%;"
-            "background:#22A55B;flex:0 0 18px;'>"
-            "<svg width='11' height='11' viewBox='0 0 24 24' fill='none' "
-            "stroke='#fff' stroke-width='3.2' stroke-linecap='round' "
-            "stroke-linejoin='round'><polyline points='4.5 12.5 9.5 17.5 "
-            "19.5 6.5'/></svg></span>"
+# Scan progress is determinate: the loop knows the scanned and total stock
+# counts, so the UI shows only that real progress plus the current symbol.
+def _speedometer(pct: float, width: int = 178, height: int = 104) -> str:
+    """Semi-circular scan progress gauge matching the original sample style."""
+    clamped = max(0.0, min(pct, 100.0))
+    visible_start = 90.0
+    filled_stop = visible_start + (clamped / 100.0 * 180.0)
+    green_stop = visible_start + min(clamped / 100.0 * 180.0, 110.0)
+    inner_x = max(12, int(width * 0.124))
+    inner_h = max(42, int(height * 0.596))
+    font_size = max(22, int(width * 0.157))
+    bottom = max(10, int(height * 0.135))
+    if filled_stop <= visible_start:
+        fill = f"#E8EDF5 0deg {visible_start:.1f}deg,#E8EDF5 {visible_start:.1f}deg 360deg"
+    elif filled_stop <= green_stop:
+        fill = (
+            f"#E8EDF5 0deg {visible_start:.1f}deg,"
+            f"#1EA663 {visible_start:.1f}deg {filled_stop:.1f}deg,"
+            f"#E8EDF5 {filled_stop:.1f}deg 360deg"
         )
-        colour, weight = "#26313F", "500"
-    elif state == "active":
-        mark = (
-            "<span style='display:inline-flex;width:18px;height:18px;"
-            "border-radius:50%;border:2.5px solid #2F80ED;flex:0 0 18px;"
-            "box-sizing:border-box;'></span>"
-        )
-        colour, weight = "#1F6FD0", "600"
     else:
-        mark = (
-            "<span style='display:inline-flex;width:18px;height:18px;"
-            "border-radius:50%;border:2px solid #D8DCE2;flex:0 0 18px;"
-            "box-sizing:border-box;'></span>"
+        fill = (
+            f"#E8EDF5 0deg {visible_start:.1f}deg,"
+            f"#1EA663 {visible_start:.1f}deg {green_stop:.1f}deg,"
+            f"#2F80ED {green_stop:.1f}deg {filled_stop:.1f}deg,"
+            f"#E8EDF5 {filled_stop:.1f}deg 360deg"
         )
-        colour, weight = "#9AA0A8", "400"
     return (
-        f"<div style='display:flex;align-items:center;gap:10px;"
-        f"padding:5px 0;'>{mark}"
-        f"<span style='font-size:0.88rem;color:{colour};"
-        f"font-weight:{weight};'>{html.escape(label)}</span></div>"
+        f"<div style='width:{width}px;height:{height}px;border-radius:{width}px "
+        f"{width}px 0 0;background:conic-gradient(from 180deg at 50% 100%,"
+        f"{fill});position:relative;box-shadow:0 20px 36px "
+        f"rgba(47,128,237,0.17),inset 0 5px 8px rgba(255,255,255,0.48);"
+        f"overflow:hidden;'>"
+        f"<div style='position:absolute;left:{inner_x}px;right:{inner_x}px;"
+        f"bottom:0;height:{inner_h}px;border-radius:120px 120px 0 0;"
+        f"background:#FFFFFF;box-shadow:inset 0 6px 16px "
+        f"rgba(16,24,40,0.08);'></div>"
+        f"<strong style='position:absolute;left:0;right:0;bottom:{bottom}px;"
+        f"text-align:center;font-size:{font_size}px;font-weight:950;"
+        f"z-index:1;color:#142033;'>{clamped:.0f}%</strong>"
+        f"</div>"
     )
 
 
-def _donut(pct: float, size: int = 138) -> str:
-    """Circular progress ring with the percentage in the middle."""
-    r = 58.0
-    circ = 2 * 3.14159265 * r
-    filled = circ * max(0.0, min(pct, 100.0)) / 100.0
+def _donut_gauge(pct: float) -> str:
+    clamped = max(0.0, min(pct, 100.0))
+    filled = clamped * 3.6
+    if filled <= 210:
+        fill = (
+            f"#185BDB 0deg {filled:.1f}deg,"
+            f"#E8EDF5 {filled:.1f}deg 360deg"
+        )
+    else:
+        fill = (
+            f"#185BDB 0deg 210deg,"
+            f"#28C7A6 210deg {filled:.1f}deg,"
+            f"#E8EDF5 {filled:.1f}deg 360deg"
+        )
     return (
-        f"<svg width='{size}' height='{size}' viewBox='0 0 140 140' "
-        f"style='display:block;'>"
-        f"<circle cx='70' cy='70' r='{r}' fill='none' stroke='#EAECEF' "
-        f"stroke-width='13'/>"
-        f"<circle cx='70' cy='70' r='{r}' fill='none' stroke='#2F80ED' "
-        f"stroke-width='13' stroke-linecap='round' "
-        f"stroke-dasharray='{filled:.2f} {circ:.2f}' "
-        f"transform='rotate(-90 70 70)'/>"
-        f"<text x='70' y='70' text-anchor='middle' dominant-baseline='central' "
-        f"font-size='27' font-weight='700' fill='#16233A' "
-        f"font-family='ui-sans-serif,system-ui,sans-serif'>{pct:.0f}%</text>"
-        f"</svg>"
+        f"<div style='width:160px;height:160px;border-radius:50%;display:grid;"
+        f"place-items:center;background:conic-gradient(from -90deg,{fill});"
+        f"box-shadow:0 22px 45px rgba(47,128,237,0.22),"
+        f"inset 0 6px 10px rgba(255,255,255,0.62),"
+        f"inset 0 -10px 18px rgba(18,69,157,0.18);'>"
+        f"<div style='width:126px;height:126px;border-radius:50%;display:grid;"
+        f"place-items:center;background:linear-gradient(145deg,#FFFFFF,#EEF5FF);"
+        f"box-shadow:inset 0 7px 18px rgba(16,24,40,0.08),"
+        f"0 1px 0 rgba(255,255,255,0.9);'>"
+        f"<span style='font-size:34px;font-weight:850;color:#16233A;'>{clamped:.0f}%</span>"
+        f"</div></div>"
     )
+
+
+def _scan_fact(value: str, label: str, tone: str = "neutral") -> str:
+    colours = {
+        "blue": ("#1F6FD0", "#F2F7FF", "#D7E6FF"),
+        "green": ("#16794A", "#F1FAF4", "#D6F2E0"),
+        "purple": ("#5A47B8", "#F6F4FD", "#E4DEF8"),
+        "orange": ("#B4791A", "#FFF9EF", "#FBEBC8"),
+        "neutral": ("#26313F", "#FFFFFF", "#E7E9ED"),
+    }
+    accent, fill, border = colours.get(tone, colours["neutral"])
+    return (
+        f"<div style='background:{fill};border:1px solid {border};"
+        f"border-radius:14px;padding:12px 13px;min-height:70px;"
+        f"box-shadow:0 10px 22px rgba(16,24,40,0.05);'>"
+        f"<div style='font-size:1.12rem;line-height:1.1;font-weight:800;"
+        f"color:{accent};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'>"
+        f"{html.escape(value)}</div>"
+        f"<div style='font-size:0.68rem;color:#6B7280;font-weight:700;"
+        f"text-transform:uppercase;letter-spacing:0.35px;margin-top:5px;'>"
+        f"{html.escape(label)}</div></div>"
+    )
+
+
+def _scan_chip(value: str, label: str) -> str:
+    return (
+        f"<span style='display:inline-flex;align-items:center;border-radius:999px;"
+        f"padding:8px 11px;background:#F2F7FF;border:1px solid #D8E6FB;"
+        f"color:#34445D;font-weight:800;font-size:0.76rem;white-space:nowrap;'>"
+        f"{html.escape(label)}: {html.escape(value)}</span>"
+    )
+
+
+def _progress_bar(pct: float, height: int = 34) -> str:
+    progress_width = max(0.0, min(pct, 100.0))
+    return (
+        f"<div style='height:{height}px;border-radius:999px;padding:5px;"
+        f"background:linear-gradient(180deg,#D9E3F1,#F7F9FC);"
+        f"box-shadow:inset 0 7px 11px rgba(31,42,68,0.13),"
+        f"inset 0 -2px 0 rgba(255,255,255,0.86);'>"
+        f"<div style='height:100%;width:{progress_width:.2f}%;border-radius:999px;"
+        f"background:linear-gradient(180deg,rgba(255,255,255,0.62),transparent 48%),"
+        f"linear-gradient(90deg,#185BDB,#2F80ED 45%,#28C7A6);"
+        f"box-shadow:0 15px 30px rgba(47,128,237,0.28),"
+        f"inset 0 2px 0 rgba(255,255,255,0.52),"
+        f"inset 0 -6px 12px rgba(18,69,157,0.19);overflow:hidden;"
+        f"position:relative;'>"
+        f"<span style='position:absolute;inset:0;background:repeating-linear-gradient("
+        f"115deg,rgba(255,255,255,0.26) 0 9px,transparent 9px 21px);'></span>"
+        f"</div></div>"
+    )
+
+
+def _progress_data(
+    watchlist: str,
+    symbol: str,
+    done: int,
+    total: int,
+) -> dict[str, str | float | int]:
+    safe_total = max(int(total or 0), 0)
+    safe_done = min(max(int(done or 0), 0), safe_total) if safe_total else 0
+    remaining = max(safe_total - safe_done, 0)
+    pct = (safe_done / safe_total * 100) if safe_total else 0.0
+    return {
+        "watchlist": watchlist,
+        "symbol": symbol,
+        "done": safe_done,
+        "total": safe_total,
+        "remaining": remaining,
+        "pct": pct,
+    }
+
+
+def _progress_shell(body: str, width: int = 780) -> str:
+    return (
+        f"<div style='display:flex;justify-content:center;padding:34px 16px;'>"
+        f"<div style='width:min({width}px,100%);background:linear-gradient(145deg,#FFFFFF,#F5F9FF);"
+        f"border:1px solid #DDE6F3;border-radius:22px;padding:32px 36px;"
+        f"box-shadow:0 24px 70px rgba(16,24,40,0.10),"
+        f"inset 0 1px 0 rgba(255,255,255,0.94);'>{body}</div></div>"
+    )
+
+
+def _progress_footer() -> str:
+    return (
+        f"<div style='margin-top:20px;background:#F4F8FF;border:1px solid #D8E6FB;"
+        f"border-radius:14px;padding:13px 16px;font-size:0.84rem;color:#35445D;"
+        f"line-height:1.5;box-shadow:inset 0 1px 0 rgba(255,255,255,0.86);'>"
+        f"Results will open automatically when this scan finishes."
+        f"</div>"
+    )
+
+
+def _progress_capsule(data: dict[str, str | float | int]) -> str:
+    pct = float(data["pct"])
+    return _progress_shell(
+        f"<div style='display:flex;justify-content:space-between;align-items:flex-start;"
+        f"gap:14px;margin-bottom:16px;'>"
+        f"<div><div style='font-size:1.5rem;line-height:1.12;font-weight:850;color:#16233A;'>"
+        f"Scanning {html.escape(str(data['watchlist']))}</div>"
+        f"<div style='color:#6B7280;font-size:0.9rem;margin-top:5px;line-height:1.45;'>"
+        f"Currently checking <b>{html.escape(str(data['symbol']))}</b>. "
+        f"Results open when the scan finishes.</div></div>"
+        f"<div style='font-size:2rem;font-weight:850;color:#1758D6;'>{pct:.0f}%</div>"
+        f"</div>{_progress_bar(pct)}"
+        f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));"
+        f"gap:10px;margin-top:18px;'>"
+        f"{_scan_fact(str(data['done']), 'Scanned', 'blue')}"
+        f"{_scan_fact(str(data['total']), 'Total', 'purple')}"
+        f"{_scan_fact(str(data['remaining']), 'Remaining', 'orange')}"
+        f"{_scan_fact(str(data['symbol']), 'Current stock', 'green')}"
+        f"</div>",
+        width=780,
+    )
+
+
+def _progress_donut(data: dict[str, str | float | int]) -> str:
+    pct = float(data["pct"])
+    return _progress_shell(
+        f"<div style='display:grid;grid-template-columns:170px 1fr;gap:24px;"
+        f"align-items:center;'>"
+        f"<div>{_donut_gauge(pct)}</div>"
+        f"<div><div style='font-size:1.5rem;line-height:1.12;font-weight:850;color:#16233A;'>"
+        f"Running Scan</div>"
+        f"<div style='color:#6B7280;font-size:0.92rem;margin-top:6px;line-height:1.5;'>"
+        f"<b>{data['done']}</b> of <b>{data['total']}</b> stocks scanned in "
+        f"<b>{html.escape(str(data['watchlist']))}</b>.</div>"
+        f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;'>"
+        f"{_scan_chip(str(data['symbol']), 'Current')}"
+        f"{_scan_chip(str(data['remaining']), 'Remaining')}"
+        f"{_scan_chip('Auto-open results', 'Next')}"
+        f"</div></div></div>{_progress_footer()}",
+        width=760,
+    )
+
+
+def _progress_speedometer(data: dict[str, str | float | int]) -> str:
+    return _progress_shell(
+        f"<div style='display:grid;grid-template-columns:180px 1fr;gap:20px;"
+        f"align-items:center;'>"
+        f"<div>{_speedometer(float(data['pct']), width=178, height=104)}</div>"
+        f"<div><div style='font-size:1.5rem;line-height:1.12;font-weight:850;color:#16233A;'>"
+        f"Scan Completion</div>"
+        f"<div style='color:#6B7280;font-size:0.92rem;margin-top:6px;line-height:1.5;'>"
+        f"<b>{html.escape(str(data['symbol']))}</b> is the current stock. "
+        f"<b>{data['remaining']}</b> stocks remain in this watchlist.</div>"
+        f"<div style='display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;'>"
+        f"{_scan_chip(str(data['done']), 'Scanned')}"
+        f"{_scan_chip(str(data['total']), 'Total')}"
+        f"{_scan_chip(str(data['watchlist']), 'Watchlist')}"
+        f"</div></div></div>",
+        width=720,
+    )
+
+
+def _pulse_bars(pct: float) -> str:
+    clamped = max(0.0, min(pct, 100.0))
+    heights = [22, 38, 51, 64, 74, 85, 78, 91]
+    progress_units = clamped / 100.0 * len(heights)
+    bars = ""
+    for index, height in enumerate(heights):
+        fill_ratio = max(0.0, min(progress_units - index, 1.0))
+        fill_height = fill_ratio * 100.0
+        is_current = 0.0 < fill_ratio < 1.0
+        fill = ""
+        if fill_ratio > 0.0:
+            colour = (
+                "linear-gradient(180deg,#7B61E3,#2F80ED)"
+                if fill_ratio < 1.0 or index == len(heights) - 1
+                else "linear-gradient(180deg,#2F80ED,#28C7A6)"
+            )
+            fill = (
+                f"<span style='position:absolute;left:0;right:0;bottom:0;"
+                f"height:{fill_height:.1f}%;background:{colour};"
+                f"box-shadow:0 8px 16px rgba(47,128,237,0.14);'></span>"
+            )
+        border = "2px solid #2F80ED" if is_current else "1px solid #D8E6FB"
+        shadow = (
+            "0 10px 22px rgba(47,128,237,0.15)"
+            if fill_ratio > 0.0 else "inset 0 1px 0 rgba(255,255,255,0.9)"
+        )
+        bars += (
+            f"<span style='flex:1;height:{height}%;border-radius:999px 999px 6px 6px;"
+            f"background:linear-gradient(180deg,#F5F8FC,#E8EDF5);"
+            f"border:{border};min-height:18px;box-shadow:{shadow};"
+            f"overflow:hidden;position:relative;box-sizing:border-box;'>{fill}</span>"
+        )
+    return (
+        f"<div style='height:116px;display:flex;align-items:flex-end;gap:6px;"
+        f"padding:14px;border-radius:16px;background:linear-gradient(180deg,#F8FBFF,#EEF6FF);"
+        f"border:1px solid #D8E6FB;margin-top:18px;'>{bars}</div>"
+    )
+
+
+def _progress_pulse(data: dict[str, str | float | int]) -> str:
+    pct = float(data["pct"])
+    return _progress_shell(
+        f"<div style='display:flex;justify-content:space-between;align-items:flex-start;gap:14px;'>"
+        f"<div><div style='font-size:1.5rem;line-height:1.12;font-weight:850;color:#16233A;'>"
+        f"Scan Pulse</div>"
+        f"<div style='color:#6B7280;font-size:0.92rem;margin-top:6px;line-height:1.5;'>"
+        f"Currently checking <b>{html.escape(str(data['symbol']))}</b> in "
+        f"<b>{html.escape(str(data['watchlist']))}</b>.</div></div>"
+        f"<div style='font-size:2rem;font-weight:850;color:#1758D6;'>{pct:.0f}%</div>"
+        f"</div>{_pulse_bars(pct)}"
+        f"<div style='margin-top:18px;background:#F4F8FF;border:1px solid #D8E6FB;"
+        f"border-radius:14px;padding:13px 16px;font-size:0.84rem;color:#35445D;'>"
+        f"<b>{data['done']}</b> scanned, <b>{data['remaining']}</b> remaining. "
+        f"Current stock: <b>{html.escape(str(data['symbol']))}</b>.</div>",
+        width=760,
+    )
+
+
+def _progress_ribbon(data: dict[str, str | float | int]) -> str:
+    pct = max(0.0, min(float(data["pct"]), 100.0))
+    pointer = max(2.5, min(pct, 96.0))
+    fill_bg = (
+        "#1EA663"
+        if pct <= 35.0
+        else "linear-gradient(90deg,#1EA663 0 35%,#2F80ED 100%)"
+    )
+    return _progress_shell(
+        f"<div style='font-size:1.5rem;line-height:1.12;font-weight:850;color:#16233A;'>"
+        f"Scanning {html.escape(str(data['watchlist']))}</div>"
+        f"<div style='color:#6B7280;font-size:0.92rem;margin-top:6px;line-height:1.5;'>"
+        f"Currently checking <b>{html.escape(str(data['symbol']))}</b>. "
+        f"<b>{data['done']}</b> of <b>{data['total']}</b> stocks scanned.</div>"
+        f"<div style='position:relative;margin:43px 0 22px;'>"
+        f"<span style='position:absolute;left:calc({pointer:.2f}% - 22px);top:-36px;"
+        f"padding:6px 10px;border-radius:10px;color:#FFFFFF;background:#1758D6;"
+        f"font-weight:850;box-shadow:0 10px 22px rgba(23,88,214,0.25);'>{pct:.0f}%</span>"
+        f"<div style='height:18px;border-radius:999px;background:#E8EDF5;"
+        f"box-shadow:0 15px 28px rgba(47,128,237,0.18),"
+        f"inset 0 1px 0 rgba(255,255,255,0.5);overflow:hidden;'>"
+        f"<div style='height:100%;width:{pct:.2f}%;border-radius:999px;"
+        f"background:{fill_bg};box-shadow:0 15px 28px rgba(47,128,237,0.18),"
+        f"inset 0 1px 0 rgba(255,255,255,0.5);'></div>"
+        f"</div>"
+        f"</div>"
+        f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));"
+        f"gap:10px;margin-top:18px;'>"
+        f"{_scan_fact(str(data['done']), 'Scanned', 'blue')}"
+        f"{_scan_fact(str(data['total']), 'Total', 'purple')}"
+        f"{_scan_fact(str(data['remaining']), 'Remaining', 'orange')}"
+        f"{_scan_fact(str(data['symbol']), 'Current stock', 'green')}"
+        f"</div>",
+        width=760,
+    )
+
+
+_PROGRESS_RENDERERS = {
+    "capsule": _progress_capsule,
+    "donut": _progress_donut,
+    "speedometer": _progress_speedometer,
+    "pulse": _progress_pulse,
+    "ribbon": _progress_ribbon,
+}
+
+
+def _progress_style() -> str:
+    try:
+        style = str(load_preferences().get("scan_progress_style", "speedometer"))
+    except Exception:
+        style = "speedometer"
+    return style if style in SCAN_PROGRESS_STYLE_OPTIONS else "speedometer"
 
 
 def scan_progress(
@@ -592,40 +858,9 @@ def scan_progress(
     thin bar wedged into whatever page is already on screen, which reads as
     the scan belonging to that page. This replaces the page content instead.
     """
-    pct = (done / total * 100) if total else 0.0
-
-    rows = ""
-    for i, (threshold, label) in enumerate(_SCAN_MILESTONES):
-        nxt = (
-            _SCAN_MILESTONES[i + 1][0]
-            if i + 1 < len(_SCAN_MILESTONES) else 101.0
-        )
-        state = "done" if pct >= nxt else "active" if pct >= threshold else "todo"
-        rows += _milestone_row(label, state)
-
-    return (
-        f"<div style='display:flex;justify-content:center;padding:34px 16px;'>"
-        f"<div style='width:min(720px,100%);background:#FFFFFF;"
-        f"border:1px solid {_BORDER};border-radius:18px;padding:34px 38px;"
-        f"box-shadow:0 1px 3px rgba(16,24,40,0.05);'>"
-        f"<div style='display:flex;align-items:center;gap:34px;"
-        f"flex-wrap:wrap;'>"
-        f"<div style='flex:0 0 auto;'>{_donut(pct)}</div>"
-        f"<div style='flex:1 1 260px;min-width:240px;'>"
-        f"<div style='font-size:1.3rem;font-weight:700;color:#16233A;'>"
-        f"Running Analysis&hellip;</div>"
-        f"<div style='font-size:0.9rem;color:#6B7280;margin:2px 0 12px 0;'>"
-        f"Analysing <b>{done}</b> of <b>{total}</b> stocks "
-        f"&mdash; {pct:.0f}% complete</div>"
-        f"{rows}</div></div>"
-        f"<div style='margin-top:22px;background:#F4F7FE;"
-        f"border:1px solid #DCE6FA;border-radius:11px;padding:13px 16px;"
-        f"font-size:0.84rem;color:#3A4A63;'>"
-        f"Currently scanning <b>{html.escape(symbol)}</b> from "
-        f"<b>{html.escape(watchlist)}</b>. You will be taken to the results "
-        f"automatically when the scan finishes."
-        f"</div></div></div>"
-    )
+    data = _progress_data(watchlist, symbol, done, total)
+    renderer = _PROGRESS_RENDERERS.get(_progress_style(), _progress_speedometer)
+    return renderer(data)
 
 
 def pending_panel(title: str, phase: str, note: str = "") -> None:

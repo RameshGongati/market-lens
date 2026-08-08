@@ -25,7 +25,12 @@ from alerts.monitor_control import is_running, monitor_pid, start_monitor, stop_
 from alerts.telegram import format_test_message, send_to_all_recipients
 from config.alert_settings import load_alert_config, save_alert_config
 from config.credentials import clear_credentials
-from config.preferences import load_preferences, reset_preferences, save_preferences
+from config.preferences import (
+    SCAN_PROGRESS_STYLE_OPTIONS,
+    load_preferences,
+    reset_preferences,
+    save_preferences,
+)
 from config.settings import APP_VERSION, SUPPORTED_DATA_SOURCES
 from config.trading_config import get_timeframe
 from storage.database import (
@@ -73,7 +78,7 @@ def render_settings() -> None:
     with col_alerts:
         _render_alert_channels(cfg)
     with col_look:
-        _render_appearance()
+        _render_appearance(prefs)
 
     spacer(14)
     col_tg, col_cond = st.columns([3, 2])
@@ -404,12 +409,33 @@ def _render_alert_channels(cfg: dict) -> None:
         )
 
 
-def _render_appearance() -> None:
+def _render_appearance(prefs: dict) -> None:
     with st.container(border=True):
         panel_head("Appearance & Experience", "Look and feel",
                    icon="palette", tone="purple")
-        # The whole panel is pending: theming is fixed in
-        # .streamlit/config.toml and there is no accent/density system.
+        style_keys = list(SCAN_PROGRESS_STYLE_OPTIONS)
+        current_style = str(prefs.get("scan_progress_style", "speedometer"))
+        current_index = (
+            style_keys.index(current_style)
+            if current_style in style_keys else 0
+        )
+        selected_label = st.selectbox(
+            "Scan progress style",
+            [SCAN_PROGRESS_STYLE_OPTIONS[key] for key in style_keys],
+            index=current_index,
+            key="set_scan_progress_style",
+            help="Controls the progress card shown while scans are running.",
+        )
+        selected_style = next(
+            key for key, label in SCAN_PROGRESS_STYLE_OPTIONS.items()
+            if label == selected_label
+        )
+        if selected_style != current_style:
+            save_preferences({"scan_progress_style": selected_style})
+            st.rerun()
+
+        # These controls are pending: theming is fixed in .streamlit/config.toml
+        # and there is no accent/density system yet.
         st.radio("Theme", ["Light", "Dark", "System"], index=0, horizontal=True,
                  disabled=True, key="set_theme",
                  help="Theme is fixed in .streamlit/config.toml for now.")
@@ -424,8 +450,7 @@ def _render_appearance() -> None:
         st.toggle("Blinking indicators for active alerts", value=False,
                   disabled=True, key="set_blink",
                   help="Not yet configurable.")
-        st.caption("This panel is laid out for a theming system that is not "
-                   "built yet — every control here is inactive.")
+        st.caption("Theme, density and animation controls are not built yet.")
 
 
 # ---------------------------------------------------------------------------

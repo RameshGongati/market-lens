@@ -20,6 +20,14 @@ _NEW_SCHEMA_KEYS: tuple[str, ...] = ("trading_type", "primary_strategy", "enhanc
 # accepted in case an even older file used the bare name.
 _LEGACY_KEYS: tuple[str, ...] = ("selected_analysis_type", "analysis_type")
 
+SCAN_PROGRESS_STYLE_OPTIONS: dict[str, str] = {
+    "capsule": "3D Capsule Scanner",
+    "donut": "3D Donut + Facts",
+    "speedometer": "Market Speedometer",
+    "pulse": "Market Pulse Bar",
+    "ribbon": "Minimal Ribbon",
+}
+
 # Map each old "analysis type" value to its (trading_type, primary_strategy)
 # in the two-axis model.  Enhancers are derived from the trading type via
 # ``config.trading_config.get_defaults`` so they stay consistent with the
@@ -45,6 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
     # Chart display preferences.
     "show_candle_tooltip": True,
+    "scan_progress_style": "speedometer",
 }
 
 
