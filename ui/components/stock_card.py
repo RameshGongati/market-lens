@@ -26,6 +26,36 @@ _TF_SIGNAL_COLORS = {
 }
 
 
+def build_detail_url(symbol: str, exchange: str) -> str:
+    """Query-param deep link that opens a stock's chart in a NEW browser tab.
+
+    A new tab is a SEPARATE Streamlit session with empty state — it cannot see
+    what this session's sidebar has selected. The analysis context therefore
+    rides on the URL, or the new tab silently falls back to app defaults and
+    draws the chart from a different data source, timeframe or zone set than
+    the analysis the user just ran. See Gotcha 13 in CLAUDE.md; anything that
+    changes what the chart draws belongs in here.
+
+    URL-encoded so symbols containing special characters (M&M) survive.
+
+    Shared by the dashboard cards and the results table's "View" link so the
+    two can never drift apart on which context they carry.
+    """
+    return "?" + urlencode({
+        "stock": symbol,
+        "exchange": exchange,
+        "src": st.session_state.get("selected_data_source", "Yahoo Finance"),
+        "tt": st.session_state.get("trading_type", "Options Trading"),
+        "ps": st.session_state.get("primary_strategy", "Demand/Supply Zones"),
+        # Comma-joined; use_fibonacci is derived from this on the far side.
+        "enh": ",".join(st.session_state.get("enhancers", [])),
+        # Decides whether sub-5.0 confirmed zones are drawn. Without it the new
+        # tab opens with the checkbox off, so a stock the screener matched ON a
+        # confirmed zone shows a chart where that zone is absent.
+        "cf": "1" if st.session_state.get("screener_confirmation", False) else "0",
+    })
+
+
 def render_stock_card(
     symbol: str,
     exchange: str,
@@ -193,30 +223,7 @@ def render_stock_card(
     )
     st.markdown(card_html, unsafe_allow_html=True)
 
-    # Open stock detail in a new browser tab via query-param deep link.
-    # URL-encode params so symbols with special chars (e.g. M&M) work correctly.
-    #
-    # The analysis context rides along on the URL because a new browser tab is
-    # a SEPARATE Streamlit session with empty state — it cannot see what this
-    # sidebar has selected. Without these the new tab silently fell back to the
-    # app defaults (Yahoo Finance, Fibonacci on), so the chart could be drawn
-    # from a different data source than the analysis the user just ran.
-    # App-launch defaults are deliberately left untouched; only this link
-    # carries the selections forward.
-    _detail_url = "?" + urlencode({
-        "stock": symbol,
-        "exchange": exchange,
-        "src": st.session_state.get("selected_data_source", "Yahoo Finance"),
-        "tt": st.session_state.get("trading_type", "Options Trading"),
-        "ps": st.session_state.get("primary_strategy", "Demand/Supply Zones"),
-        # Comma-joined; use_fibonacci is derived from this on the far side.
-        "enh": ",".join(st.session_state.get("enhancers", [])),
-        # The confirmation mode decides whether the sub-5.0 confirmed zones are
-        # drawn. Without it the new tab starts with the checkbox off and shows
-        # only the ordinary 5.0+ zones — so a stock the screener matched ON a
-        # confirmed zone opens a chart where that zone is absent.
-        "cf": "1" if st.session_state.get("screener_confirmation", False) else "0",
-    })
+    _detail_url = build_detail_url(symbol, exchange)
     st.markdown(
         f"""
         <a href="{_detail_url}" target="_blank" style="

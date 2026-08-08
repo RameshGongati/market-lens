@@ -1,4 +1,12 @@
-"""Main dashboard page — watchlist analysis grid."""
+"""Scan engine and shared helpers for the analysis pages.
+
+The watchlist scan used to live inside ``render_dashboard`` alongside the
+results grid. The grid moved to ``ui/pages/analysis_results.py`` and the
+dashboard became a market overview (``ui/pages/market_overview.py``), so what
+remains here is the scan itself plus the helpers both pages share: the
+screener predicate, the exports, the per-stock detail view, and the
+single-stock analysis used by "View" deep links.
+"""
 
 import math
 
@@ -20,6 +28,7 @@ from data.manager import (
     interval_display_label,
 )
 from storage.database import get_all_alerts, save_analysis_result
+from ui.components.panels import scan_progress
 from ui.components.stock_card import render_stock_card
 from ui.components.stock_detail import render_stock_detail
 from utils.export import export_to_excel, export_to_pdf
@@ -160,12 +169,15 @@ def _valid_price(raw: object) -> float | None:
         return None
 
 
-def render_dashboard() -> None:
-    """Render the main dashboard page."""
-    if st.session_state.get("active_page") == "stock_detail":
-        _render_detail_view()
-        return
+def scan_context() -> dict | None:
+    """Resolve everything a scan needs from session state.
 
+    Split out of the old ``render_dashboard`` so the dashboard and the
+    analysis-results page can both reason about the selected watchlist
+    without duplicating the three-way source resolution. Returns ``None``
+    and writes an ``st.info``/``st.warning`` when the selection is
+    incomplete, which is the caller's cue to stop rendering.
+    """
     wl_source = st.session_state.get("watchlist_source", "My Watchlists")
     watchlist_id = st.session_state.get("selected_watchlist_id")
     source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
@@ -182,8 +194,6 @@ def render_dashboard() -> None:
     _tf = get_timeframe(trading_type)
     _tf_label = interval_display_label(_tf["interval"])
 
-    st.title("📈 Market Lens — Dashboard")
-
     _is_predefined = wl_source == "Index Watchlists"
     _is_all_nse = wl_source == "All NSE Stocks"
 
@@ -191,18 +201,18 @@ def render_dashboard() -> None:
         _nse_batch = st.session_state.get("selected_nse_batch")
         if not _nse_batch:
             st.info("Select a stock range from the sidebar, then click **Run Analysis**.")
-            return
+            return None
         wl_name = f"All NSE Stocks ({_nse_batch})"
     elif _is_predefined:
         _pd_name = st.session_state.get("selected_predefined_watchlist")
         if not _pd_name:
             st.info("Select an index watchlist from the sidebar, then click **Run Analysis**.")
-            return
+            return None
         wl_name = _pd_name
     else:
         if watchlist_id is None:
             st.info("Select a watchlist from the sidebar, then click **Run Analysis**.")
-            return
+            return None
         try:
             watchlists = get_all_watchlists()
             wl = next((w for w in watchlists if w.id == watchlist_id), None)
@@ -210,23 +220,39 @@ def render_dashboard() -> None:
         except Exception:
             wl_name = "Unknown"
 
-    # Show the two-axis selection and effective timeframe in the header.
-    _enhancer_label = ", ".join(enhancers) if enhancers else "None"
-    st.subheader(f"{wl_name} | {trading_type} | {primary_strategy} | Enhancers: {_enhancer_label}")
-    # Timeframe caption — read from session state so it persists across reruns
-    # (e.g. the user filters/sorts without re-running analysis).
-    _used_tf_label = st.session_state.get("_used_tf_label", _tf_label)
-    st.caption(f"Timeframe: {_used_tf_label}")
+    return {
+        "wl_name": wl_name,
+        "wl_source": wl_source,
+        "watchlist_id": watchlist_id,
+        "source_name": source_name,
+        "trading_type": trading_type,
+        "primary_strategy": primary_strategy,
+        "analysis_type": analysis_type,
+        "enhancers": enhancers,
+        "tf": _tf,
+        "tf_label": _tf_label,
+        "is_all_nse": _is_all_nse,
+        "is_predefined": _is_predefined,
+    }
 
-    if not st.session_state.get("analysing"):
-        cached = st.session_state.get("analysis_results", {})
-        if cached:
-            _render_filter_sort_bar(cached, analysis_type, wl_name)
-        else:
-            st.info("Click **▶ Run Analysis** in the sidebar to start.")
-        return
 
-    # Run analysis
+def run_scan(ctx: dict) -> dict[str, dict] | None:
+    """Execute the watchlist scan and store the results in session state.
+
+    Lifted verbatim out of ``render_dashboard`` when the results moved to
+    their own page — the scan is now triggered from there, not from the
+    dashboard, but nothing about how it scans has changed.
+    """
+    wl_name = ctx["wl_name"]
+    watchlist_id = ctx["watchlist_id"]
+    source_name = ctx["source_name"]
+    trading_type = ctx["trading_type"]
+    primary_strategy = ctx["primary_strategy"]
+    analysis_type = ctx["analysis_type"]
+    _tf = ctx["tf"]
+    _is_all_nse = ctx["is_all_nse"]
+    _is_predefined = ctx["is_predefined"]
+
     st.session_state.analysing = False
 
     if _is_all_nse:
@@ -243,7 +269,7 @@ def render_dashboard() -> None:
         )
         if not _pd_wl or not _pd_wl["symbols"]:
             st.warning("This index watchlist has no stocks.")
-            return
+            return None
         stocks = [
             SimpleNamespace(symbol=sym, exchange="NSE", id=0)
             for sym in _pd_wl["symbols"]
@@ -253,7 +279,7 @@ def render_dashboard() -> None:
 
     if not stocks:
         st.warning("This watchlist has no stocks. Add some in Watchlists.")
-        return
+        return None
 
     ds_manager = DataSourceManager()
     creds = st.session_state.get("credentials", {}).get(source_name, {})
@@ -264,17 +290,24 @@ def render_dashboard() -> None:
             ds_manager.switch_source(source_name)
     except Exception as exc:
         st.error(f"Could not connect to {source_name}: {exc}")
-        return
+        return None
 
     # Fetch timeframe is driven entirely by the trading type via
     # get_timeframe(trading_type) / fetch_for_trading_type (see the loop below).
     results: dict[str, dict] = {}
     fallback_symbols: list[str] = []   # tracks stocks where intraday fell back
-    progress = st.progress(0, text="Analysing stocks…")
+    # A standalone progress card rather than st.progress: the built-in bar is
+    # a thin strip inserted into whatever page is on screen, which made the
+    # scan look like it was running on the page the user just left. This
+    # placeholder owns the viewport until the scan finishes.
+    progress = st.empty()
     alerts_on = st.session_state.get("alerts_on", False)
 
     for i, stock in enumerate(stocks):
-        progress.progress((i + 1) / len(stocks), text=f"Analysing {stock.symbol}…")
+        progress.markdown(
+            scan_progress(wl_name, stock.symbol, i + 1, len(stocks)),
+            unsafe_allow_html=True,
+        )
         symbol = _make_symbol(stock.symbol, stock.exchange, source_name)
         try:
             quote = ds_manager.get_quote(symbol)
@@ -344,8 +377,7 @@ def render_dashboard() -> None:
     st.session_state["_used_tf_label"] = interval_display_label(
         _tf["interval"], fell_back=any_fallback
     )
-
-    _render_filter_sort_bar(results, analysis_type, wl_name)
+    return results
 
 
 def _render_filter_sort_bar(
@@ -653,7 +685,7 @@ def _run_single_stock_analysis(symbol: str) -> dict:
         }
 
 
-def _render_detail_view() -> None:
+def render_detail_view() -> None:
     """Render the detail view for the selected stock."""
     symbol = st.session_state.get("selected_stock_symbol")
     if not symbol:

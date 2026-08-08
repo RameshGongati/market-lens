@@ -1,6 +1,6 @@
 """Market hours utilities for NSE/BSE Indian equity markets."""
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pytz
 
@@ -42,6 +42,61 @@ def is_trading_day(dt: datetime | None = None) -> bool:
         return False
     date_str = dt.strftime("%Y-%m-%d")
     return date_str not in _NSE_HOLIDAYS
+
+
+def last_completed_session(dt: datetime | None = None) -> date:
+    """The most recent trading day whose close has already passed.
+
+    Used to tell whether a fetched frame is missing its newest bar. Today
+    only counts once the market has closed — during the session the day's
+    candle is still forming, so a frame that ends yesterday is correct, not
+    stale, and must not trigger a backfill.
+
+    Walks back over weekends and NSE holidays. Bounded at 10 days so a gap in
+    the holiday table can never spin.
+    """
+    if dt is None:
+        dt = get_current_ist_time()
+
+    cursor = dt
+    if not (is_trading_day(cursor)
+            and cursor.time().replace(tzinfo=None) > _MARKET_CLOSE):
+        cursor = cursor - timedelta(days=1)
+
+    for _ in range(10):
+        if is_trading_day(cursor):
+            return cursor.date()
+        cursor = cursor - timedelta(days=1)
+    return cursor.date()
+
+
+def recent_trading_sessions(count: int, end: date | None = None) -> list[date]:
+    """The last *count* trading days up to and including *end*.
+
+    Gives the set of sessions a daily frame is expected to contain, so a
+    missing one can be identified by date rather than inferred from the
+    length of the frame.
+
+    Args:
+        count: How many sessions to return.
+        end: Last session to include; defaults to
+            :func:`last_completed_session`.
+
+    Returns:
+        Dates in ascending order.
+    """
+    if end is None:
+        end = last_completed_session()
+    out: list[date] = []
+    cursor = datetime.combine(end, time(12, 0))
+    # Bounded well above `count` so a run of holidays cannot exhaust it.
+    for _ in range(count * 4 + 20):
+        if len(out) >= count:
+            break
+        if is_trading_day(cursor):
+            out.append(cursor.date())
+        cursor -= timedelta(days=1)
+    return sorted(out)
 
 
 def is_market_open(dt: datetime | None = None) -> bool:

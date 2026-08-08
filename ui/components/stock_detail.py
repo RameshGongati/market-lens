@@ -1,5 +1,6 @@
 """Full detailed stock analysis view with chart toggle, history, and notes."""
 
+import html
 import math
 from datetime import datetime
 from typing import Any
@@ -10,33 +11,47 @@ from plotly.subplots import make_subplots
 import streamlit as st
 import streamlit.components.v1 as st_components
 
-from analysis.base import STRENGTH_BG, STRENGTH_COLORS
 from analysis.demand_supply import DemandSupplyAnalysis
 from analysis.trend_following import TrendFollowingAnalysis
 from analysis.zone_engine.patterns import WIDE_BASE_THRESHOLD_PCT
 from config.preferences import load_preferences
-from config.trading_config import get_timeframe
 from data.manager import (
     INTERVAL_OPTIONS,
     build_source_manager,
     default_interval_label,
     fetch_by_interval,
-    fetch_for_trading_type,
-    interval_display_label,
 )
+from data.market_indices import market_bias
 from storage.database import (
     compare_analysis_results,
     delete_note,
     get_notes,
     save_note,
 )
+from ui.components.panels import bias_pill, kv_row, section_title
 from ui.components.tradingview_chart import get_tradingview_url, render_tradingview_chart
+from ui.pages.market_overview import indices_cached
 from utils.helpers import format_timestamp, get_company_name
 from utils.logger import get_logger
+from utils.market_hours import get_current_ist_time, is_market_open
 
 logger = get_logger(__name__)
 
-_STATUS_COLOR = {"bullish": "#28a745", "bearish": "#dc3545", "neutral": "#ffc107"}
+_CHART_UP_COLOR = "#16794A"
+_CHART_DOWN_COLOR = "#C23B33"
+_CHART_BLUE = "#2F80ED"
+_CHART_ORANGE = "#EF9F27"
+_CHART_PURPLE = "#7B61E3"
+_CHART_NEUTRAL = "#6B7280"
+_CHART_GRID = "#E8EDF4"
+_CHART_AXIS = "#4A5361"
+_CHART_SPIKE = "#8A8F98"
+
+_STATUS_COLOR = {
+    "bullish": _CHART_UP_COLOR,
+    "bearish": _CHART_DOWN_COLOR,
+    "neutral": _CHART_ORANGE,
+}
 
 def _crosshair_js(show_date: bool) -> str:
     """Build JS for crosshair labels: price on y-axis always, date at top when tooltip is off.
@@ -147,6 +162,16 @@ _PERIOD_DAYS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365, "2Y": 730, "3
 _INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
 
 
+def _source_symbol(symbol: str, exchange: str, source_name: str) -> str:
+    """Format a chart fetch symbol for the selected data source."""
+    if source_name == "Yahoo Finance":
+        suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
+        return f"{symbol}{suffix}"
+    if source_name == "TradingView":
+        return f"{exchange.upper()}:{symbol}"
+    return symbol
+
+
 def _make_analyser_for_chart(primary_strategy: str):
     """Instantiate the correct analyser for a chart re-analysis.
 
@@ -187,70 +212,81 @@ def render_stock_detail(
         result: Analysis result dict from the analysis module.
         stock_id: Database stock id for history/notes lookup.
     """
-    if st.button("← Back to Dashboard", key="back_btn"):
-        st.session_state.active_page = "dashboard"
-        st.session_state.selected_stock_symbol = None
-        # Clear query params so the URL doesn't re-trigger stock detail on rerun.
-        st.query_params.clear()
-        st.rerun()
-
-    status = result.get("status", "neutral")
-    strength = result.get("strength", "—")
-    color = _STATUS_COLOR.get(status, "#ffc107")
-    s_color = STRENGTH_COLORS.get(strength, "#856404")
-    s_bg = STRENGTH_BG.get(strength, "#fff3cd")
-    current_price = result.get("current_price", 0.0)
-    company_name = get_company_name(symbol)
-
-    st.markdown(
-        f"## {symbol} "
-        f"<span style='color:{color};font-size:0.75em;background:{color}22;"
-        f"padding:2px 8px;border-radius:8px;'>"
-        f"{'▲' if status=='bullish' else '▼' if status=='bearish' else '●'} {status.upper()}"
-        f"</span>"
-        f"&nbsp;<span style='font-size:0.7em;color:{s_color};background:{s_bg};"
-        f"padding:2px 8px;border-radius:8px;border:1px solid {s_color};'>{strength}</span>",
-        unsafe_allow_html=True,
-    )
-    # Stage C: show the effective timeframe alongside analysis type.
-    # Prefer the session-state label (which reflects any intraday fallback)
-    # over the configured label from get_timeframe().
-    _trading_type = st.session_state.get("trading_type", "Options Trading")
-    _tf_label = st.session_state.get("_used_tf_label") or interval_display_label(
-        get_timeframe(_trading_type)["interval"]
-    )
-    st.caption(
-        f"{company_name} · {exchange} · {analysis_type} · "
-        f"Timeframe: {_tf_label} · ₹{current_price:,.2f}"
-    )
+    _render_detail_header(symbol, exchange, analysis_type, result)
 
     if "error" in result:
         st.error(result["error"])
         return
 
-    # Export single stock button
-    col_exp, _ = st.columns([1, 4])
-    with col_exp:
-        if st.button("📥 Export PDF", key="export_single_btn"):
-            try:
-                from utils.export import export_to_pdf
-                path = export_to_pdf(
-                    {symbol: result},
-                    watchlist_name="single",
-                    analysis_type=analysis_type,
-                    symbol_filter=symbol,
-                    trading_type=st.session_state.get("trading_type", ""),
-                    primary_strategy=st.session_state.get(
-                        "primary_strategy", analysis_type
-                    ),
-                    enhancers=st.session_state.get("enhancers", []),
-                )
-                st.success(f"Exported to: `{path}`")
-            except Exception as exc:
-                st.error(f"Export failed: {exc}")
+    # Chart is FIRST because st.tabs has no way to preselect a tab — it always
+    # opens the first one. This page is reached by clicking "View" on a stock,
+    # so landing anywhere but the chart means the thing the user asked for is
+    # off screen behind a tab.
+    tabs = st.tabs([
+        "Chart", "Overview", "Analysis", "Zones", "Confluence",
+        "Trade Plan", "Notes",
+    ])
 
-    st.markdown("---")
+    # Streamlit executes every tab body on each run regardless of which one is
+    # on screen, so running the chart panel here makes chart_result -- the
+    # re-analysis at the selected candle interval -- available to every other
+    # tab without analysing twice.
+    with tabs[0]:
+        chart_df, chart_result = _render_chart_panel(
+            symbol, exchange, analysis_type, result
+        )
 
+    with tabs[1]:
+        _render_overview_tab(symbol, chart_result, chart_df, analysis_type)
+
+    with tabs[2]:
+        _render_metrics(chart_result, analysis_type)
+        _recommendation = (
+            chart_result.get("recommendation")
+            or chart_result.get("summary", "")
+        )
+        if _recommendation:
+            st.markdown("#### Recommendation")
+            for _line in _recommendation.split("\n"):
+                if _line.strip():
+                    st.markdown(_line.strip())
+        if stock_id is not None:
+            st.markdown("---")
+            _render_history_section(stock_id, analysis_type)
+
+    with tabs[3]:
+        if analysis_type == "Demand/Supply Zones":
+            _render_zones_tab(chart_result)
+        else:
+            st.caption("Zone detail applies to the Demand/Supply strategy.")
+
+    with tabs[4]:
+        _render_confluence_tab(chart_result)
+
+    with tabs[5]:
+        _render_trade_plan(full=True)
+
+    with tabs[6]:
+        if stock_id is not None:
+            _render_notes_section(stock_id)
+        else:
+            st.caption(
+                "Notes are saved per watchlist stock. Open this stock from a "
+                "watchlist to add notes."
+            )
+
+
+def _render_chart_panel(
+    symbol: str, exchange: str, analysis_type: str, result: dict[str, Any],
+) -> tuple[pd.DataFrame | None, dict[str, Any]]:
+    """Chart controls, interval re-analysis and the chart itself.
+
+    Lifted out of ``render_stock_detail`` unchanged when the page gained tabs
+    -- the body below is the original chart section verbatim. It returns the
+    interval-specific frame and analysis result because the other tabs and the
+    Setup Summary rail all read from that re-analysis, not from the dashboard
+    scan's result.
+    """
     # ---------- Chart section ----------
     # -----------------------------------------------------------------------
     # Interval selector — lets the user pick candle size independently of
@@ -265,8 +301,8 @@ def render_stock_detail(
 
     # The data source participates in the chart cache key below, so switching
     # source refetches rather than replaying the previous source's bars.
-    _cache_src = st.session_state.get("selected_data_source", "Yahoo Finance")
-    _cache_src_key = _cache_src.replace(" ", "_")
+    _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    _cache_src_key = _src_name.replace(" ", "_")
 
     # Chart controls: Chart Type | Candle Interval
     ct_col, iv_col = st.columns([2, 5])
@@ -300,12 +336,13 @@ def render_stock_detail(
     selected_period = "1Y"
     if chart_type != "TradingView":
         _period_options = list(_PERIOD_DAYS.keys())
-        selected_period = st.selectbox(
+        selected_period = st.segmented_control(
             "Period",
             _period_options,
-            index=_period_options.index("1Y"),
-            key="chart_period_select",
-        )
+            default="1Y",
+            key="chart_period_segmented",
+            width="stretch",
+        ) or "1Y"
 
     # -----------------------------------------------------------------------
     # Fetch + re-analyse for the selected interval (with per-stock caching).
@@ -330,13 +367,11 @@ def render_stock_detail(
     )
     if st.session_state.get(_chart_cache_key) is None:
         # Need a fresh fetch at this interval.
-        suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
-        full_symbol = f"{symbol}{suffix}"
         # Fetch through the data source the user actually selected. Without an
         # explicit fetch_fn, fetch_by_interval falls back to _default_fetch_fn,
         # which is hard-wired to Yahoo Finance — the chart would silently ignore
         # a Jugaad/NSE selection and show different prices than the analysis.
-        _src_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+        full_symbol = _source_symbol(symbol, exchange, _src_name)
         _src_creds = st.session_state.get("credentials", {}).get(_src_name, {})
         with st.spinner(f"Fetching {interval_label} data for {symbol}…"):
             try:
@@ -345,6 +380,7 @@ def render_stock_detail(
                 # Surface the failure instead of quietly charting Yahoo data.
                 st.warning(f"Could not use {_src_name} ({exc}); showing Yahoo Finance data.")
                 _chart_fetch_fn = None
+                full_symbol = _source_symbol(symbol, exchange, "Yahoo Finance")
             _chart_df, _fetch_meta = fetch_by_interval(
                 full_symbol, interval_label, fetch_fn=_chart_fetch_fn,
             )
@@ -394,7 +430,7 @@ def render_stock_detail(
     _chart_is_tf = chart_result.get("strategy") == "Trend Following"
     chart_header = "### Price Chart"
     if _chart_trend:
-        _tc = _TREND_BADGE_COLORS.get(_chart_trend, "#6c757d")
+        _tc = _TREND_BADGE_COLORS.get(_chart_trend, _CHART_NEUTRAL)
         chart_header += (
             f" <span style='color:{_tc};font-size:0.65em;background:{_tc}22;"
             f"padding:2px 8px;border-radius:8px;border:1px solid {_tc};'>"
@@ -402,7 +438,9 @@ def render_stock_detail(
         )
     if _chart_is_tf:
         _chart_signal = chart_result.get("signal", "HOLD")
-        _sc = {"BUY": "#28a745", "SELL": "#dc3545"}.get(_chart_signal, "#6c757d")
+        _sc = {"BUY": _CHART_UP_COLOR, "SELL": _CHART_DOWN_COLOR}.get(
+            _chart_signal, _CHART_NEUTRAL
+        )
         chart_header += (
             f" <span style='color:{_sc};font-size:0.65em;background:{_sc}22;"
             f"padding:2px 8px;border-radius:8px;border:1px solid {_sc};'>"
@@ -447,7 +485,7 @@ def render_stock_detail(
             )
         elif analysis_type == "Trend Following (SMA50/EMA20)":
             st.caption(
-                "50 SMA (orange) and 200 SMA (navy) — cross marker shown "
+                "50 SMA (orange) and 200 SMA (blue) — cross marker shown "
                 "if within the displayed window."
             )
         show_tooltip = load_preferences().get("show_candle_tooltip", True)
@@ -463,35 +501,281 @@ def render_stock_detail(
             "Try a different interval or check your internet connection."
         )
 
-    st.markdown("---")
+    return chart_df, chart_result
 
-    # ---------- Key metrics (from the interval-specific re-analysis) ----------
-    _render_metrics(chart_result, analysis_type)
 
-    # M12: base widths for the zones drawn above — always visible, unlike the
-    # chart label which only flags the wide ones.
-    if analysis_type == "Demand/Supply Zones":
-        _render_zone_widths(chart_result)
+# ---------------------------------------------------------------------------
+# Page header and the Setup Summary / Trade Plan rail
+# ---------------------------------------------------------------------------
 
-    st.markdown("---")
+def _market_status_text() -> str:
+    """"Market Open/Closed" plus today's IST date, for the price block."""
+    try:
+        now = get_current_ist_time()
+        state = "Market Open" if is_market_open(now) else "Market Closed"
+        return f"{state} · {now.strftime('%d %b %Y')}"
+    except Exception:
+        return ""
 
-    # ---------- Recommendation (from the interval-specific re-analysis) ----------
-    recommendation = chart_result.get("recommendation") or chart_result.get("summary", "")
-    if recommendation:
-        st.markdown("### Recommendation")
-        for line in recommendation.split("\n"):
-            if line.strip():
-                st.markdown(line.strip())
 
-    # ---------- Historical analysis ----------
-    if stock_id is not None:
-        st.markdown("---")
-        _render_history_section(stock_id, analysis_type)
+def _render_detail_header(
+    symbol: str, exchange: str, analysis_type: str, result: dict[str, Any],
+) -> None:
+    """Symbol, verdict badge, live price and the page actions.
 
-    # ---------- Personal notes ----------
-    if stock_id is not None:
-        st.markdown("---")
-        _render_notes_section(stock_id)
+    The badge is derived from the best zone's category, not from
+    ``result["status"]`` — status is "neutral" for most stocks and would put a
+    WAIT badge on a page whose chart clearly shows a fresh demand zone.
+    """
+    price = result.get("current_price", 0.0) or 0.0
+    change = float(result.get("change", 0.0) or 0.0)
+    change_pct = float(result.get("change_pct", 0.0) or 0.0)
+    company = get_company_name(symbol)
+
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    best = max(zones, key=lambda z: z.get("odd_score", 0)) if zones else {}
+    if best.get("category") == "demand":
+        action, tone = "BUY", "bullish"
+    elif best.get("category") == "supply":
+        action, tone = "SELL", "bearish"
+    else:
+        action, tone = "WAIT", "muted"
+    if best and not best.get("is_tradeable"):
+        action, tone = "WAIT", "warning"
+
+    left, right = st.columns([3, 2])
+    with left:
+        st.markdown(
+            "<div style='font-size:0.78rem;color:#9AA0A8;margin-bottom:2px;'>"
+            "Dashboard &nbsp;&rsaquo;&nbsp; Analysis Results &nbsp;&rsaquo;&nbsp; "
+            f"<span style='color:#4A5361;font-weight:600;'>{html.escape(symbol)}"
+            "</span></div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:10px;'>"
+            f"<span style='font-size:1.75rem;font-weight:800;color:#16233A;"
+            f"letter-spacing:-0.2px;'>{html.escape(symbol)}</span>"
+            f"{bias_pill(action, tone)}</div>"
+            f"<div style='font-size:0.86rem;color:#6B7280;margin-top:1px;'>"
+            f"{html.escape(company)} &middot; {html.escape(exchange)} &middot; "
+            f"{html.escape(analysis_type)}</div>",
+            unsafe_allow_html=True,
+        )
+    with right:
+        up = change >= 0
+        colour = "#16794A" if up else "#C23B33"
+        st.markdown(
+            f"<div style='text-align:right;'>"
+            f"<div style='font-size:1.6rem;font-weight:800;color:#16233A;'>"
+            f"&#8377;{price:,.2f}</div>"
+            f"<div style='font-size:0.86rem;color:{colour};font-weight:600;'>"
+            f"{change:+,.2f} ({change_pct:+.2f}%)</div>"
+            f"<div style='font-size:0.74rem;color:#9AA0A8;'>"
+            f"{html.escape(_market_status_text())}</div></div>",
+            unsafe_allow_html=True,
+        )
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Back to Results", icon=":material/arrow_back:",
+                         use_container_width=True, key="sd_back_results"):
+                st.session_state.active_page = "analysis_results"
+                st.session_state.selected_stock_symbol = None
+                st.query_params.clear()
+                st.rerun()
+        with b2:
+            if st.button("Dashboard", icon=":material/dashboard:",
+                         use_container_width=True, key="sd_back_dash"):
+                st.session_state.active_page = "dashboard"
+                st.session_state.selected_stock_symbol = None
+                st.query_params.clear()
+                st.rerun()
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+
+
+def _ma_position(df: "pd.DataFrame | None", price: float, span: int,
+                 exponential: bool) -> tuple[str, str]:
+    """Where price sits against a moving average, as (text, colour).
+
+    Computed here from the chart's own frame rather than read off a zone flag:
+    ``ema20_enhancer`` records whether a ZONE had EMA confluence, which is a
+    different question from where price is right now.
+    """
+    try:
+        if df is None or df.empty or "Close" not in df or price <= 0:
+            return "\u2014", "#A8A8A0"
+        closes = df["Close"].astype(float)
+        if len(closes) < span:
+            return "\u2014", "#A8A8A0"
+        ma = (closes.ewm(span=span, adjust=False).mean() if exponential
+              else closes.rolling(span).mean()).iloc[-1]
+        if pd.isna(ma):
+            return "\u2014", "#A8A8A0"
+        above = price > float(ma)
+        return ("Above price" if above else "Below price",
+                "#16794A" if above else "#C23B33")
+    except Exception:
+        return "\u2014", "#A8A8A0"
+
+
+def _render_setup_rail(result: dict[str, Any], df: "pd.DataFrame | None") -> None:
+    """Setup Summary -- the read-out beside the chart."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    best = max(zones, key=lambda z: z.get("odd_score", 0)) if zones else {}
+    price = float(result.get("current_price") or 0.0)
+
+    with st.container(border=True):
+        section_title("Setup Summary")
+        trend = (result.get("trend") or "\u2014").upper()
+        kv_row("Trend", trend,
+               tone={"UP": "#16794A", "DOWN": "#C23B33"}.get(trend, "#8A8F98"))
+        if best:
+            kv_row("Zone", f"{best.get('zone_type', '')} "
+                           f"({'Fresh' if best.get('is_fresh') else 'Tested'})")
+            kv_row("Zone Strength", str(best.get("zone_strength", "\u2014")))
+            # Scale is 7, not 10 -- the ODD score has seven points available
+            # (freshness 3 + strength 2 + time 2). Showing /10 would misstate
+            # how good a 6.0 actually is.
+            kv_row("ODD Score", f"{best.get('odd_score', 0):.1f} / 7")
+        else:
+            kv_row("Zone", "No tradeable zone")
+        kv_row("RR (Min)", pending="p2")
+
+        ema_txt, ema_col = _ma_position(df, price, 20, True)
+        sma_txt, sma_col = _ma_position(df, price, 50, False)
+        kv_row("EMA 20", ema_txt, tone=ema_col)
+        # The engine's trend clock uses a 50 SMA, not an EMA -- labelled for
+        # what is actually computed.
+        kv_row("SMA 50", sma_txt, tone=sma_col)
+
+        kv_row("Sector", pending="p7")
+        try:
+            bias, _reason = market_bias(indices_cached())
+            kv_row("Market", bias.title(),
+                   tone={"BULLISH": "#16794A",
+                         "BEARISH": "#C23B33"}.get(bias, "#8A8F98"))
+        except Exception:
+            kv_row("Market", "\u2014")
+        kv_row("Status", str(best.get("entry_recommendation", "\u2014"))
+               if best else "\u2014")
+
+
+def _render_trade_plan(full: bool = False) -> None:
+    """Quick Trade Plan -- every field is Phase 2 (M1).
+
+    Rendered with real labels and explicit pending markers rather than
+    omitted, so the layout is settled and the missing inputs stay visible.
+    Nothing here is estimated: an invented entry or stop is worse than a
+    blank one.
+    """
+    with st.container(border=True):
+        section_title("Trade Plan" if full else "Quick Trade Plan")
+        for label in ("Entry Zone", "Stop Loss", "Target 1", "Target 2",
+                      "Risk / Reward", "Position Size"):
+            kv_row(label, pending="p2")
+        if full:
+            st.caption(
+                "Entry, stop, targets and position sizing are Phase 2 (M1) "
+                "and Phase 6 (M31). No values are estimated here."
+            )
+
+
+def _render_overview_tab(
+    symbol: str, result: dict[str, Any], df: "pd.DataFrame | None",
+    analysis_type: str,
+) -> None:
+    """Setup summary, trade plan and key levels, without the chart."""
+    a, b, c = st.columns(3)
+    with a:
+        _render_setup_rail(result, df)
+    with b:
+        _render_trade_plan()
+    with c:
+        with st.container(border=True):
+            section_title("Key Levels")
+            nd, ns = result.get("nearest_demand"), result.get("nearest_supply")
+            # Straight off the nearest zone boundaries: the proximal is the
+            # level price meets first, the distal the one that invalidates it.
+            kv_row("Support 1", f"{nd['proximal']:,.2f}" if nd else "\u2014")
+            kv_row("Support 2", f"{nd['distal']:,.2f}" if nd else "\u2014")
+            kv_row("Resistance 1", f"{ns['proximal']:,.2f}" if ns else "\u2014")
+            kv_row("Resistance 2", f"{ns['distal']:,.2f}" if ns else "\u2014")
+
+
+def _render_zones_tab(result: dict[str, Any]) -> None:
+    """Every drawn zone with its boundaries and score."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    if not zones:
+        st.caption(
+            "No zones passed the display filter for this interval. "
+            f"{result.get('all_zones_count', 0)} were detected in total."
+        )
+        return
+    rows = ""
+    for z in sorted(zones, key=lambda x: x.get("odd_score", 0), reverse=True):
+        tone = "bullish" if z.get("category") == "demand" else "bearish"
+        rows += (
+            "<tr>"
+            f"<td style='padding:6px 8px;'>{bias_pill(z.get('zone_type', ''), tone)}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('proximal', 0):,.2f}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('distal', 0):,.2f}</td>"
+            f"<td style='padding:6px 8px;'><b>{z.get('odd_score', 0):.1f}</b></td>"
+            f"<td style='padding:6px 8px;'>{html.escape(str(z.get('zone_strength', '')))}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('times_tested', 0)}</td>"
+            f"<td style='padding:6px 8px;'>{z.get('base_width_pct', 0):.1f}%</td>"
+            "</tr>"
+        )
+    head = "".join(
+        f"<th style='text-align:left;padding:6px 8px;font-size:0.7rem;"
+        f"color:#8A8F98;border-bottom:1px solid #E7E9ED;'>{h}</th>"
+        for h in ["Type", "Proximal", "Distal", "ODD", "Strength",
+                  "Tested", "Base Width"]
+    )
+    st.markdown(
+        f"<div style='overflow-x:auto;'><table style='width:100%;"
+        f"border-collapse:collapse;font-size:0.8rem;'><tr>{head}</tr>"
+        f"{rows}</table></div>",
+        unsafe_allow_html=True,
+    )
+    _render_zone_widths(result)
+
+
+def _render_confluence_tab(result: dict[str, Any]) -> None:
+    """EMA 20 and Fibonacci confluence, per zone."""
+    zones = [*(result.get("demand_zones") or []),
+             *(result.get("supply_zones") or [])]
+    if not zones:
+        st.caption("No zones to report confluence for.")
+        return
+    fib_on = bool(result.get("fib_levels"))
+    if not fib_on:
+        st.caption(
+            "Fibonacci confluence is opt-in \u2014 enable it in the sidebar "
+            "enhancers to populate the Fib columns."
+        )
+    for z in sorted(zones, key=lambda x: x.get("odd_score", 0), reverse=True):
+        with st.container(border=True):
+            section_title(
+                f"{z.get('zone_type', '')} @ {z.get('proximal', 0):,.2f}",
+                hint=f"ODD {z.get('odd_score', 0):.1f}",
+            )
+            kv_row("EMA 20 confluence",
+                   "Yes" if z.get("ema20_enhancer") else "No",
+                   tone="#16794A" if z.get("ema20_enhancer") else "#8A8F98")
+            if fib_on:
+                kv_row("Fibonacci confluence",
+                       "Yes" if z.get("fib_confluence") else "No",
+                       tone="#16794A" if z.get("fib_confluence") else "#8A8F98")
+                kv_row("Strongest level", str(z.get("fib_strongest") or "\u2014"))
+                kv_row("Combined rating", str(z.get("confluence_label") or "None"))
+            else:
+                kv_row("Fibonacci confluence", "Not enabled")
+            kv_row("Closing quality", str(z.get("closing_quality", "unchecked")).title())
+            kv_row("Zone quality", str(z.get("zone_quality") or "Clean"))
+
 
 
 # ---------------------------------------------------------------------------
@@ -663,8 +947,8 @@ def _build_chart(
                 low=df["Low"],
                 close=df["Close"],
                 name=symbol,
-                increasing_line_color="#28a745",
-                decreasing_line_color="#dc3545",
+                increasing_line_color=_CHART_UP_COLOR,
+                decreasing_line_color=_CHART_DOWN_COLOR,
                 showlegend=False,
             ),
             row=1, col=1,
@@ -675,9 +959,9 @@ def _build_chart(
                 x=df.index,
                 y=df["Close"],
                 name="Close",
-                line={"color": "#1f77b4", "width": 2},
+                line={"color": _CHART_BLUE, "width": 2.2},
                 fill="tozeroy",
-                fillcolor="rgba(31,119,180,0.08)",
+                fillcolor="rgba(47,128,237,0.10)",
                 showlegend=False,
             ),
             row=1, col=1,
@@ -696,15 +980,15 @@ def _build_chart(
         _add_tf_sma_lines(fig, df)
         _add_tf_cross_marker(fig, df, result)
     elif analysis_type == "Long Term Investment":
-        _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", "#1f77b4")
+        _add_sma_line(fig, df, result.get("sma_200"), "SMA 200", _CHART_BLUE)
     elif analysis_type == "Short Term Investment":
-        _add_sma_line(fig, df, result.get("sma_50"), "SMA 50", "#ff7f0e")
+        _add_sma_line(fig, df, result.get("sma_50"), "SMA 50", _CHART_ORANGE)
     elif analysis_type == "Intraday Trading":
         _add_vwap_line(fig, df, result.get("vwap"))
 
     # --- Volume bars ---
     vol_colors = [
-        "#28a745" if c >= o else "#dc3545"
+        _CHART_UP_COLOR if c >= o else _CHART_DOWN_COLOR
         for c, o in zip(df["Close"], df["Open"])
     ]
     fig.add_trace(
@@ -714,7 +998,7 @@ def _build_chart(
             name="Volume",
             marker_color=vol_colors,
             showlegend=False,
-            opacity=0.7,
+            opacity=0.62,
         ),
         row=2, col=1,
     )
@@ -738,37 +1022,27 @@ def _build_chart(
                 x=df.index,
                 y=rsi_series,
                 name="RSI",
-                line={"color": "#9b59b6", "width": 1.5},
+                line={"color": _CHART_PURPLE, "width": 1.5},
                 showlegend=False,
             ),
             row=3, col=1,
         )
-        fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color=_CHART_DOWN_COLOR, row=3, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color=_CHART_UP_COLOR, row=3, col=1)
 
     fig.update_layout(
-        height=500 + (120 if show_rsi else 0),
+        height=560 + (120 if show_rsi else 0),
         template="plotly_white",
-        margin={"t": 40, "b": 20, "l": 60, "r": 20},
+        margin={"t": 40, "b": 20, "l": 55, "r": 80},
         hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        font={"color": _CHART_AXIS},
         xaxis=dict(
             rangeslider=dict(visible=False),
-            showspikes=True,
-            spikemode="across",
-            spikethickness=1,
-            spikecolor="grey",
-            spikedash="dash",
-            spikesnap="data",
         ),
-        yaxis=dict(
-            showspikes=True,
-            spikemode="across",
-            spikethickness=1,
-            spikecolor="grey",
-            spikedash="dash",
-            spikesnap="cursor",
-            side="left",
-        ),
+        yaxis=dict(side="left"),
     )
     # Place the rangeslider at the very bottom of the chart (below the last subplot)
     bottom_xaxis = f"xaxis{rows}"   # "xaxis2" for 2-row, "xaxis3" for 3-row
@@ -777,7 +1051,35 @@ def _build_chart(
     )
     if interval_label not in ("Weekly", "Monthly"):
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-    fig.update_yaxes(title_text="Price (₹)", row=1, col=1)
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=_CHART_GRID,
+        zeroline=False,
+        showline=True,
+        linecolor="#CDD6E3",
+        tickfont={"color": _CHART_AXIS},
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor=_CHART_SPIKE,
+        spikedash="dash",
+        spikesnap="data",
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=_CHART_GRID,
+        zeroline=False,
+        showline=True,
+        linecolor="#CDD6E3",
+        tickfont={"color": _CHART_AXIS},
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor=_CHART_SPIKE,
+        spikedash="dash",
+        spikesnap="cursor",
+    )
+    fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     if show_rsi:
         fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
@@ -786,39 +1088,49 @@ def _build_chart(
 
 
 # Rule: zone styling — semi-transparent fills (demand=green, supply=red),
-# subtle boundary-line colors that echo the fill, and dark text colors for
-# the right-edge labels so they stay readable over the candlesticks.
-_ZONE_FILL_COLORS = {"demand": "rgba(40,167,69,0.15)", "supply": "rgba(220,53,69,0.15)"}
-_ZONE_LINE_COLORS = {"demand": "rgba(40,167,69,0.55)", "supply": "rgba(220,53,69,0.55)"}
-_ZONE_TEXT_COLORS = {"demand": "#1e7e34", "supply": "#a71d2a"}  # dark green / dark red
+# subtle boundary-line colors that echo the fill, and readable label colors
+# that match the brighter Pattern Detail chart palette.
+_ZONE_FILL_COLORS = {
+    "demand": "rgba(34,165,91,0.14)",
+    "supply": "rgba(235,87,87,0.13)",
+}
+_ZONE_LINE_COLORS = {
+    "demand": "rgba(34,165,91,0.50)",
+    "supply": "rgba(235,87,87,0.50)",
+}
+_ZONE_TEXT_COLORS = {"demand": _CHART_UP_COLOR, "supply": _CHART_DOWN_COLOR}
 
-# Stage 2: trend-context moving-average reference lines (thin, muted so
-# they don't compete visually with the candles or zone overlays).
-_SMA50_LINE_COLOR = "#9e9e9e"   # thin grey — the 50 SMA "clock method" input
-_EMA20_LINE_COLOR = "#1f77b4"   # thin blue — the EMA 20 confluence input
+# Stage 2: trend-context moving-average reference lines.
+_SMA50_LINE_COLOR = _CHART_ORANGE  # thin orange — the 50 SMA "clock method" input
+_EMA20_LINE_COLOR = _CHART_BLUE    # thin blue — the EMA 20 confluence input
 
 # Stage 2: zone-label flag colors — TRADEABLE/AVOID echo the trend badge's
 # bullish-green / cautionary-orange palette so they read at a glance.
-_TRADEABLE_FLAG_COLOR = "#1e7e34"   # dark green
-_AVOID_FLAG_COLOR = "#e8590c"       # dark orange
+_TRADEABLE_FLAG_COLOR = _CHART_UP_COLOR
+_AVOID_FLAG_COLOR = "#EF7A1A"
 # Confirmation zones are drawn under a lower score bar than everything else on
 # the chart, so their flag uses a distinct blue rather than the green/orange
 # verdict palette — it states a different kind of fact.
-_CONFIRMED_FLAG_COLOR = "#1c6fb0"   # dark blue
+_CONFIRMED_FLAG_COLOR = _CHART_BLUE
 
 # Stage 2: trend badge palette — UP green, DOWN red, SIDEWAYS neutral grey.
-_TREND_BADGE_COLORS = {"UP": "#28a745", "DOWN": "#dc3545", "SIDEWAYS": "#6c757d"}
+_TREND_BADGE_COLORS = {
+    "UP": _CHART_UP_COLOR,
+    "DOWN": _CHART_DOWN_COLOR,
+    "SIDEWAYS": _CHART_NEUTRAL,
+}
 
 # Stage 3 (opt-in): Fibonacci retracement line styling — per the documented
 # importance ranking, the golden ratio (0.618) is drawn solid and slightly
 # thicker than the others (which are dashed) so it stands out as the most
 # important retracement level on the chart.
 _FIB_LINE_STYLES: dict[float, dict[str, Any]] = {
-    0.382: {"color": "#add8e6", "dash": "dash", "width": 1},    # light blue dashed
-    0.5:   {"color": "#ff7f0e", "dash": "dash", "width": 1},    # orange dashed
-    0.618: {"color": "#d4af37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
-    0.786: {"color": "#9b59b6", "dash": "dash", "width": 1},    # purple dashed
+    0.382: {"color": "#56CCF2", "dash": "dash", "width": 1},    # light blue dashed
+    0.5:   {"color": _CHART_ORANGE, "dash": "dash", "width": 1},  # orange dashed
+    0.618: {"color": "#D4AF37", "dash": "solid", "width": 2},   # gold solid, thicker (most important)
+    0.786: {"color": _CHART_PURPLE, "dash": "dash", "width": 1},  # purple dashed
 }
+_ZONE_LABEL_XSHIFT = 18
 
 
 def _fmt_zone_score(score: float) -> str:
@@ -1009,6 +1321,7 @@ def _add_zone_overlays(fig: go.Figure, result: dict[str, Any], df: pd.DataFrame,
             x=x1, y=label_y,
             xref="x", yref="y",
             xanchor="left", yanchor="middle",
+            xshift=_ZONE_LABEL_XSHIFT,
             text=(
                 f"{zone['zone_type']} | Score {_fmt_zone_score(zone['odd_score'])} "
                 f"| {zone['zone_strength']}{flags}"
@@ -1064,7 +1377,7 @@ def _add_trend_context_lines(fig: go.Figure, df: pd.DataFrame) -> None:
 
 
 def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
-    """Draw the 50 SMA (orange, prominent) and 200 SMA (navy, prominent) for
+    """Draw the 50 SMA (orange, prominent) and 200 SMA (blue, prominent) for
     a Trend Following chart.
 
     Both are computed fresh on the visible ``df`` window.  They are drawn
@@ -1085,7 +1398,7 @@ def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
             x=df.index,
             y=sma_fast_series,
             name=f"SMA {SMA_FAST}",
-            line={"color": "#ff7f0e", "width": 2.0},   # orange — the fast SMA
+            line={"color": _CHART_ORANGE, "width": 2.0},
             showlegend=True,
         ),
         row=1, col=1,
@@ -1095,7 +1408,7 @@ def _add_tf_sma_lines(fig: go.Figure, df: pd.DataFrame) -> None:
             x=df.index,
             y=sma_slow_series,
             name=f"SMA {SMA_SLOW}",
-            line={"color": "#1a237e", "width": 2.0},   # navy blue — the slow SMA
+            line={"color": _CHART_BLUE, "width": 2.0},
             showlegend=True,
         ),
         row=1, col=1,
@@ -1136,7 +1449,7 @@ def _add_tf_cross_marker(
         return
 
     is_golden = cross_type == "golden"
-    marker_color = "#28a745" if is_golden else "#dc3545"
+    marker_color = _CHART_UP_COLOR if is_golden else _CHART_DOWN_COLOR
     marker_symbol = "triangle-up" if is_golden else "triangle-down"
     label = "Golden Cross" if is_golden else "Death Cross"
     text_pos = "top center" if is_golden else "bottom center"
@@ -1289,7 +1602,7 @@ def _add_vwap_line(
             x=df.index,
             y=vwap_series,
             name="VWAP",
-            line={"color": "#9b59b6", "width": 1.5, "dash": "dot"},
+            line={"color": _CHART_PURPLE, "width": 1.5, "dash": "dot"},
             showlegend=True,
         ),
         row=1, col=1,
