@@ -360,9 +360,38 @@ Oversold at demand = bonus, overbought at supply = bonus. Divergence detection.
 
 Breakout into opposing fresh zone = trap warning. Single-TF initially.
 
-### #30-31 M57/M58 + M69 — Candlestick & Conventional Patterns (DNB)
+### #30 M57/M58 — Candlestick Patterns (DNB)
 
-Explicitly excluded per user directive. No code exists (correct).
+Explicitly excluded per user directive. No code exists (correct). This
+directive stands — the M69 reversal below does **not** extend to it.
+
+### #31 M69 — Conventional Chart Patterns (DONE — `c37385b`, `6f76404`, 2026-08-06)
+
+**Directive reversed.** Previously DNB on the grounds that conventional
+pattern detection would dilute the GTF zone methodology. Built instead as a
+wholly separate pipeline, which is what makes the original objection moot: the
+zone engine is untouched, `PatternMatch` is its own dataclass rather than a
+`Zone`, and nothing in this path can write to `odd_score`.
+
+**Code:** `analysis/pattern_models.py`, `analysis/pattern_scanner.py`,
+`analysis/pattern_detectors/` (7 modules), `ui/pages/pattern_*.py` (4 pages),
+`pattern_scans` table in `storage/database.py`.
+
+Five families: Triangles (symmetrical / ascending / descending), VCP / Tight
+Base, Range Breakouts (rectangle + bull/bear break), Flag / Pennant, Double
+Top / Bottom. Every label is declared once in `pattern_detectors/pattern_types.py`.
+
+Each match carries stage (`Forming` / `Near Apex` / `Breakout Confirmed`),
+confidence, apex proximity, breakout bias, freshness in candles, volume
+contraction, and `zone_context` — the one place GTF output is consumed, as
+nearest demand/supply proximity only.
+
+**Tests:** 9, across `test_triangle_pattern_detector.py` and
+`test_named_pattern_detectors.py`. Thin relative to the zone engine's
+convention (boundary values at/above/below threshold, both directions) — the
+gaps are listed under *Chart Pattern Scanner* in `REFINEMENT_PLAN.md`.
+
+**Status:** Shipped. Open items in `REFINEMENT_PLAN.md`.
 
 ---
 

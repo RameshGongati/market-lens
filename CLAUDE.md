@@ -2,15 +2,17 @@
 
 Market Lens is a Streamlit application for Indian equity market analysis (2,374 NSE-listed stocks). It implements the institutional GTF (Trading in the Zone) demand/supply zone methodology: detecting legin-base-legout candlestick patterns (DBR, RBR, RBD, DBD), scoring them with a 7-point ODD trade score, and presenting the top tradeable zones on interactive Plotly charts. A secondary Trend Following strategy (SMA 50/200 crossover) is also available via a two-axis configuration model (Trading Type × Primary Strategy).
 
+A separate **Chart Pattern Scanner** sits alongside the GTF engine — triangles, VCP, range breakouts, flags/pennants and double tops/bottoms, scanned across a watchlist. It is deliberately its OWN pipeline (`analysis/pattern_*`), not an extension of the zone engine: it borrows zone output only as context, and nothing it computes can reach `odd_score`. See *Chart Pattern Scanner* below.
+
 ## Tech Stack
 
 - **Runtime:** Python 3.12, Streamlit
 - **Data:** yfinance (Yahoo Finance) and jugaad-data (NSE direct) both fully working; 4 other sources scaffolded but not functional
 - **Charts:** Plotly (candlestick + volume subplots with zone/SMA/Fibonacci overlays)
-- **Storage:** SQLite (`~/.market-lens/market_lens.db`) for watchlists, analysis results, alerts, notes; JSON (`~/.market-lens/user_preferences.json`) for preferences
+- **Storage:** SQLite (`~/.market-lens/market_lens.db`, 6 tables) for watchlists, analysis results, alerts, notes and the pattern-scan cache; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (408 tests across 13 files)
+- **Tests:** pytest (468 tests across 19 files)
 
 ## Repo Structure
 
@@ -29,9 +31,20 @@ analysis/
     trend.py                    #   50 SMA clock method (Stage 2)
     enhancers.py                #   EMA 20 confluence (Stage 2)
     fibonacci.py                #   Fibonacci retracement confluence (Stage 3, opt-in)
+  pattern_models.py             # PatternMatch / PatternPoint + to_dict/from_dict
+  pattern_scanner.py            # Watchlist orchestration, result filters, export rows
+  pattern_detectors/            # Chart-pattern engine — SEPARATE from zone_engine
+    pattern_types.py            #   Family and type label constants (single source)
+    shared.py                   #   Swings, line fits, break tests shared by detectors
+    triangles.py                #   Symmetrical / ascending / descending
+    vcp.py                      #   Volatility contraction / tight base
+    range_breakouts.py          #   Rectangle range + bull/bear breakout
+    flag_pennant.py             #   Bull/bear flags and pennants
+    double_patterns.py          #   Double top / double bottom
 alerts/
   telegram.py                   # Telegram delivery + HTML message formatting
   zone_alert_checker.py         # Scans cached results for zone-proximity matches
+  monitor_control.py            # flock-based status + start/stop for alert_monitor
 alert_monitor.py                # Standalone background monitor (runs outside Streamlit)
 config/
   trading_config.py             # Two-axis model: trading types, strategies, enhancers, timeframes
@@ -50,7 +63,8 @@ data/
   predefined_watchlists.json    # NIFTY50, BANKNIFTY, F&O index watchlists
 ui/
   components/panels.py          # Shared surfaces: stat_card, filter_chip, kv_row,
-                                #   page_title, pending_panel, scan_progress, SVG icons
+                                #   page_title, panel_head, pending_panel,
+                                #   scan_progress, page_slice/pagination_bar, SVG icons
   components/stock_detail.py    # Chart page: 7 tabs + Setup Summary / Trade Plan rail
   components/stock_card.py      # Grid cards + build_detail_url() deep-link builder
   components/sidebar.py         # Two-axis control panel, market status, watchlist picker
@@ -60,14 +74,21 @@ ui/
   pages/analysis_results.py     # Scan results: cards, filters, ranked table, View links
   pages/alerts_page.py          # Zone-proximity matches + Telegram alert history
   pages/reports_page.py         # F&O results monitor (earnings calendar)
+  pages/settings.py             # Status strip, chart/alert/appearance panels,
+                                #   Telegram setup, monitor control, data management
+  pages/pattern_scanner.py      # Pattern scan setup (family, type, scope, filters)
+  pages/pattern_results.py      # Pattern results table + scan execution
+  pages/pattern_detail.py       # Single-pattern chart with trendline overlays
+  pages/pattern_common.py       # Universe resolution + pattern deep-link builder
   pages/placeholders.py         # Trade Journal — routed, awaiting requirements
-storage/database.py             # SQLite CRUD (5 tables)
+storage/database.py             # SQLite CRUD (6 tables, incl. pattern_scans)
 utils/
   helpers.py                    # Currency formatting, stock list loading, company names
   export.py                     # Excel + PDF export
   market_hours.py               # NSE market hours, holidays, countdown
+  system_info.py                # App-dir disk footprint + cache clearing
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
-tests/                          # 13 test files, 408 tests
+tests/                          # 19 test files, 468 tests
 ```
 
 ## Running Locally
@@ -113,9 +134,36 @@ python -m pytest tests/ -v
 
 **Phase 1 is COMPLETE** (`v0.6.0`, 2026-08-02). Every rule above is implemented and tested.
 
+## Chart Pattern Scanner
+
+A second, independent scanner covering conventional chart patterns. Five families, each a module under `analysis/pattern_detectors/`:
+
+| Family | Types |
+|--------|-------|
+| Triangle Patterns | Symmetrical, Ascending, Descending |
+| VCP / Tight Base | VCP / Tight Base |
+| Range Breakouts | Rectangle Range, Bullish Breakout, Bearish Breakdown |
+| Flag / Pennant | Bull/Bear Flag, Bull/Bear Pennant |
+| Double Top / Bottom | Double Bottom, Double Top |
+
+Every label lives in `pattern_detectors/pattern_types.py` — the single source. Do not re-declare family or type strings in the UI or the orchestrator; they are compared by equality all over the filter chain, and a second copy drifts silently.
+
+Design rules that must hold:
+
+- **It is not part of the zone engine.** `PatternMatch` is its own dataclass, not a `Zone`. Zone output enters only as `zone_context` (nearest demand/supply proximity) and nothing in this pipeline may write back to a zone or to `odd_score`.
+- **The forming candle is dropped**, the same as `demand_supply.py` does — `triangles.py` via `_drop_incomplete_latest_bar`, `vcp.py` and `range_breakouts.py` via `df.iloc[:-1]`. Breakout stage is decided against a closed bar, or it flips intraday and reverts by the close.
+- **Stage is a three-way**: `Forming` → `Near Apex` → `Breakout Confirmed`. `Breakout Confirmed` covers breaks in BOTH directions; read `breakout_bias` for which way.
+- **`_LOOKBACK` is a bar count, not a duration.** 120 bars is ~6 months daily but only ~5 sessions on 15m, so the pattern window shrinks in wall-clock time as the timeframe gets finer.
+
+Results are cached in the `pattern_scans` table so a Pattern Detail deep link can restore them in a new tab (see Gotcha 13 — a new tab is a separate session, and pattern results live in session state).
+
 ## Dropped Rules
 
 - **M65/M66** — LOTL merge + achievement weighting. Dropped by directive after an implementation was reverted for corrupting zone markings. Merging widens a zone to the union of its members, which moves the proximal — the entry level being traded. Overlapping zones stay separate. See Gotcha 7.
+
+## Reversed Directives
+
+- **M69 — conventional chart patterns.** Previously marked Do Not Build. Reversed 2026-08-06 and shipped as the Chart Pattern Scanner above. It was excluded on the grounds that it would dilute the GTF zone methodology; it is built as a wholly separate pipeline for exactly that reason, so the zone engine is unchanged. **M57/M58 (candlestick pattern detectors) remain DNB** — that directive was not reversed.
 
 ## Next Pending Rules
 
@@ -169,7 +217,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 21. **Popover content renders in a portal OUTSIDE the sidebar.** `st.popover` bodies land under `[data-testid="stPopoverBody"]` at body level, so `section[data-testid="stSidebar"] ...` rules do not reach the screener's dropdowns even though they appear inside the sidebar visually.
 
-22. **`dashboard.py` is not a page.** It holds the scan (`run_scan`, `scan_context`) and the helpers the pages share — the screener predicate, exports, the per-stock detail view, single-stock analysis for deep links. `app.main()` routes seven states: `dashboard` → `market_overview.render_market_overview`, plus `analysis_results`, `stock_detail`, `alerts`, `reports`, `trade_journal`, `watchlist_manager`, `settings`. `_render_filter_sort_bar` and `_render_results_grid` are still in `dashboard.py` but UNREACHABLE — they lost their caller in the page split and are kept pending review, not because anything calls them.
+22. **`dashboard.py` is not a page.** It holds the scan (`run_scan`, `scan_context`) and the helpers the pages share — the screener predicate, exports, the per-stock detail view, single-stock analysis for deep links. `app.main()` routes eleven states: `dashboard` → `market_overview.render_market_overview`, plus `analysis_results`, `stock_detail`, `alerts`, `reports`, `trade_journal`, `watchlist_manager`, `settings`, `pattern_scanner`, `pattern_results`, `pattern_detail`. `_render_filter_sort_bar` and `_render_results_grid` are still in `dashboard.py` but UNREACHABLE — they lost their caller in the page split and are kept pending review, not because anything calls them.
 
 23. **Every helper in `panels.py` must emit newline-free HTML.** A multi-line f-string produced a whitespace-only line whenever an optional slot (the icon) was empty, and a blank line TERMINATES a markdown HTML block — everything indented after it was then parsed as an indented code block, so cards without an icon rendered their own source as visible text. Cards with icons rendered fine, which is why it survived review.
 
@@ -182,6 +230,16 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 27. **Result-calendar fetches must pass `cache_only=True` on render.** `earnings_calendar.get_earnings` fetches anything uncached, which on page open is 39s for Nifty 50 and ~164s for the 208-stock F&O universe. Fetching is an explicit user action (the Refresh button), never a side effect of navigation. As with the bhavcopy cache, `_DISK_CACHE` is module-level so tests can redirect it — a fixture written into the real cache is served back as a genuine result date.
 
 28. **Worktree branch warning:** This repo uses worktrees. Always commit to named feature branches (e.g., `feature/demand-supply-refinement`), never to `claude/wizardly-*` worktree branches. Never stage the `.claude/` directory. Git commands must use WSL bash: `wsl -d Ubuntu -- bash -lc "cd /home/gongati/projects/market-lens && ..."`. Commit messages containing apostrophes break BOTH layers: the heredoc alone is not enough, because `wsl -- bash -c '...'` is itself single-quoted and an apostrophe inside terminates it, silently truncating the message at that word. Write the message to a file and use `git commit -F <file>`.
+
+29. **Streamlit DISCARDS the state of any widget not instantiated during a run.** A button that calls `st.rerun()` ends the script; every widget below it is never created, so its state is garbage-collected and the next run starts it from its default. On the Reports page the refresh buttons render above the `Only F&O` toggle, so pressing Refresh silently reset the universe from 208 stocks back to the default watchlist — it looked like the refresh was rewriting the selection. Two defences, both in use: instantiate the toggles BEFORE the buttons even when they appear below them (create the column rows up front and write into them out of order), and do not call `st.rerun()` at all when the page re-reads its data further down the same run. `_seed_result_filters` in `pattern_results.py` shows the third option — `setdefault` every key on every run, which self-heals.
+
+30. **`st.empty()` inherits the width of whatever container is open when it is CREATED**, not where its content ends up. `_refresh()` was called from inside `with c1:`, one third of the header's right-hand column, so the standalone progress card — built for `min(720px, 100%)` — laid out in a 117px strip and wrapped every word to one character per line. Buttons inside columns must only RECORD a request; the page body performs it. Measured after the move: 117px → 1130px container, card at its intended 720px.
+
+31. **A sort key that groups before it orders makes correct data look missing.** The alerts feed keyed "Latest first" on `(origin == "Sent", time)`, so every live scan match outranked every delivered alert whatever the timestamps said. New Telegram alerts were on disk, parsed and deduped correctly, and still could not reach the top of a list named "Latest first" — the Refresh button got blamed twice. Sort on the quantity the label promises; rows missing that quantity go last, not first and not as zero.
+
+32. **Monitor status is probed with flock, never the PID in the lock file.** The PID is still there, and still parses, long after the process it names has died — a stale lock file would report a crashed monitor as running forever. `alerts/monitor_control.py` tries to TAKE the lock: if that succeeds nobody held it, so nothing is running, and it releases immediately (holding it even briefly would make the Start button beside it believe a duplicate exists). The PID is read only after the lock is shown to be held, and only to signal. Related: the cron entry is `45 3 * * 1-5` in machine local time, and cron does not run jobs missed while the machine was down — if the laptop boots after that slot, the monitor simply never starts that day.
+
+33. **"F&O universe" and "F&O Stocks" are different things on the Reports page.** The first is the `Only F&O` toggle; the second is a predefined watchlist that happens to hold the same 208 symbols. With the toggle off the page falls back to the sidebar watchlist and labels it with that watchlist's own name, so a user whose watchlist is already `F&O Stocks` sees 208 either way and the toggle looks broken. It is not — check which label is showing before debugging. Related: the earnings cache is valid for one CALENDAR DAY, so the first visit each morning legitimately shows an empty table and a prompt to refresh.
 
 ## Critical Instruction
 

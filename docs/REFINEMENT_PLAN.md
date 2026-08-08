@@ -97,8 +97,71 @@ Listed in recommended implementation order within each phase. See `requirements.
 26. **Options module** — Awaiting spec documents
 
 ### Do Not Build
-- **M57/M58** — Candlestick pattern detectors (excluded by directive)
-- **M69** — Conventional chart pattern detectors (excluded by directive)
+- **M57/M58** — Candlestick pattern detectors (excluded by directive; still stands)
+- ~~**M69** — Conventional chart pattern detectors~~ — **directive REVERSED
+  2026-08-06.** Shipped as the Chart Pattern Scanner, built as a separate
+  pipeline so the zone engine is untouched. See below.
+
+---
+
+## Shipped Since the Last Doc Update (`1979dc3` → `57cdf35`)
+
+| Commit | What |
+|--------|------|
+| `45ddedb` | Rebuild trading sessions the data sources drop. Yahoo omits whole sessions and Jugaad loses parallel chunks; `fill_missing_sessions` rebuilds them from the NSE bhavcopy. 70 of 208 F&O stocks were missing 31 July — all 70 repaired. |
+| `eb954a9` | Merge the alerts page into one sortable, clickable feed. |
+| `95797d6` | One row per stock on the Alerts page, plus a Refresh button. |
+| `fa7dcd7` | Persist alerts as they are sent, and stop the monitor stacking copies. History was flushed only at end of cycle (APLAPOLLO sent 07:23:20, written 07:29:35); cron restarted the never-exiting script daily, so instances accumulated — now guarded by an flock. |
+| `8bb7cee` | Numbered pagination bar (`page_slice` / `pagination_bar`) and a red Alerts badge. Streamlit silently drops markdown colour directives in button labels, so the badge is CSS `::after`. |
+| `50ad77b` | Fix the Reports universe falling back to 50 stocks — two faults, session-state memoisation and widget-state loss on rerun. See Gotcha 29. |
+| `3e1b161` | Rebuild the Settings page to the new design. Live status strip (disk footprint, provider, monitor), Telegram setup, data management. Adds `alerts/monitor_control.py` and `utils/system_info.py`; unbuilt controls render disabled rather than hidden. 22 tests. |
+| `bdda60c` | Sort the alert feed by time, not by origin. See Gotcha 31. 14 tests. |
+| `eb93a7d` | Refine sidebar watchlist controls. |
+| `7185ecb` | Run the Reports refresh at page level, not inside a button column. See Gotcha 30. |
+| `c37385b`, `6f76404` | Chart Pattern Scanner — see below. |
+| `57cdf35` | Improve stock detail chart styling. |
+
+---
+
+## Chart Pattern Scanner (DONE — `c37385b`, `6f76404`, 2026-08-06)
+
+M69, previously Do Not Build. Reversed and built as an independent pipeline:
+`analysis/pattern_models.py`, `analysis/pattern_scanner.py`, seven modules
+under `analysis/pattern_detectors/`, four pages under `ui/pages/pattern_*.py`,
+and a `pattern_scans` table for cross-tab deep links.
+
+Five families — Triangles, VCP / Tight Base, Range Breakouts, Flag / Pennant,
+Double Top / Bottom. Zone output is consumed only as `zone_context`; nothing
+here can write to a `Zone` or to `odd_score`.
+
+**Verified behaviour** (measured, not assumed): on synthetic negatives the
+triangle detector flags a clean uptrend 0 times, a flat channel 0 times, and
+5.0% of 200 random walks — a fair rate for a shape that does occur in noise.
+The gating (contraction >= 0.18, sequence score >= 0.62, apex window) is
+doing real work.
+
+### Fixed during review
+
+- **Long-only risk/reward** — `_risk_reward` computed `stop = max(price -
+  lower, 0.01)` regardless of direction, so a downside break clamped the stop
+  to 0.01 and reported R:R of 6926.25 on live DLF. Now branches on direction;
+  the same case reads 1.44.
+- **Forming candle** — the detectors now drop the still-open bar
+  (`_drop_incomplete_latest_bar` in `triangles.py`, `df.iloc[:-1]` in `vcp.py`
+  and `range_breakouts.py`), matching `demand_supply.py` (Gotcha 1). Without
+  it "Breakout Confirmed" appeared intraday and reverted by the close, and
+  disagreed with `zone_context`, which comes from a pipeline that does drop it.
+
+### Open (PENDING)
+
+| # | Item | Detail |
+|---|------|--------|
+| 1 | **Test coverage** | 9 tests, all happy-path detection. Missing: negative cases (verified good by hand, pinned by nothing), boundary values on every threshold that decides output (`0.18` contraction, `0.62` sequence, `0.35` flat, `55.0` confidence floor, apex window), `_risk_reward` — which would have caught the bug above — plus `_passes_scan_settings` / `apply_result_filters` and the `save_pattern_scan` → `get_pattern_scan` round-trip. |
+| 2 | Detection runs twice per symbol | `pattern_scanner.py` calls `_detect_family` with `zone_result=None` purely as a gate, then again for real. The gate is sound (it avoids paying for `DemandSupplyAnalysis` when there is no pattern) but the second full detection is waste — detect once, enrich after. Costs ~7ms per symbol, so this is a clarity problem, not a speed one. |
+| 3 | Dead branches in `_breakout_bias` | The final three branches all return `"Neutral Until Break"`, so both `zone_context` checks do nothing. |
+| 4 | Unused imports | The `pattern_types` block in `pattern_scanner.py` (12 names) and `bias_pill` in `pattern_detail.py`. |
+| 5 | Layering | `storage/database.py` imports `analysis.pattern_models`. No cycle today — `analysis` imports nothing from `storage` — but it puts domain deserialization in the bottom layer, where every other table speaks plain dicts. |
+| 6 | `_LOOKBACK` is a bar count | 120 bars is ~6 months daily but ~5 sessions on 15m, so the pattern window silently shrinks in wall-clock time as the timeframe gets finer. Probably too short to mean much intraday. |
 
 ---
 
