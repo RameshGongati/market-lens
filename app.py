@@ -11,6 +11,7 @@ from ui.pages.alerts_page import render_alerts_page
 from ui.pages.analysis_results import render_analysis_results
 from ui.pages.dashboard import render_detail_view
 from ui.pages.market_overview import render_market_overview
+from ui.pages.market_heatmap import render_market_heatmap
 from ui.pages.pattern_detail import render_pattern_detail
 from ui.pages.pattern_results import render_pattern_results
 from ui.pages.pattern_scanner import render_pattern_scanner
@@ -59,6 +60,8 @@ def init_session_state() -> None:
         "selected_pattern_symbol": None,
         "pattern_watch_symbols": set(),
         "pattern_reviewed_symbols": set(),
+        "heatmap_selected_group": "banks",
+        "heatmap_stock_universe": "group:banks",
         "notifications": [],
     }
     for key, value in defaults.items():
@@ -447,6 +450,20 @@ def main() -> None:
         st.session_state.active_page = "pattern_detail"
         st.session_state["_qp_pattern_handled"] = True
 
+    # Heatmap tile links use query params so the tile itself can be clickable
+    # without a separate Streamlit button under it.
+    _qp_heatmap_group = st.query_params.get("heatmap_group")
+    _qp_heatmap_view = st.query_params.get("heatmap_view", "Group Stocks")
+    _hm_query = (_qp_heatmap_group, _qp_heatmap_view)
+    if _qp_heatmap_group and st.session_state.get("_hm_qp_last") != _hm_query:
+        st.session_state["heatmap_selected_group"] = _qp_heatmap_group
+        st.session_state["heatmap_stock_universe"] = f"group:{_qp_heatmap_group}"
+        st.session_state["hm_stock_universe_select"] = f"group:{_qp_heatmap_group}"
+        if _qp_heatmap_view in {"Heatmap", "Group Stocks"}:
+            st.session_state["hm_view_widget"] = _qp_heatmap_view
+        st.session_state.active_page = "market_heatmap"
+        st.session_state["_hm_qp_last"] = _hm_query
+
     try:
         init_db()
     except Exception as exc:
@@ -499,6 +516,8 @@ def main() -> None:
         render_pattern_detail()
     elif page == "analysis_results":
         render_analysis_results()
+    elif page == "market_heatmap":
+        render_market_heatmap()
     elif page == "alerts":
         render_alerts_page()
     elif page == "reports":
