@@ -2,15 +2,22 @@
 
 A local stock market analysis application built with Python and Streamlit. Market Lens lets you build custom watchlists and analyse stocks with a **two-axis model** — pick a **Trading Type** (time horizon) and a **Primary Strategy** (Demand/Supply Zones or Trend Following), then layer optional **ODD Enhancers** on top — all powered by real-time data from multiple configurable sources.
 
+The app is a **multi-page Streamlit application**: a Market Overview dashboard, a full Market Heatmap, scan results, per-stock detail charts, a Chart Pattern Scanner, an Alerts feed with Telegram delivery, an F&O Results monitor, watchlist management, and Settings.
+
 ---
 
 ## Features
 
 - **Stock Search with Autocomplete** — Search from 2,374 NSE-listed stocks by symbol or company name; exchange is auto-filled on selection
 - **Custom Watchlists** — Create up to 10 watchlists, each holding up to 10 stocks (NSE / BSE)
-- **Predefined Index Watchlists** — One-click access to 10 NSE index watchlists: Nifty 50, Nifty Next 50, Nifty Auto, Nifty Bank, Nifty IT, Nifty Pharma, Nifty Metal, Nifty Energy, Nifty FMCG, and F&O Stocks (211 options-eligible stocks). Toggle between "My Watchlists" and "Index Watchlists" with a horizontal radio in the sidebar
+- **Predefined Index Watchlists** — One-click access to 10 NSE index watchlists: Nifty 50, Nifty Next 50, Nifty Auto, Nifty Bank, Nifty IT, Nifty Pharma, Nifty Metal, Nifty Energy, Nifty FMCG, and F&O Stocks (208 options-eligible stocks). Toggle between "My Watchlists" and "Index Watchlists" with a horizontal radio in the sidebar; the lists themselves can be refreshed from live NSE data via the sidebar
 - **Screener** — Collapsible multi-criteria screener in the sidebar to filter analysis results by: Proximity to Zone (≤3% / ≤5% / ≤10%), Min ODD Score (7 / 6+ / 5+), and Zone Strength (Normal / Strong / Very Strong). Filters combine with AND logic and apply instantly without re-running analysis
-- **Multiple Data Sources** — Yahoo Finance (default, no auth), NSE India scraping, Zerodha Kite Connect, Upstox API, TradingView
+- **Multiple Data Sources** — Yahoo Finance (default, no auth) and Jugaad Data (NSE direct) both fully working; NSE India, Zerodha Kite Connect, Upstox API and TradingView are scaffolded but not yet functional
+- **Market Heatmap** — 20 index/sector group tiles with live change %, drill-down to per-group stock tiles, gainers/losers/with-setups filters, and scan-setup overlays; reachable from the dashboard and via shareable `?heatmap_group=` links
+- **Chart Pattern Scanner** — an independent pipeline (separate from the zone engine) detecting Triangles (symmetrical/ascending/descending), VCP / Tight Base, Range Breakouts, Flags / Pennants and Double Tops / Bottoms across a watchlist, with stage (Forming / Near Apex / Breakout Confirmed), confidence, breakout bias and zone context; results are cached in SQLite so pattern deep links survive new tabs
+- **Telegram Alerts** — zone-proximity notifications via the Telegram Bot API: full setup UI on the Settings page (bot token, recipients, conditions, cooldown modes) plus a standalone background monitor (`alert_monitor.py`) that keeps scanning during market hours even with the app closed; an in-app Alerts page merges live matches with the delivery history
+- **F&O Results Monitor** — Reports page tracking earnings dates, EPS/revenue estimates, surprises and price reactions across the F&O universe, with timing filters and a per-sector reaction heatmap (disk-cached; fetch only on explicit Refresh)
+- **Zone Confirmation Screener** — opt-in mode surfacing stocks where price entered a zone and closed back out (evidence of a real reaction), drawn as CONFIRMED zones on the chart
 - **Two-Axis Analysis Model** — choose independently along two axes from the sidebar:
   - **Trading Type** (time horizon, sets the default candle timeframe): Options Trading, Intraday Trading, Short-term Trading, Long-term Investment
   - **Primary Strategy** (the base method):
@@ -27,11 +34,10 @@ A local stock market analysis application built with Python and Streamlit. Marke
 - **Market Status Indicator** — Live IST clock, green/red open/closed banner, and countdown to next open or close in the sidebar
 - **Analysis History** — Every run is preserved in the local database; a timeline table on the detail view shows the last 7 results with trend direction (improving / deteriorating / stable)
 - **Personal Notes per Stock** — Add, view, and delete timestamped notes on the stock detail page
-- **Filter & Sort Dashboard** — Filter results by status (Bullish / Bearish / Neutral) and strength (Strong / Medium / Weak); sort by status, strength, price change %, or alphabetically. Screener filters (proximity, score, zone strength) layer on top
-- **Export Analysis Results** — Download a three-sheet Excel workbook (Summary, Details, Alerts) or a formatted PDF report from the dashboard toolbar. Exports adapt to the active strategy (zone rows for Demand/Supply, signal/cross rows for Trend Following) and save to your **Windows Downloads** folder (`Downloads/market-lens`) when running under WSL, falling back to `~/market-lens-exports`
-- **Smart Defaults & Re-run** — Sidebar selections persist across sessions via `~/.market-lens/user_preferences.json`; one-click "Re-run Last" button with timestamp
-- **Interactive Charts** — Plotly charts with zone overlays, SMA/VWAP series, and RSI subplot
-- **In-app Alerts** — Icon/toggle only for now; when on, alerts are saved to the local SQLite database and surfaced as in-app toast notifications (no Telegram/email yet)
+- **Filter & Sort Results** — The Analysis Results page filters by status (Bullish / Bearish / Neutral) and strength (Strong / Medium / Weak) with removable screener chips, a ranked table with search and paging, and per-row View deep links. Screener filters (proximity, score, zone strength) layer on top
+- **Export Analysis Results** — Download a three-sheet Excel workbook (Summary, Details, Alerts) or a formatted PDF report. Exports adapt to the active strategy (zone rows for Demand/Supply, signal/cross rows for Trend Following) and save to your **Windows Downloads** folder (`Downloads/market-lens`) when running under WSL, falling back to `~/market-lens-exports`
+- **Persistent Preferences** — Sidebar selections (watchlist, data source, trading type, strategy, enhancers) are saved to `~/.market-lens/user_preferences.json` and **restored on every launch**; the last completed scan is also snapshotted to SQLite so results survive a new tab or session
+- **Interactive Charts** — Plotly charts with zone overlays, SMA/VWAP series, and RSI subplot; scan progress card with five selectable styles
 - **Encrypted Credential Storage** — API keys encrypted with Fernet and stored at `~/.market-lens/`
 - **Light Theme UI** — Clean Streamlit interface with wide layout
 
@@ -50,13 +56,15 @@ A local stock market analysis application built with Python and Streamlit. Marke
 | UI | Streamlit |
 | Charts | Plotly |
 | Data — default | yfinance |
-| Data — NSE | requests + BeautifulSoup4 |
-| Data — Zerodha | kiteconnect |
-| Data — Upstox | upstox-python-sdk |
-| Data — TradingView | tvdatafeed _(pending)_ |
+| Data — NSE direct | jugaad-data _(installed in the venv; not yet listed in requirements.txt)_ |
+| Data — NSE scrape | requests + BeautifulSoup4 _(scaffold)_ |
+| Data — Zerodha | kiteconnect _(scaffold)_ |
+| Data — Upstox | upstox-python-sdk _(scaffold)_ |
+| Data — TradingView | tvdatafeed _(pending — no stable library; app links out to tradingview.com)_ |
 | Data processing | pandas, numpy |
+| Alerts | Telegram Bot API (requests) |
 | Encryption | cryptography (Fernet) |
-| Database | SQLite (stdlib) |
+| Database | SQLite (stdlib, 7 tables) |
 | Excel export | openpyxl |
 | PDF export | reportlab |
 | Logging | Python stdlib logging |
@@ -67,7 +75,7 @@ A local stock market analysis application built with Python and Streamlit. Marke
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12
 - pip
 
 ### Steps
@@ -85,7 +93,10 @@ source .venv/bin/activate        # Linux / macOS
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. (Optional) Copy the example environment file
+# 4. Install the NSE-direct data source (not yet in requirements.txt)
+pip install jugaad-data
+
+# 5. (Optional) Copy the example environment file
 cp .env.example .env
 ```
 
@@ -111,60 +122,76 @@ On first run, Market Lens will:
 
 ```
 market-lens/
-├── app.py                     # Main Streamlit entry point
+├── app.py                     # Streamlit entry point: session state, deep-link handling, page routing
+├── alert_monitor.py           # Standalone background alert monitor (runs outside Streamlit)
 ├── requirements.txt
 ├── README.md
-├── .env.example
-├── .gitignore
+├── CLAUDE.md                  # Full developer context: conventions, GTF rules, gotchas
+├── docs/                      # architecture.md, requirements.md (GTF roadmap), REFINEMENT_PLAN.md
 ├── config/
-│   ├── settings.py            # Global constants
+│   ├── settings.py            # Global constants, data sources, limits
 │   ├── trading_config.py      # Two-axis model: trading types, strategies, enhancers, timeframes
 │   ├── credentials.py         # Encrypted credential store
+│   ├── alert_settings.py      # Telegram alert config load/save (config/alert_config.json, gitignored)
 │   └── preferences.py         # User preference persistence (+ old-schema migration)
 ├── data/
 │   ├── stock_list.json        # 2,374 NSE-listed stocks for autocomplete
-│   ├── predefined_watchlists.json  # 10 NSE index watchlists (Nifty 50, Auto, Bank, F&O, etc.)
-│   ├── sources/
-│   │   ├── base.py            # Abstract DataSource class
-│   │   ├── yahoo_finance.py   # yfinance integration
-│   │   ├── nse_india.py       # NSE website scraper
-│   │   ├── zerodha.py         # Kite Connect scaffold
-│   │   ├── upstox.py          # Upstox API scaffold
-│   │   └── tradingview.py     # tvdatafeed scaffold
-│   └── manager.py             # Source switcher
+│   ├── predefined_watchlists.json  # NSE index watchlists (Nifty 50, sectors, F&O, etc.)
+│   ├── manager.py             # DataSourceManager: source switching, timeframe-aware fetching
+│   ├── nse_bhavcopy.py        # NSE end-of-day file: repairs unfinished/missing bars
+│   ├── market_indices.py      # NIFTY 50 / BANK NIFTY snapshots + market bias
+│   ├── market_heatmap.py      # Heatmap groups, batched quotes, basket fallback
+│   ├── nse_indices.py         # Refreshes predefined watchlists from live NSE
+│   ├── earnings_calendar.py   # Results calendar, disk-cached daily
+│   └── sources/               # DataSource ABC + yahoo_finance, jugaad (working);
+│                              #   nse_india, zerodha, upstox, tradingview (scaffolds)
 ├── analysis/
 │   ├── base.py                # Abstract BaseAnalysis + Strength type
-│   ├── demand_supply.py       # Legin/base/legout zone engine + ODD score
+│   ├── demand_supply.py       # Zone-engine orchestrator: detection → scoring → filtering → enrichment
 │   ├── trend_following.py     # 50/200 SMA golden-cross / death-cross strategy
-│   ├── zone_engine/           # Zone detection, scoring, trend, EMA20 + Fibonacci enhancers
-│   ├── long_term.py           # (legacy single-axis helper)
-│   ├── short_term.py          # (legacy single-axis helper)
-│   └── intraday.py            # (legacy single-axis helper)
+│   ├── zone_engine/           # GTF engine: candles, patterns, scoring, models, filters,
+│   │                          #   trend (50-SMA clock), EMA20 + Fibonacci enhancers
+│   ├── pattern_models.py      # PatternMatch / PatternPoint (Chart Pattern Scanner)
+│   ├── pattern_scanner.py     # Pattern scan orchestration + result filters + export rows
+│   └── pattern_detectors/     # Triangles, VCP, range breakouts, flags/pennants, doubles
 ├── watchlist/
 │   ├── models.py              # Watchlist & Stock dataclasses
 │   └── manager.py             # CRUD with limits enforced
 ├── ui/
 │   ├── components/
-│   │   ├── stock_card.py      # Colour-coded card with price & strength
-│   │   ├── stock_detail.py    # Chart toggle, history, notes, export
+│   │   ├── panels.py          # Shared page surfaces (cards, chips, pagination, scan progress)
+│   │   ├── stock_detail.py    # Detail page: 7 tabs, chart, setup rail, history, notes
+│   │   ├── stock_card.py      # Deep-link builder for View links
 │   │   ├── watchlist_panel.py # Watchlist management + autocomplete search
-│   │   ├── sidebar.py         # Market status, smart defaults, re-run
-│   │   ├── alerts_toggle.py
+│   │   ├── sidebar.py         # Two-axis controls, market status, watchlist picker, nav
+│   │   ├── tradingview_chart.py  # TradingView deep-link placeholder
 │   │   ├── credentials_form.py
 │   │   └── notifications.py
 │   └── pages/
-│       ├── dashboard.py       # Filter/sort grid + export buttons
+│       ├── dashboard.py       # Scan engine + shared helpers (not a routed page itself)
+│       ├── market_overview.py # Dashboard landing page
+│       ├── market_heatmap.py  # Full heatmap page
+│       ├── analysis_results.py # Scan results page (runs the scan, saves the snapshot)
+│       ├── alerts_page.py     # Alerts feed (live matches + Telegram history)
+│       ├── reports_page.py    # F&O results monitor
+│       ├── pattern_scanner.py / pattern_results.py / pattern_detail.py / pattern_common.py
 │       ├── watchlist_manager.py
-│       └── settings.py        # Preferences, data management, roadmap
+│       ├── placeholders.py    # Trade Journal (awaiting requirements)
+│       └── settings.py        # Status strip, Telegram setup, monitor control, data management
 ├── alerts/
-│   ├── manager.py             # Alert trigger logic
-│   └── inapp.py               # Notification handler
+│   ├── telegram.py            # Telegram Bot API delivery + message formatting
+│   ├── zone_alert_checker.py  # Zone-proximity matching over cached results
+│   ├── manager.py             # In-app alert trigger logic
+│   └── monitor_control.py     # flock-based monitor status + start/stop
 ├── storage/
-│   └── database.py            # SQLite CRUD + history + notes
+│   └── database.py            # SQLite CRUD (7 tables: watchlists, stocks, analysis_results,
+│                              #   latest_analysis_snapshot, alerts, stock_notes, pattern_scans)
+├── tests/                     # 481 pytest tests across 22 files
 └── utils/
     ├── logger.py              # File + console logging
     ├── helpers.py             # format_currency, format_timestamp, search_stocks
     ├── market_hours.py        # NSE market hours, IST clock, countdown
+    ├── system_info.py         # App-dir disk footprint + cache clearing
     └── export.py              # Excel (openpyxl) and PDF (reportlab) export
 ```
 
@@ -172,13 +199,14 @@ market-lens/
 
 ## Data Sources Explained
 
-| Source | Auth Required | Notes |
-|---|---|---|
-| **Yahoo Finance** | No | Default source; use `.NS` suffix for NSE, `.BO` for BSE |
-| **NSE India** | No | Scrapes NSE website; may break on site changes |
-| **Zerodha Kite Connect** | api_key, api_secret, access_token | Requires Kite Connect developer account |
-| **Upstox API** | api_key, api_secret, access_token | Requires Upstox developer account |
-| **TradingView** | username, password | Uses tvdatafeed; requires TradingView account |
+| Source | Status | Auth Required | Notes |
+|---|---|---|---|
+| **Yahoo Finance** | ✅ Working | No | Default source; `.NS` suffix for NSE, `.BO` for BSE. Prices fetched **unadjusted** (`auto_adjust=False`) so zone levels match TradingView/Kite |
+| **Jugaad Data (NSE)** | ✅ Working | No | Reads NSE directly; more reliable recent sessions than Yahoo. Requires `pip install jugaad-data` |
+| **NSE India** | Scaffold | No | Scrapes NSE website; not functional yet |
+| **Zerodha Kite Connect** | Scaffold | api_key, api_secret, access_token | Requires Kite Connect developer account |
+| **Upstox API** | Scaffold | api_key, api_secret, access_token | Requires Upstox developer account |
+| **TradingView** | Scaffold | username, password | tvdatafeed has no stable release; the app links out to tradingview.com instead |
 
 Credentials are entered via the sidebar form and stored encrypted at `~/.market-lens/credentials.json`. They are never committed to version control.
 
@@ -188,18 +216,21 @@ Credentials are entered via the sidebar form and stored encrypted at `~/.market-
 
 **Current limitations (honest status):**
 
+- **Trade Plan fields are placeholders** — entry, stop-loss, targets, risk/reward and position size render as "Phase 2 pending"; GTF Phase 2 (M1/M7/M29) is the next implementation phase
 - **RSI enhancer** is selectable in the sidebar but **not yet wired** into scoring — selecting it currently has no effect on the analysis
 - **Options Trading** trading type is available as a time horizon, but a dedicated options-specific strategy/spec is still **pending** (it currently uses the chosen primary strategy on daily data)
 - **Intraday data** (15m / 75m) is **limited by data providers** for Indian stocks — when unavailable the app falls back to Daily candles with a notice
-- **Alerts** are **in-app only** (toggle + toast); there is no Telegram or email delivery yet
+- **Alerts persist only for user watchlists** — predefined index/F&O scans surface live matches but write no history rows (their stocks carry no database id)
+- **Trade Journal** page is routed but awaiting requirements (renders a placeholder)
 - **TradingView** full data integration is pending a stable library; the app links out to tradingview.com in the meantime
 
 **Planned features:**
 
+- GTF Phase 2: entry / stop-loss / target computation (M1), ATR volatility buffer (M7), Entry Types 1/2/3 (M29)
+- Multi-timeframe (HTF/ITF/LTF) analysis — GTF Phase 3
 - Wire up the RSI enhancer into the confluence scoring
 - Dedicated Options Trading strategy (greeks / expiry-aware)
 - Dark theme toggle
-- Telegram / email alert notifications
 - Live market news feed
 - Multi-exchange global support (NYSE, NASDAQ, LSE)
 - Backtesting engine with historical signal replay
@@ -210,7 +241,6 @@ Credentials are entered via the sidebar form and stored encrypted at `~/.market-
 - Zerodha Kite Connect order placement integration
 - Portfolio P&L tracking
 - Custom alert conditions (price triggers, RSI thresholds)
-- Sector-wise heatmap view
 
 ---
 
