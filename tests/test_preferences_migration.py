@@ -133,6 +133,18 @@ def test_scan_progress_style_preference_is_preserved() -> None:
     assert prefs["scan_progress_style"] == "pulse"
 
 
+def test_watchlist_selection_preferences_are_preserved() -> None:
+    _write_prefs({
+        "watchlist_source": "Index Watchlists",
+        "selected_predefined_watchlist": "F&O Stocks",
+        "selected_nse_batch": "Stocks 201-400",
+    })
+    prefs = load_preferences()
+    assert prefs["watchlist_source"] == "Index Watchlists"
+    assert prefs["selected_predefined_watchlist"] == "F&O Stocks"
+    assert prefs["selected_nse_batch"] == "Stocks 201-400"
+
+
 # ---------------------------------------------------------------------------
 # Idempotency + new-schema-untouched
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import html
 
 import streamlit as st
 
+from storage.database import save_latest_analysis_snapshot
 from ui.components.stock_card import build_detail_url
 from ui.components.panels import (
     bias_pill,
@@ -91,6 +92,19 @@ def render_analysis_results() -> None:
         produced = run_scan(ctx)
         if produced is not None:
             st.session_state["_last_scan_label"] = _now_label()
+            try:
+                save_latest_analysis_snapshot(
+                    produced,
+                    {
+                        "last_scan_label": st.session_state["_last_scan_label"],
+                        "used_tf_label": st.session_state.get("_used_tf_label", ""),
+                        "fallback_symbols": st.session_state.get(
+                            "_fetch_fallback_symbols", []
+                        ),
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Could not save latest analysis snapshot: %s", exc)
         # Rerun once the scan finishes. app.main() renders the sidebar BEFORE
         # routing here, so the Alerts badge was computed against the previous
         # (usually empty) results and stayed stale until some later

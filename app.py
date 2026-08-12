@@ -3,9 +3,14 @@
 import streamlit as st
 
 from config.credentials import load_credentials
+from config.preferences import load_preferences
 from config.settings import SUPPORTED_DATA_SOURCES
 from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
-from storage.database import get_pattern_scan, init_db
+from storage.database import (
+    get_pattern_scan,
+    init_db,
+    load_latest_analysis_snapshot,
+)
 from ui.components.sidebar import render_sidebar
 from ui.pages.alerts_page import render_alerts_page
 from ui.pages.analysis_results import render_analysis_results
@@ -27,23 +32,32 @@ logger = get_logger(__name__)
 def init_session_state() -> None:
     """Initialise all required Streamlit session state keys.
 
-    These are deliberately fixed defaults, not the saved preferences: every
-    fresh app launch starts from a known baseline. A stock opened in a new
-    browser tab is the one case that must NOT use these — it adopts the
-    opening tab's selections from the URL instead (see the ?stock= handler
-    in :func:`main`), because a new tab is a separate Streamlit session with
-    empty state and would otherwise silently analyse against different
-    settings than the ones on screen.
+    User-facing sidebar selections begin from saved preferences. This matters
+    for pages reached through a URL, including a clickable heatmap tile: that
+    navigation can create a fresh Streamlit session, so temporary session
+    state would otherwise reset the selected F&O/watchlist to its default.
+
+    A stock opened in a new browser tab still adopts the originating analysis
+    context from the URL afterwards (see the ``?stock=`` handler in
+    :func:`main`), which remains the authoritative detail-chart context.
     """
+    prefs = load_preferences()
     defaults: dict = {
         "active_page": "dashboard",
-        "selected_watchlist_id": None,
+        "selected_watchlist_id": prefs.get("selected_watchlist_id"),
+        "watchlist_source": prefs.get("watchlist_source", "Index Watchlists"),
+        "selected_predefined_watchlist": prefs.get(
+            "selected_predefined_watchlist", "Nifty 50"
+        ),
+        "selected_nse_batch": prefs.get("selected_nse_batch", ""),
         # Two-axis analysis model (Trading Type + Primary Strategy + Enhancers).
-        "trading_type": "Options Trading",
-        "primary_strategy": "Demand/Supply Zones",
-        "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
-        "selected_data_source": "Yahoo Finance",
-        "alerts_on": False,
+        "trading_type": prefs.get("trading_type", "Options Trading"),
+        "primary_strategy": prefs.get("primary_strategy", "Demand/Supply Zones"),
+        "enhancers": list(prefs.get("enhancers", [
+            "Fibonacci Confluence", "EMA 20 Confluence",
+        ])),
+        "selected_data_source": prefs.get("selected_data_source", "Yahoo Finance"),
+        "alerts_on": prefs.get("alerts_on", False),
         "credentials": {},
         "analysing": False,
         "selected_stock_symbol": None,
@@ -469,6 +483,26 @@ def main() -> None:
     except Exception as exc:
         st.error(f"Database initialisation failed: {exc}")
         logger.exception("Database init error")
+
+    # A normal URL navigation (such as selecting a clickable heatmap tile)
+    # can open a fresh Streamlit session. Restore the latest completed scan so
+    # Analysis Results does not appear empty after that navigation.
+    if not st.session_state.get("analysis_results"):
+        try:
+            snapshot = load_latest_analysis_snapshot()
+        except Exception as exc:
+            logger.warning("Could not restore latest analysis snapshot: %s", exc)
+            snapshot = None
+        if snapshot and snapshot.get("results"):
+            st.session_state["analysis_results"] = snapshot["results"]
+            metadata = snapshot.get("metadata", {}) or {}
+            st.session_state["_last_scan_label"] = metadata.get(
+                "last_scan_label", snapshot.get("created_at", "")
+            )
+            st.session_state["_used_tf_label"] = metadata.get("used_tf_label", "")
+            st.session_state["_fetch_fallback_symbols"] = metadata.get(
+                "fallback_symbols", []
+            )
 
     _scan_id = st.session_state.get("_qp_pattern_scan_id")
     if _scan_id and not st.session_state.get("_qp_pattern_loaded"):
