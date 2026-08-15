@@ -9,6 +9,7 @@ Runs standalone (not inside Streamlit). Reuses the same zone engine
 code as the app — no detection or scoring logic is duplicated.
 """
 
+import os
 import signal
 import sys
 import time
@@ -94,6 +95,30 @@ def _record_alert(
     history[key] = datetime.now().isoformat()
 
 
+def _flush_history(history: dict) -> None:
+    """Write the alert history to disk, MERGING rather than overwriting.
+
+    Re-reads the config first and merges, instead of saving the copy this
+    process loaded at cycle start. Two monitors running at once would
+    otherwise each write back their own stale snapshot, and whichever
+    finished last would erase the other's alerts entirely — silent history
+    loss with no error anywhere. The single-instance lock in :func:`main`
+    should prevent that pairing, but a merge costs nothing and means a
+    concurrent writer can only ever add.
+    """
+    try:
+        current = load_alert_config() or {}
+        merged = dict(current.get("alert_history") or {})
+        merged.update(history)
+        current["alert_history"] = merged
+        save_alert_config(current)
+        # Keep the in-memory copy in step so the cooldown check sees whatever
+        # the other writer added.
+        history.update(merged)
+    except Exception as exc:
+        _log(f"  Could not persist alert history: {exc}")
+
+
 def _run_cycle(config: dict) -> int:
     """Run one check cycle. Returns number of alerts sent."""
     tg = config.get("telegram", {})
@@ -172,6 +197,13 @@ def _run_cycle(config: dict) -> int:
                 result_send = send_to_all_recipients(bot_token, recipients, msg)
                 if result_send["sent"]:
                     _record_alert(symbol, proximal, cooldown, history)
+                    # Persist immediately, not at the end of the cycle. The
+                    # Telegram message is already on the user's phone; leaving
+                    # the record in memory until the loop finishes meant the
+                    # Alerts page could not show it for minutes — observed as
+                    # a 6-minute gap between an APLAPOLLO alert at 07:23 and
+                    # the file being written at 07:29.
+                    _flush_history(history)
                     alerts_sent += 1
                     _log(f"  Alert: {symbol} {category} zone (Score {score}, "
                          f"{max(distance, 0):.1f}% away)")
@@ -205,10 +237,47 @@ def _wait_for_market_open() -> None:
         time.sleep(60)
 
 
+def _acquire_single_instance_lock():
+    """Exit if another monitor is already running.
+
+    The crontab starts this script every weekday, but the script never exits
+    on its own — it loops until killed. Each cron run therefore stacked
+    another copy on top of the last: two were found running, three days old
+    and twelve hours apart, each sending the user a duplicate Telegram
+    message for every alert.
+
+    An flock on a file in the app directory is released automatically when
+    the process dies, however it dies, so a crashed monitor cannot leave a
+    stale lock the way a bare pidfile would.
+
+    Returns the open file handle, which the caller must keep referenced for
+    the lifetime of the process — closing it releases the lock.
+    """
+    import fcntl
+    from pathlib import Path
+
+    lock_dir = Path.home() / ".market-lens"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_dir / "alert_monitor.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
+
+
 def main() -> None:
     """Entry point — run the alert monitor loop."""
     signal.signal(signal.SIGINT, _handle_shutdown)
     signal.signal(signal.SIGTERM, _handle_shutdown)
+
+    lock = _acquire_single_instance_lock()
+    if lock is None:
+        _log("Another alert monitor is already running — exiting.")
+        return
 
     _log("Market Lens Alert Monitor started")
     config = load_alert_config()

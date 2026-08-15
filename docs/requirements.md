@@ -360,9 +360,38 @@ Oversold at demand = bonus, overbought at supply = bonus. Divergence detection.
 
 Breakout into opposing fresh zone = trap warning. Single-TF initially.
 
-### #30-31 M57/M58 + M69 — Candlestick & Conventional Patterns (DNB)
+### #30 M57/M58 — Candlestick Patterns (DNB)
 
-Explicitly excluded per user directive. No code exists (correct).
+Explicitly excluded per user directive. No code exists (correct). This
+directive stands — the M69 reversal below does **not** extend to it.
+
+### #31 M69 — Conventional Chart Patterns (DONE — `c37385b`, `6f76404`, 2026-08-06)
+
+**Directive reversed.** Previously DNB on the grounds that conventional
+pattern detection would dilute the GTF zone methodology. Built instead as a
+wholly separate pipeline, which is what makes the original objection moot: the
+zone engine is untouched, `PatternMatch` is its own dataclass rather than a
+`Zone`, and nothing in this path can write to `odd_score`.
+
+**Code:** `analysis/pattern_models.py`, `analysis/pattern_scanner.py`,
+`analysis/pattern_detectors/` (7 modules), `ui/pages/pattern_*.py` (4 pages),
+`pattern_scans` table in `storage/database.py`.
+
+Five families: Triangles (symmetrical / ascending / descending), VCP / Tight
+Base, Range Breakouts (rectangle + bull/bear break), Flag / Pennant, Double
+Top / Bottom. Every label is declared once in `pattern_detectors/pattern_types.py`.
+
+Each match carries stage (`Forming` / `Near Apex` / `Breakout Confirmed`),
+confidence, apex proximity, breakout bias, freshness in candles, volume
+contraction, and `zone_context` — the one place GTF output is consumed, as
+nearest demand/supply proximity only.
+
+**Tests:** 9, across `test_triangle_pattern_detector.py` and
+`test_named_pattern_detectors.py`. Thin relative to the zone engine's
+convention (boundary values at/above/below threshold, both directions) — the
+gaps are listed under *Chart Pattern Scanner* in `REFINEMENT_PLAN.md`.
+
+**Status:** Shipped. Open items in `REFINEMENT_PLAN.md`.
 
 ---
 
@@ -500,6 +529,107 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 
 ---
 
+## UI — Multi-Page Application (DONE — `96d5c36`..`4405fd6`, 2026-08-03; heatmap added `736fca8`, 2026-08-09)
+
+The single-page dashboard became a routed multi-page app — `app.main()` now
+routes twelve states. `dashboard.py` stopped being a page and now holds the
+scan plus the helpers the pages share — see Gotcha 22 in `CLAUDE.md`.
+
+| Page | Module | Content |
+|------|--------|---------|
+| Dashboard | `market_overview.py` | Market bias (NIFTY vs 20 EMA), NIFTY 50 / BANK NIFTY with sparklines, heatmap widget, valid + high-ODD setup counts, four zone-state pills, top opportunities, recent alerts, quick tools |
+| Market Heatmap | `market_heatmap.py` | 20 index/sector group tiles → per-group stock tiles — see *Market Heatmap* below |
+| Analysis Results | `analysis_results.py` | Scan summary cards, Status/Strength/Sort, removable screener chips, ranked table with search + paging, per-row View deep link; executes the scan and saves the `latest_analysis_snapshot` |
+| Stock Detail | `stock_detail.py` | 7 tabs (Chart first — Gotcha 25) with a Setup Summary / Quick Trade Plan rail |
+| Alerts | `alerts_page.py` | Live zone-proximity matches and the Telegram delivery history |
+| Reports | `reports_page.py` | F&O results monitor — see below |
+| Pattern Scanner | `pattern_scanner.py` / `pattern_results.py` / `pattern_detail.py` | Chart Pattern Scanner — see #31 |
+| Trade Journal | `placeholders.py` | Routed, awaiting requirements |
+| Watchlists / Settings | unchanged | |
+
+**Scan progress** is a standalone page — donut, stock count and five
+milestones. The milestones are paced off the percentage and named for the run
+as a whole, because all five stages actually execute per stock inside one loop
+iteration; a checklist ticking on real phase transitions would reset fifty
+times. The measured quantities are the count and the percentage. Streamlit's
+native Stop is used because a custom in-page button cannot work — the loop
+blocks the script, so the page never processes the click.
+
+**Placeholders** carry their real label and name the phase that will fill
+them, never a zero: entry/stop/target and risk-reward (Phase 2), HTF/ITF trend
+(Phase 3), everything sector-related (Phase 7).
+
+---
+
+## Reports — F&O Results Monitor (DONE Phase 1 — `4405fd6`, 2026-08-03)
+
+Earnings/results tracking on live yfinance data.
+
+**Live:** next result date, consensus EPS and revenue estimates, countdown and
+status, most recent reported EPS with surprise %, close-to-close price
+reaction, sector (from the shipped sector watchlists), upcoming calendar,
+recent releases, and a per-sector reaction heatmap.
+
+**Caching is structural, not an optimisation.** One symbol costs ~790ms
+(`calendar` + `earnings_dates`), so the 208-stock F&O universe is ~164s. The
+page renders from a disk cache at `~/.market-lens/earnings` and fetches only
+on an explicit Refresh — `get_earnings(..., cache_only=True)` on render, or
+opening the page fetches everything uncached inline. See Gotcha 27. The cache
+is keyed by calendar day.
+
+**High Impact rule** (transparent by design — every threshold appears verbatim
+in the badge tooltip):
+
+| Case | Condition |
+|------|-----------|
+| Upcoming | due within 2 days **AND** in the F&O universe **AND** (in a major index/sector list **OR** revenue estimate >= 10,000 Cr) |
+| Released | EPS surprise >= 5% **OR** price reaction >= 3% |
+
+**Deliberately blank in Phase 1:** Session (BMO/AMO) — yfinance has no
+reliable Indian pre/post-market marker; OI / Vol Spike — needs an F&O
+derivatives pipeline. Both are stated in the page's Important Notes. Result
+alert subscriptions are Phase 2; the page shows the existing zone-alert count.
+
+**Timing filters added (`542e658`, 2026-08-11):** same-day results are not
+"still due", with explicit upcoming/recent windows — 3 tests in
+`tests/test_reports_timing.py`.
+
+---
+
+## Market Heatmap (DONE — `736fca8` + `1eaf15c`, 2026-08-09..10)
+
+A market/sector heatmap dashboard: 20 index/sector groups
+(`data/market_heatmap.py:GROUPS`) drawn as a clickable tile grid on a
+dedicated page (`ui/pages/market_heatmap.py`), with a compact widget on the
+Market Overview. Groups are watchlist-backed or manual symbol lists; quotes
+come from one batched `yf.download`, with an unweighted-basket fallback
+(`source="basket"`) when Yahoo's index ticker is unavailable.
+
+Reached from the dashboard's "View Full Heatmap" button, the Quick Tools grid,
+or `?heatmap_group=` deep links — not from the sidebar nav. Tiles are real URL
+navigations, which forced three session-restoration mechanisms in `1eaf15c`:
+
+1. `init_session_state()` now **restores saved preferences at launch**
+   (reverses the old "recorded, not restored" design — Gotcha 14 in
+   `CLAUDE.md` documents the new behaviour).
+2. A new single-row `latest_analysis_snapshot` table stores the last completed
+   scan so results survive a fresh session (predefined universes have no
+   `stocks` rows, so `analysis_results` cannot restore them).
+3. The heatmap query-param handler is guarded by an idempotency tuple, not a
+   one-shot flag, so tile-to-tile navigation re-fires while plain reruns do
+   not clobber in-page selections.
+
+Quote tiles are cached with `st.cache_data` (15 min groups / 5 min stocks);
+scan-setup overlays are applied **outside** the cache so a fresh scan updates
+setup counts without invalidating quotes.
+
+**Tests:** 6 in `test_market_heatmap.py` (tile shaping, basket fallback,
+overlays, filter/sort) + 2 in `test_analysis_snapshot.py` (snapshot
+round-trip) + 2 preference-restoration tests added to
+`test_preferences_migration.py`.
+
+---
+
 ## Alerts — Telegram Zone Proximity Notifications (DONE — `55922c9`..`75b2094`)
 
 ### Alert Configuration (DONE)
@@ -514,17 +644,20 @@ The deep link carries the mode as **`cf=1|0`** — see Gotcha 13 in `CLAUDE.md`.
 - **Format:** HTML-formatted messages with 📈/📉 icons, price, zone type, score, closing quality, proximal/distal, trend, IST timestamp
 - **Test button:** Settings page has "Send Test Message" to verify bot connectivity
 
-### In-App Alert Badges (DONE)
+### In-App Alerts (DONE — reshaped by the page split)
 - **Module:** `alerts/zone_alert_checker.py`
 - **AlertMatch dataclass:** symbol, current_price, zone, distance_pct, trend
-- **Dashboard banner:** Expandable "🔔 N stocks near zones" at top of results grid — uses cached analysis results, no extra data fetching
+- **Alerts page:** the old dashboard banner lost its caller in the page split (`96d5c36`) and its role moved to the dedicated Alerts page (`0fb5106`, `eb954a9`) — one deduplicated feed merging live zone-proximity matches with the Telegram delivery history, sorted by time (Gotcha 31), with a red count badge in the sidebar nav
 - **Conditions:** Respects configured proximity threshold, min score, and zone type filter
+- **Known limitation:** signal rows persist to the `alerts` table only for user watchlists — predefined index/F&O stocks carry no `stock_id` (see *Alerts Never Persist for Index Watchlists* in `REFINEMENT_PLAN.md`)
 
 ### Background Monitor (DONE)
 - **Script:** `alert_monitor.py` (standalone, not inside Streamlit)
 - **Schedule:** Every 5 minutes during market hours (9:15 AM – 3:30 PM IST, Mon–Fri)
-- **Cooldown:** once-per-zone-per-day, every-approach, or once-per-zone-ever — persisted in alert_history
-- **Code reuse:** Uses same `DemandSupplyAnalysis`, `detect_zones`, `filter_zones` — no duplication
+- **Cooldown:** once-per-zone-per-day, every-approach, or once-per-zone-ever — persisted in alert_history (flushed per alert, `fa7dcd7`)
+- **Single instance:** `fcntl.flock` on `~/.market-lens/alert_monitor.lock`; the app probes it via `alerts/monitor_control.py` (Gotcha 32)
+- **Code reuse:** Detection reuses `DemandSupplyAnalysis` / `detect_zones` / `filter_zones`. The zone-proximity **distance math**, however, is an inline copy of `zone_alert_checker`'s — the two can drift (see *Known Issues* in `REFINEMENT_PLAN.md`)
+- **Fixed inputs:** Hardcodes Yahoo Finance and the Short-term timeframe (1y/1d) regardless of the app's sidebar selections
 - **Graceful shutdown:** Handles SIGINT/SIGTERM, saves state before exit
 
 ---

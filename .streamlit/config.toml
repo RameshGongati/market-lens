@@ -26,3 +26,12 @@ backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F7F6F1"
 
 textColor = "#26262B"
+
+[client]
+# Hide Streamlit's own toolbar (the "Deploy" button and the ⋮ menu carrying
+# Rerun / Clear cache / Print / Record / About). None of it belongs to Market
+# Lens — it is Streamlit's developer chrome, offering to publish the app to
+# Streamlit Community Cloud and exposing framework controls that would only
+# confuse someone reading a trading screen. "minimal" keeps the running-status
+# indicator, which is genuinely useful during a scan.
+toolbarMode = "minimal"

@@ -97,6 +97,68 @@ def _count_active_screener_filters() -> int:
     return active
 
 
+def _alert_badge_count() -> int:
+    """Number shown on the Alerts nav item.
+
+    Counts stocks currently near a zone in the last scan, falling back to
+    unread rows in the alerts table when no scan has run. Both come from
+    ``ui.pages.alerts_page`` so the badge and the page it opens can never
+    report different numbers.
+    """
+    try:
+        from ui.pages.alerts_page import unread_alert_count, zone_alert_matches
+        near = len(zone_alert_matches())
+        return near if near else unread_alert_count()
+    except Exception:
+        return 0
+
+
+def _render_secondary_nav() -> None:
+    """Alerts / Reports / Trade Journal / Settings, one row each."""
+    current = st.session_state.get("active_page", "dashboard")
+    count = _alert_badge_count()
+
+    items = (
+        ("Alerts", "alerts", ":material/notifications:"),
+        ("Reports", "reports", ":material/description:"),
+        ("Trade Journal", "trade_journal", ":material/menu_book:"),
+        ("Settings", "settings", ":material/settings:"),
+    )
+    for label, page, icon in items:
+        # The Alerts count is drawn as a red pill by CSS rather than put in
+        # the label. Streamlit buttons have no badge slot, and BOTH markdown
+        # routes fail here: this build silently drops :red-badge[] and :red[]
+        # from a button label, rendering a plain "Alerts 17" — verified in the
+        # DOM. So a marker element is emitted immediately before the button
+        # and app.py hangs a ::after on the next sibling, with the count baked
+        # into the rule because CSS cannot read application state.
+        if page == "alerts" and count:
+            st.markdown(
+                "<div style='letter-spacing:0.13px;height:0;margin:0;'></div>"
+                "<style>"
+                "section[data-testid=\"stSidebar\"] "
+                "[data-testid=\"stElementContainer\"]:has("
+                "[style*=\"letter-spacing: 0.13px\"]) + "
+                "[data-testid=\"stElementContainer\"] .stButton button p::after"
+                "{content:\"" + str(count) + "\";background:#B3261E;"
+                "color:#FFFFFF;border-radius:10px;padding:1px 7px;"
+                "margin-left:8px;font-size:0.7rem;font-weight:700;"
+                "vertical-align:middle;}"
+                "</style>",
+                unsafe_allow_html=True,
+            )
+        text = label
+        if st.button(
+            text,
+            icon=icon,
+            use_container_width=True,
+            type="primary" if page == current else "secondary",
+            key=f"nav2_{page}",
+        ):
+            st.session_state.active_page = page
+            st.rerun()
+
+
 def _panel_marker() -> None:
     """Emit an invisible marker identifying a container as a sidebar PANEL.
 
@@ -322,13 +384,16 @@ def render_sidebar() -> None:
             # The current page is rendered as a FILLED button and the others
             # as outlines, so the active page is visible at a glance —
             # previously all three were identical.
+            #
+            # Settings moved out of this row to the secondary nav group below
+            # the analysis controls: this row is for the places you go while
+            # working, and Settings is not one of them.
             _current_page = st.session_state.get("active_page", "dashboard")
             _nav = (
                 ("Dashboard", "dashboard", ":material/dashboard:"),
                 ("Watchlists", "watchlist_manager", ":material/list:"),
-                ("Settings", "settings", ":material/settings:"),
             )
-            for _col, (_label, _page, _icon) in zip(st.columns(3), _nav):
+            for _col, (_label, _page, _icon) in zip(st.columns(2), _nav):
                 with _col:
                     if st.button(
                         _label,
@@ -339,6 +404,20 @@ def render_sidebar() -> None:
                     ):
                         st.session_state.active_page = _page
                         st.rerun()
+            _pattern_active = _current_page in {
+                "pattern_scanner",
+                "pattern_results",
+                "pattern_detail",
+            }
+            if st.button(
+                "Pattern Scanner",
+                icon=":material/query_stats:",
+                use_container_width=True,
+                type="primary" if _pattern_active else "secondary",
+                key="nav_pattern_scanner",
+            ):
+                st.session_state.active_page = "pattern_scanner"
+                st.rerun()
 
         # ---------- Panel 2: analysis controls ----------
         with st.container(border=True):
@@ -379,12 +458,9 @@ def render_sidebar() -> None:
             # ---------- Watchlist ----------
             with st.container(border=True):
                 _section_header("WATCHLIST", "watchlist")
-                # Segmented control rather than three stacked radios: the radios
-                # took three lines in a rail that already scrolls well past one
-                # screen, and read as a form rather than a switch.
                 _WL_SOURCES = ["My Watchlists", "Index Watchlists", "All NSE Stocks"]
                 _WL_SHORT = {
-                    "My Watchlists": "Mine",
+                    "My Watchlists": "Custom",
                     "Index Watchlists": "Index",
                     "All NSE Stocks": "All NSE",
                 }
@@ -392,20 +468,22 @@ def render_sidebar() -> None:
                 _current_wl = st.session_state.get("watchlist_source", "Index Watchlists")
                 if _current_wl not in _WL_SOURCES:
                     _current_wl = "Index Watchlists"
-                wl_source = st.segmented_control(
-                    "Watchlist source",
-                    _WL_SOURCES,
-                    default=_current_wl,
-                    format_func=lambda s: _WL_SHORT.get(s, s),
-                    key="sidebar_wl_source",
-                    label_visibility="collapsed",
-                    width="stretch",
-                )
-                # segmented_control returns None if the user clears the selection;
-                # a watchlist source is required, so fall back to the previous one.
-                if wl_source is None:
-                    wl_source = _current_wl
+
+                source_col, list_col = st.columns([0.95, 1.75])
+                with source_col:
+                    wl_source = st.selectbox(
+                        "Watchlist source",
+                        _WL_SOURCES,
+                        index=_WL_SOURCES.index(_current_wl),
+                        format_func=lambda s: _WL_SHORT.get(s, s),
+                        key="sidebar_wl_source",
+                        label_visibility="collapsed",
+                    )
                 st.session_state["watchlist_source"] = wl_source
+                if wl_source != _current_wl:
+                    save_preferences({"watchlist_source": wl_source})
+
+                _watchlist_caption = ""
 
                 if wl_source == "My Watchlists":
                     try:
@@ -421,18 +499,20 @@ def render_sidebar() -> None:
                             wl_idx = wl_ids.index(current_wl_id) if current_wl_id in wl_ids else 0
                         except (ValueError, TypeError):
                             wl_idx = 0
-                        selected_wl_name = st.selectbox(
-                            "Select watchlist",
-                            wl_names,
-                            index=wl_idx,
-                            key="sidebar_watchlist_select",
-                            label_visibility="collapsed",
-                        )
+                        with list_col:
+                            selected_wl_name = st.selectbox(
+                                "Select watchlist",
+                                wl_names,
+                                index=wl_idx,
+                                key="sidebar_watchlist_select",
+                                label_visibility="collapsed",
+                            )
                         selected_wl_id = wl_ids[wl_names.index(selected_wl_name)]
                         st.session_state.selected_watchlist_id = selected_wl_id
                         save_preferences({"selected_watchlist_id": selected_wl_id})
                     else:
-                        st.caption("No watchlists yet. Create one in Watchlists.")
+                        with list_col:
+                            st.caption("No custom watchlists yet.")
                         st.session_state.selected_watchlist_id = None
                 elif wl_source == "Index Watchlists":
                     predefined = load_predefined_watchlists()
@@ -440,21 +520,33 @@ def render_sidebar() -> None:
                         pd_names = [w["name"] for w in predefined]
                         current_pd = st.session_state.get("selected_predefined_watchlist", pd_names[0])
                         pd_idx = pd_names.index(current_pd) if current_pd in pd_names else 0
-                        selected_pd = st.selectbox(
-                            "Select index watchlist",
-                            pd_names,
-                            index=pd_idx,
-                            key="sidebar_predefined_select",
-                            label_visibility="collapsed",
-                        )
+                        with list_col:
+                            selected_pd = st.selectbox(
+                                "Select index watchlist",
+                                pd_names,
+                                index=pd_idx,
+                                key="sidebar_predefined_select",
+                                label_visibility="collapsed",
+                            )
                         st.session_state["selected_predefined_watchlist"] = selected_pd
+                        if selected_pd != current_pd:
+                            save_preferences({"selected_predefined_watchlist": selected_pd})
                         wl_data = predefined[pd_names.index(selected_pd)]
-                        st.caption(f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)")
+                        _watchlist_caption = (
+                            f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)"
+                        )
 
                         # Sits at the BOTTOM of the watchlist card rather than as
                         # a standalone full-width button, and keeps a text label —
                         # an icon-only control here would be as easy to miss as
                         # the Screener chevron was.
+                        if _watchlist_caption:
+                            st.markdown(
+                                f"<div style='margin-top:-7px;margin-bottom:8px;"
+                                f"font-size:0.84rem;color:#8A8F98;'>"
+                                f"{_watchlist_caption}</div>",
+                                unsafe_allow_html=True,
+                            )
                         if st.button(
                             "Refresh from NSE",
                             icon=":material/refresh:",
@@ -487,24 +579,34 @@ def render_sidebar() -> None:
                             if result["updated"]:
                                 st.rerun()
                     else:
-                        st.caption("No predefined watchlists available.")
+                        with list_col:
+                            st.caption("No index watchlists available.")
                 else:
                     batches = get_nse_stock_batches()
                     batch_labels = [b["label"] for b in batches]
                     current_batch = st.session_state.get("selected_nse_batch", batch_labels[0])
                     batch_idx = batch_labels.index(current_batch) if current_batch in batch_labels else 0
-                    selected_batch = st.selectbox(
-                        "Select stock range",
-                        batch_labels,
-                        index=batch_idx,
-                        key="sidebar_nse_batch_select",
-                        label_visibility="collapsed",
-                    )
+                    with list_col:
+                        selected_batch = st.selectbox(
+                            "Select stock range",
+                            batch_labels,
+                            index=batch_idx,
+                            key="sidebar_nse_batch_select",
+                            label_visibility="collapsed",
+                        )
                     st.session_state["selected_nse_batch"] = selected_batch
+                    if selected_batch != current_batch:
+                        save_preferences({"selected_nse_batch": selected_batch})
                     batch_data = batches[batch_labels.index(selected_batch)]
                     st.session_state["selected_nse_batch_start"] = batch_data["start"]
                     st.session_state["selected_nse_batch_end"] = batch_data["end"]
-                    st.caption(f"{batch_data['end'] - batch_data['start']} stocks in this batch")
+                    st.markdown(
+                        f"<div style='margin-top:-7px;font-size:0.84rem;"
+                        f"color:#8A8F98;'>"
+                        f"{batch_data['end'] - batch_data['start']} stocks in this batch"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
 
             # ---------- Screener ----------
             # Promoted out of a bare expander into its own coloured card. It used
@@ -668,6 +770,13 @@ def render_sidebar() -> None:
                     "Fibonacci Confluence" in st.session_state["enhancers"]
                 )
 
+            # ---------- Secondary nav ----------
+            # Alerts / Reports / Trade Journal / Settings sit below the
+            # analysis controls: they are destinations rather than scan
+            # settings. Full-width rows rather than a column grid so the
+            # labels never wrap and the Alerts badge has somewhere to sit.
+            _render_secondary_nav()
+
             # Small breathing space before the primary action, without a rule.
             st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
 
@@ -698,7 +807,7 @@ def render_sidebar() -> None:
                     if not _has_wl:
                         st.warning("Please select a watchlist first.")
                     else:
-                        st.session_state.active_page = "dashboard"
+                        st.session_state.active_page = "analysis_results"
                         st.session_state.analysing = True
                         update_last_analysis_timestamp()
                         save_preferences({"alerts_on": st.session_state.get("alerts_on", False)})
@@ -722,7 +831,7 @@ def render_sidebar() -> None:
                     else:
                         _has_wl2 = st.session_state.get("selected_predefined_watchlist")
                     if _has_wl2:
-                        st.session_state.active_page = "dashboard"
+                        st.session_state.active_page = "analysis_results"
                         st.session_state.analysing = True
                         update_last_analysis_timestamp()
                         st.rerun()
@@ -781,5 +890,3 @@ def _render_brand_and_status() -> None:
         "</div>",
         unsafe_allow_html=True,
     )
-
-

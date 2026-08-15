@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Generator
+from uuid import uuid4
 
+from analysis.pattern_models import PatternMatch
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -66,6 +68,13 @@ def init_db() -> None:
                 created_at    TEXT    NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS latest_analysis_snapshot (
+                id            INTEGER PRIMARY KEY CHECK (id = 1),
+                results_json  TEXT    NOT NULL DEFAULT '{}',
+                metadata_json TEXT    NOT NULL DEFAULT '{}',
+                created_at    TEXT    NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS alerts (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 stock_id      INTEGER NOT NULL REFERENCES stocks(id) ON DELETE CASCADE,
@@ -81,6 +90,15 @@ def init_db() -> None:
                 note_text  TEXT    NOT NULL,
                 created_at TEXT    NOT NULL,
                 updated_at TEXT    NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pattern_scans (
+                id             TEXT PRIMARY KEY,
+                settings_json  TEXT NOT NULL DEFAULT '{}',
+                universe_label TEXT NOT NULL DEFAULT '',
+                source_name    TEXT NOT NULL DEFAULT '',
+                results_json   TEXT NOT NULL DEFAULT '[]',
+                created_at     TEXT NOT NULL
             );
             """
         )
@@ -206,6 +224,58 @@ def get_analysis_result(
         return data
 
 
+def save_latest_analysis_snapshot(
+    results: dict[str, dict[str, Any]],
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Replace the local snapshot of the latest completed watchlist scan.
+
+    Predefined universes such as F&O have no rows in the ``stocks`` table, so
+    their per-stock analysis cannot be restored from ``analysis_results``.
+    This one-row snapshot preserves the complete last scan across a normal
+    URL navigation that starts a fresh Streamlit session.
+    """
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO latest_analysis_snapshot
+               (id, results_json, metadata_json, created_at)
+               VALUES (1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 results_json = excluded.results_json,
+                 metadata_json = excluded.metadata_json,
+                 created_at = excluded.created_at""",
+            (
+                json.dumps(results, default=str),
+                json.dumps(metadata or {}, default=str),
+                _now(),
+            ),
+        )
+
+
+def load_latest_analysis_snapshot() -> dict[str, Any] | None:
+    """Return the most recent completed scan snapshot, if one exists."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT results_json, metadata_json, created_at "
+            "FROM latest_analysis_snapshot WHERE id = 1"
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        results = json.loads(row["results_json"] or "{}")
+        metadata = json.loads(row["metadata_json"] or "{}")
+    except (TypeError, json.JSONDecodeError) as exc:
+        logger.warning("Could not load latest analysis snapshot: %s", exc)
+        return None
+    if not isinstance(results, dict):
+        return None
+    return {
+        "results": results,
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "created_at": row["created_at"],
+    }
+
+
 def get_analysis_history(
     stock_id: int, analysis_type: str, limit: int = 7
 ) -> list[dict[str, Any]]:
@@ -281,6 +351,63 @@ def compare_analysis_results(
         "dominant_status": dominant,
         "trend_direction": direction,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pattern Scanner cache
+# ---------------------------------------------------------------------------
+
+def save_pattern_scan(
+    settings: dict[str, Any],
+    universe_label: str,
+    source_name: str,
+    matches: list[PatternMatch],
+) -> str:
+    """Persist a Pattern Scanner result set for cross-tab navigation."""
+    scan_id = uuid4().hex
+    payload = [m.to_dict() for m in matches]
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO pattern_scans
+               (id, settings_json, universe_label, source_name, results_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id,
+                json.dumps(settings),
+                universe_label,
+                source_name,
+                json.dumps(payload),
+                _now(),
+            ),
+        )
+        conn.execute(
+            """DELETE FROM pattern_scans WHERE id NOT IN (
+               SELECT id FROM pattern_scans ORDER BY created_at DESC LIMIT 20
+            )"""
+        )
+    return scan_id
+
+
+def get_pattern_scan(scan_id: str) -> dict[str, Any] | None:
+    """Return a cached pattern scan, or None when the id is unknown."""
+    if not scan_id:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM pattern_scans WHERE id = ?",
+            (scan_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    raw_matches = json.loads(data.get("results_json") or "[]")
+    data["settings"] = json.loads(data.get("settings_json") or "{}")
+    data["matches"] = [
+        PatternMatch.from_dict(m)
+        for m in raw_matches
+        if isinstance(m, dict)
+    ]
+    return data
 
 
 def clear_all_analysis_history() -> None:

@@ -3,11 +3,25 @@
 import streamlit as st
 
 from config.credentials import load_credentials
+from config.preferences import load_preferences
 from config.settings import SUPPORTED_DATA_SOURCES
 from config.trading_config import ENHANCERS, PRIMARY_STRATEGIES, TRADING_TYPES
-from storage.database import init_db
+from storage.database import (
+    get_pattern_scan,
+    init_db,
+    load_latest_analysis_snapshot,
+)
 from ui.components.sidebar import render_sidebar
-from ui.pages.dashboard import render_dashboard
+from ui.pages.alerts_page import render_alerts_page
+from ui.pages.analysis_results import render_analysis_results
+from ui.pages.dashboard import render_detail_view
+from ui.pages.market_overview import render_market_overview
+from ui.pages.market_heatmap import render_market_heatmap
+from ui.pages.pattern_detail import render_pattern_detail
+from ui.pages.pattern_results import render_pattern_results
+from ui.pages.pattern_scanner import render_pattern_scanner
+from ui.pages.placeholders import render_trade_journal_page
+from ui.pages.reports_page import render_reports_page
 from ui.pages.watchlist_manager import render_watchlist_manager
 from ui.pages.settings import render_settings
 from utils.logger import get_logger
@@ -18,27 +32,50 @@ logger = get_logger(__name__)
 def init_session_state() -> None:
     """Initialise all required Streamlit session state keys.
 
-    These are deliberately fixed defaults, not the saved preferences: every
-    fresh app launch starts from a known baseline. A stock opened in a new
-    browser tab is the one case that must NOT use these — it adopts the
-    opening tab's selections from the URL instead (see the ?stock= handler
-    in :func:`main`), because a new tab is a separate Streamlit session with
-    empty state and would otherwise silently analyse against different
-    settings than the ones on screen.
+    User-facing sidebar selections begin from saved preferences. This matters
+    for pages reached through a URL, including a clickable heatmap tile: that
+    navigation can create a fresh Streamlit session, so temporary session
+    state would otherwise reset the selected F&O/watchlist to its default.
+
+    A stock opened in a new browser tab still adopts the originating analysis
+    context from the URL afterwards (see the ``?stock=`` handler in
+    :func:`main`), which remains the authoritative detail-chart context.
     """
+    prefs = load_preferences()
     defaults: dict = {
         "active_page": "dashboard",
-        "selected_watchlist_id": None,
+        "selected_watchlist_id": prefs.get("selected_watchlist_id"),
+        "watchlist_source": prefs.get("watchlist_source", "Index Watchlists"),
+        "selected_predefined_watchlist": prefs.get(
+            "selected_predefined_watchlist", "Nifty 50"
+        ),
+        "selected_nse_batch": prefs.get("selected_nse_batch", ""),
         # Two-axis analysis model (Trading Type + Primary Strategy + Enhancers).
-        "trading_type": "Options Trading",
-        "primary_strategy": "Demand/Supply Zones",
-        "enhancers": ["Fibonacci Confluence", "EMA 20 Confluence"],
-        "selected_data_source": "Yahoo Finance",
-        "alerts_on": False,
+        "trading_type": prefs.get("trading_type", "Options Trading"),
+        "primary_strategy": prefs.get("primary_strategy", "Demand/Supply Zones"),
+        "enhancers": list(prefs.get("enhancers", [
+            "Fibonacci Confluence", "EMA 20 Confluence",
+        ])),
+        "selected_data_source": prefs.get("selected_data_source", "Yahoo Finance"),
+        "alerts_on": prefs.get("alerts_on", False),
         "credentials": {},
         "analysing": False,
         "selected_stock_symbol": None,
         "analysis_results": {},
+        "pattern_scan_settings": {},
+        "pattern_scan_id": "",
+        "pattern_scan_source_name": "",
+        "pattern_scan_results": [],
+        "pattern_chart_data": {},
+        "pattern_zone_results": {},
+        "pattern_scan_errors": {},
+        "pattern_scan_fallback_symbols": [],
+        "pattern_scanning": False,
+        "selected_pattern_symbol": None,
+        "pattern_watch_symbols": set(),
+        "pattern_reviewed_symbols": set(),
+        "heatmap_selected_group": "banks",
+        "heatmap_stock_universe": "group:banks",
         "notifications": [],
     }
     for key, value in defaults.items():
@@ -228,6 +265,145 @@ def main() -> None:
                 color: #085041 !important;
                 font-weight: 600;
             }
+
+            /* ---- Main-area layout: dashboard + analysis results ----------
+               Streamlit's default column gap is ~1rem and its vertical block
+               gap is larger, so a row of summary cards sat tight horizontally
+               while stacking loosely against the row below it — the opposite
+               of the design, where cards breathe sideways and sections sit
+               close. These even that out. */
+            [data-testid="stMain"] [data-testid="stHorizontalBlock"] {
+                gap: 0.85rem;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"] {
+                gap: 0.7rem;
+            }
+            /* Bordered containers are the section panels. Match the card
+               radius and border so a panel and a card read as one family. */
+            [data-testid="stMain"] [data-testid="stVerticalBlockBorderWrapper"] {
+                border-radius: 12px;
+                border-color: #E4E6E9;
+                background: #FFFFFF;
+            }
+            /* The page is content-dense; wide mode otherwise stretches the
+               tables across an entire ultrawide monitor. */
+            [data-testid="stMainBlockContainer"] {
+                max-width: 1600px;
+                padding-top: 2.2rem;
+            }
+            /* Buttons in the page header rows should match the card height
+               rhythm rather than Streamlit's default chunky padding. */
+            [data-testid="stMain"] .stButton button {
+                border-radius: 9px;
+                border-color: #E4E6E9;
+            }
+
+            /* Pagination row — hooked on the marker emitted by
+               panels.pagination_bar. Streamlit's default button is sized for
+               a text label, so at page-number size the strip read as a row of
+               large plain boxes overlapping the table's scrollbar. Keep the
+               0.09px value in step with that marker. */
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) .stButton button {
+                min-height: 32px;
+                height: 32px;
+                padding: 0 2px;
+                font-size: 0.82rem;
+                border-radius: 7px;
+                border-color: #DFE3E8;
+                color: #4A5361;
+            }
+            /* The current page is the one filled control in the strip, so it
+               reads as position rather than as an action.
+
+               The label colour MUST be restated here. The rule above sets a
+               dark grey on every button in the strip, primary included, which
+               put dark text on a dark fill and made the selected page number
+               invisible. */
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"] {
+                background-color: #17509E;
+                border-color: #17509E;
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"] p {
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) button[data-testid="stBaseButton-primary"]:hover {
+                background-color: #123E7C;
+                border-color: #123E7C;
+                color: #FFFFFF;
+            }
+            [data-testid="stMain"] [data-testid="stVerticalBlock"]:has(
+                > [data-testid="stElementContainer"]
+                  [style*="letter-spacing: 0.09px"]
+            ) .stButton button:hover {
+                border-color: #2F80ED;
+                color: #2F80ED;
+            }
+
+            /* Streamlit's own ⋮ menu (Rerun / Clear cache / Print / Record /
+               About). config.toml's toolbarMode="minimal" removes the Deploy
+               button but leaves this, and it is framework chrome rather than
+               anything Market Lens offers. Delete this rule to get it back. */
+            [data-testid="stMainMenu"] {
+                display: none;
+            }
+            /* With the toolbar emptied, Streamlit's header is a blank ~3.6rem
+               strip that still floats above the canvas and clipped the page
+               title and the header buttons underneath it. Collapse it to zero
+               and drop its background rather than display:none, so the
+               sidebar's collapse control keeps working. */
+            [data-testid="stHeader"] {
+                height: 0;
+                min-height: 0;
+                background: transparent;
+                pointer-events: none;
+            }
+            /* Float the toolbar clear of the zero-height header so Streamlit's
+               native STOP control stays reachable during a scan. A custom
+               in-page Stop button cannot work: the scan loop blocks the
+               script, so the page never processes the click. Streamlit's own
+               stop signals the script runner directly, which does. With
+               toolbarMode="minimal" and the ⋮ menu hidden, this is the only
+               thing left in the toolbar.
+
+               width/height MUST be pinned to auto. Streamlit styles this
+               element at 100% x 100%; making it position:fixed without
+               overriding that turned it into a full-viewport invisible sheet
+               at z-index 1000 that swallowed every click and scroll on the
+               page. pointer-events stays none on the box and is re-enabled
+               only on its children, so the container can never intercept
+               input again even if its size rule changes. */
+            [data-testid="stToolbar"] {
+                position: fixed;
+                top: 8px;
+                right: 14px;
+                left: auto;
+                bottom: auto;
+                width: auto;
+                height: auto;
+                min-height: 0;
+                z-index: 1000;
+                pointer-events: none;
+            }
+            [data-testid="stToolbar"] > * {
+                pointer-events: auto;
+            }
+            /* Reclaim the space the header used to reserve. */
+            [data-testid="stMainBlockContainer"] {
+                padding-top: 1.6rem;
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -276,11 +452,79 @@ def main() -> None:
 
         st.session_state["_qp_handled"] = True
 
+    # Pattern Detail new-tab support. Pattern results live in session_state in
+    # the opening tab, so a fresh tab restores them from the local scan cache
+    # using the compact scan id carried in the URL.
+    _qp_pattern_scan = st.query_params.get("pattern_scan")
+    _qp_pattern_symbol = st.query_params.get("pattern_symbol")
+    if _qp_pattern_scan and _qp_pattern_symbol and not st.session_state.get("_qp_pattern_handled"):
+        st.session_state["_qp_pattern_scan_id"] = _qp_pattern_scan
+        st.session_state["pattern_scan_id"] = _qp_pattern_scan
+        st.session_state.selected_pattern_symbol = _qp_pattern_symbol
+        st.session_state.active_page = "pattern_detail"
+        st.session_state["_qp_pattern_handled"] = True
+
+    # Heatmap tile links use query params so the tile itself can be clickable
+    # without a separate Streamlit button under it.
+    _qp_heatmap_group = st.query_params.get("heatmap_group")
+    _qp_heatmap_view = st.query_params.get("heatmap_view", "Group Stocks")
+    _hm_query = (_qp_heatmap_group, _qp_heatmap_view)
+    if _qp_heatmap_group and st.session_state.get("_hm_qp_last") != _hm_query:
+        st.session_state["heatmap_selected_group"] = _qp_heatmap_group
+        st.session_state["heatmap_stock_universe"] = f"group:{_qp_heatmap_group}"
+        st.session_state["hm_stock_universe_select"] = f"group:{_qp_heatmap_group}"
+        if _qp_heatmap_view in {"Heatmap", "Group Stocks"}:
+            st.session_state["hm_view_widget"] = _qp_heatmap_view
+        st.session_state.active_page = "market_heatmap"
+        st.session_state["_hm_qp_last"] = _hm_query
+
     try:
         init_db()
     except Exception as exc:
         st.error(f"Database initialisation failed: {exc}")
         logger.exception("Database init error")
+
+    # A normal URL navigation (such as selecting a clickable heatmap tile)
+    # can open a fresh Streamlit session. Restore the latest completed scan so
+    # Analysis Results does not appear empty after that navigation.
+    if not st.session_state.get("analysis_results"):
+        try:
+            snapshot = load_latest_analysis_snapshot()
+        except Exception as exc:
+            logger.warning("Could not restore latest analysis snapshot: %s", exc)
+            snapshot = None
+        if snapshot and snapshot.get("results"):
+            st.session_state["analysis_results"] = snapshot["results"]
+            metadata = snapshot.get("metadata", {}) or {}
+            st.session_state["_last_scan_label"] = metadata.get(
+                "last_scan_label", snapshot.get("created_at", "")
+            )
+            st.session_state["_used_tf_label"] = metadata.get("used_tf_label", "")
+            st.session_state["_fetch_fallback_symbols"] = metadata.get(
+                "fallback_symbols", []
+            )
+
+    _scan_id = st.session_state.get("_qp_pattern_scan_id")
+    if _scan_id and not st.session_state.get("_qp_pattern_loaded"):
+        try:
+            cached_scan = get_pattern_scan(str(_scan_id))
+        except Exception as exc:
+            logger.warning("Could not restore pattern scan %s: %s", _scan_id, exc)
+            cached_scan = None
+        if cached_scan:
+            st.session_state["pattern_scan_settings"] = cached_scan.get("settings", {})
+            st.session_state["pattern_scan_results"] = cached_scan.get("matches", [])
+            st.session_state["pattern_scan_universe_label"] = cached_scan.get(
+                "universe_label", ""
+            )
+            st.session_state["_pattern_last_scan_label"] = cached_scan.get(
+                "created_at", ""
+            )
+            source_name = cached_scan.get("source_name")
+            if source_name in SUPPORTED_DATA_SOURCES:
+                st.session_state["selected_data_source"] = source_name
+                st.session_state["pattern_scan_source_name"] = source_name
+        st.session_state["_qp_pattern_loaded"] = True
 
     try:
         saved = load_credentials()
@@ -291,15 +535,35 @@ def main() -> None:
 
     render_sidebar()
 
+    # Routing. "dashboard" is the market overview landing page; scan results
+    # live on their own page, and the per-stock chart on a third. The detail
+    # view is dispatched here rather than from inside a page, so any page can
+    # navigate to it by setting active_page alone.
     page = st.session_state.active_page
-    if page == "dashboard":
-        render_dashboard()
+    if page == "stock_detail":
+        render_detail_view()
+    elif page == "pattern_scanner":
+        render_pattern_scanner()
+    elif page == "pattern_results":
+        render_pattern_results()
+    elif page == "pattern_detail":
+        render_pattern_detail()
+    elif page == "analysis_results":
+        render_analysis_results()
+    elif page == "market_heatmap":
+        render_market_heatmap()
+    elif page == "alerts":
+        render_alerts_page()
+    elif page == "reports":
+        render_reports_page()
+    elif page == "trade_journal":
+        render_trade_journal_page()
     elif page == "watchlist_manager":
         render_watchlist_manager()
     elif page == "settings":
         render_settings()
     else:
-        render_dashboard()
+        render_market_overview()
 
 
 if __name__ == "__main__":

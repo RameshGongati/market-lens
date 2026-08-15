@@ -4,7 +4,11 @@ import pandas as pd
 import yfinance as yf
 
 from data.nse_bhavcopy import fetch_eod_ohlc
-from data.sources.base import DataSource, drop_incomplete_bars
+from data.sources.base import (
+    DataSource,
+    drop_incomplete_bars,
+    fill_missing_sessions,
+)
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,9 +46,10 @@ def _repair_last_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     authoritative close for that date, so the bar is completed rather than
     discarded.
 
-    Only the LAST row is considered: a gap in the middle of the history is a
-    different problem (Yahoo omitting whole sessions) that a single-date
-    lookup cannot address.
+    Only the LAST row is considered — this repairs a bar that is PRESENT but
+    unfinished. A session Yahoo omitted entirely is a different failure and is
+    handled by ``fill_missing_sessions``, which identifies the absent dates
+    from the NSE trading calendar and rebuilds them from the same bhavcopy.
 
     Returns the frame unchanged when the close is already present, the index
     is not dated, or the bhavcopy has nothing for that symbol and date.
@@ -204,7 +209,17 @@ class YahooFinanceSource(DataSource):
             # is better than losing the most recent session.
             if interval == "1d":
                 df = _repair_last_bar(df, symbol)
-            return drop_incomplete_bars(df)
+            df = drop_incomplete_bars(df)
+
+            # _repair_last_bar fixes a bar that is PRESENT but unfinished.
+            # Yahoo also omits whole sessions for individual symbols (Gotcha
+            # 9) — BAJAJHLDNG 2026-07-31 is absent while 07-30 and 08-03 are
+            # both there. Refetching Yahoo cannot help: the session is
+            # missing from every window it serves. NSE has it, so the bar is
+            # rebuilt from the bhavcopy.
+            if interval == "1d":
+                df = fill_missing_sessions(df, symbol)
+            return df
         except Exception as exc:
             logger.error("YahooFinance fetch_history failed for %s: %s", symbol, exc)
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
