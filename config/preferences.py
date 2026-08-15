@@ -44,6 +44,12 @@ _MIGRATION_FALLBACK: tuple[str, str] = ("Short-term Trading", "Demand/Supply Zon
 
 _DEFAULTS: dict[str, Any] = {
     "selected_watchlist_id": None,
+    # The sidebar's watchlist selection must survive pages reached through a
+    # normal URL (for example a clickable heatmap tile). Those links can open
+    # a fresh Streamlit session, where session state alone is not available.
+    "watchlist_source": "Index Watchlists",
+    "selected_predefined_watchlist": "Nifty 50",
+    "selected_nse_batch": "",
     "selected_data_source": "Yahoo Finance",
     "alerts_on": False,
     "last_analysis_timestamp": None,

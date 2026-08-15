@@ -48,6 +48,7 @@ from ui.components.panels import (
     spacer,
     stat_card,
 )
+from ui.components.stock_card import build_detail_url
 from utils.helpers import get_company_name
 from utils.logger import get_logger
 
@@ -55,6 +56,24 @@ logger = get_logger(__name__)
 
 _MAJOR_LISTS = ("Nifty 50", "Nifty Bank")
 _ROWS_PER_PAGE = [10, 20, 30, 50, 75, 100]
+_TIMING_OPTIONS = (
+    "All",
+    "Yet to release",
+    "Due Today",
+    "Tomorrow",
+    "Next 7 Days",
+    "Later",
+    "Released Today",
+    "Released Yesterday",
+    "Released: Last 7 Days",
+    "All Released",
+)
+_RELEASE_TIMINGS = {
+    "Released Today",
+    "Released Yesterday",
+    "Released: Last 7 Days",
+    "All Released",
+}
 
 
 def _universe() -> tuple[list[str], str]:
@@ -142,7 +161,8 @@ def render_reports_page() -> None:
     major |= {s for s in sectors}
 
     reactions = _reactions_for(known)
-    table = _build_rows(known, sectors, fno, major, reactions)
+    timing = st.session_state["reports_timing"]
+    table = _build_rows(known, sectors, fno, major, reactions, timing)
 
     spacer(12)
     _render_summary_cards(table)
@@ -151,7 +171,7 @@ def render_reports_page() -> None:
     main, side = st.columns([3, 1])
     with main:
         with st.container(border=True):
-            _render_table(table)
+            _render_table(table, timing)
     with side:
         _render_upcoming(known)
         _render_recent(known, reactions)
@@ -177,14 +197,27 @@ def _render_header(source_label: str, symbols: list[str]) -> None:
     # universe fell back from 208 to the default watchlist the moment you
     # pressed Refresh.
     left, right = st.columns([3, 2])
-    opts = st.columns([1, 1, 4])
+    opts = st.columns([1, 1.6, 3.4])
+
+    # Preserve the old switch's intent for the first render after this
+    # upgrade, then use the more precise timing picker from then on.
+    if "reports_timing" not in st.session_state:
+        st.session_state["reports_timing"] = (
+            "Yet to release"
+            if st.session_state.get("reports_upcoming_only") else "All"
+        )
 
     with opts[0]:
         st.toggle("Only F&O", key="reports_only_fno",
                   help="Widen the table to every F&O stock.")
     with opts[1]:
-        st.toggle("Upcoming only", key="reports_upcoming_only",
-                  help="Hide results that have already been released.")
+        st.selectbox(
+            "Results timing",
+            _TIMING_OPTIONS,
+            key="reports_timing",
+            help=("Choose scheduled results, a specific upcoming window, "
+                  "or recently reported results."),
+        )
 
     with left:
         st.markdown(
@@ -278,15 +311,96 @@ def _reactions_for(rows: dict) -> dict[str, float]:
     return out
 
 
+def _reported_days(row: dict) -> int | None:
+    return days_until(row.get("last_result_date"))
+
+
+def _scheduled_result_is_reported(row: dict) -> bool:
+    """Whether today's displayed scheduled result has already reported.
+
+    The provider can briefly expose the same date as both the next calendar
+    event and the latest reported quarter. Treating that row as pending makes
+    a completed result appear under "Due Today", which is misleading.
+    """
+    scheduled = (row.get("result_date") or "")[:10]
+    reported = (row.get("last_result_date") or "")[:10]
+    reported_days = _reported_days(row)
+    return bool(scheduled and scheduled == reported and reported_days is not None
+                and reported_days <= 0)
+
+
+def _matches_timing(row: dict, timing: str) -> bool:
+    """Return whether an earnings row belongs in the selected time window."""
+    if timing == "All":
+        return True
+
+    scheduled_days = days_until(row.get("result_date"))
+    reported_days = _reported_days(row)
+    pending = (
+        scheduled_days is not None
+        and scheduled_days >= 0
+        and not _scheduled_result_is_reported(row)
+    )
+
+    if timing == "Yet to release":
+        return pending
+    if timing == "Due Today":
+        return pending and scheduled_days == 0
+    if timing == "Tomorrow":
+        return pending and scheduled_days == 1
+    if timing == "Next 7 Days":
+        return pending and scheduled_days is not None and 0 <= scheduled_days <= 7
+    if timing == "Later":
+        return pending and scheduled_days is not None and scheduled_days > 7
+    if timing == "Released Today":
+        return reported_days == 0
+    if timing == "Released Yesterday":
+        return reported_days == -1
+    if timing == "Released: Last 7 Days":
+        return reported_days is not None and -6 <= reported_days <= 0
+    if timing == "All Released":
+        return reported_days is not None and reported_days <= 0
+    return True
+
+
+def _reported_countdown_label(days: int | None) -> str:
+    if days is None:
+        return "—"
+    if days == 0:
+        return "TODAY"
+    if days == -1:
+        return "YESTERDAY"
+    return f"{abs(days)} DAYS AGO" if days < 0 else "—"
+
+
+def _reported_status_label(days: int | None) -> str:
+    if days == 0:
+        return "Released Today"
+    if days == -1:
+        return "Released Yesterday"
+    return "Released"
+
+
 def _build_rows(
-    rows: dict, sectors: dict, fno: set, major: set, reactions: dict,
+    rows: dict,
+    sectors: dict,
+    fno: set,
+    major: set,
+    reactions: dict,
+    timing: str,
 ) -> list[dict]:
     out: list[dict] = []
-    upcoming_only = st.session_state.get("reports_upcoming_only", False)
     for sym, row in rows.items():
-        days = days_until(row.get("result_date"))
-        if upcoming_only and (days is None or days < 0):
+        if not _matches_timing(row, timing):
             continue
+        scheduled_days = days_until(row.get("result_date"))
+        reported_days = _reported_days(row)
+        show_reported = timing in _RELEASE_TIMINGS
+        # In the all-results view, make a same-day reported result visibly
+        # completed rather than leaving it labelled "Due Today".
+        if timing == "All" and _scheduled_result_is_reported(row):
+            show_reported = True
+        display_days = reported_days if show_reported else scheduled_days
         reaction = reactions.get(sym)
         high, why = classify_impact(
             row, is_fno=sym in fno, in_major_list=sym in major,
@@ -296,21 +410,45 @@ def _build_rows(
             "symbol": sym,
             "company": get_company_name(sym),
             "sector": sectors.get(sym, "—"),
-            "result_date": (row.get("result_date") or "")[:10],
-            "days": days,
-            "countdown": countdown_label(days),
-            "status": status_label(days),
+            "result_date": (
+                (row.get("last_result_date") if show_reported
+                 else row.get("result_date")) or ""
+            )[:10],
+            "days": display_days,
+            "scheduled_days": scheduled_days,
+            "reported_days": reported_days,
+            "is_reported_view": show_reported,
+            "countdown": (
+                _reported_countdown_label(display_days)
+                if show_reported else countdown_label(display_days)
+            ),
+            "status": (
+                _reported_status_label(display_days)
+                if show_reported else status_label(display_days)
+            ),
             "eps": row.get("eps_estimate"),
             "revenue_cr": row.get("revenue_estimate_cr"),
+            "reported_eps": row.get("reported_eps"),
             "surprise": row.get("surprise_pct"),
             "reaction": reaction,
             "high_impact": high,
             "impact_why": why,
             "is_fno": sym in fno,
         })
-    # Soonest first; undated rows last.
-    out.sort(key=lambda r: (r["days"] is None, r["days"] if r["days"]
-                            is not None else 9999, r["symbol"]))
+    # Scheduled windows run soonest first; release windows run newest first.
+    # Undated rows remain last in the unfiltered view.
+    if timing in _RELEASE_TIMINGS:
+        out.sort(key=lambda r: (
+            r["days"] is None,
+            -r["days"] if r["days"] is not None else 9999,
+            r["symbol"],
+        ))
+    else:
+        out.sort(key=lambda r: (
+            r["days"] is None,
+            r["days"] if r["days"] is not None else 9999,
+            r["symbol"],
+        ))
     return out
 
 
@@ -319,9 +457,15 @@ def _build_rows(
 # ---------------------------------------------------------------------------
 
 def _render_summary_cards(table: list[dict]) -> None:
-    today = sum(1 for r in table if r["days"] == 0)
-    d1 = sum(1 for r in table if r["days"] == 1)
-    d2 = sum(1 for r in table if r["days"] is not None and 0 <= r["days"] <= 2)
+    today = sum(1 for r in table if r["status"] in {
+        "Due Today", "Released Today",
+    })
+    d1 = sum(1 for r in table if r["status"] == "Upcoming"
+             and r["scheduled_days"] == 1)
+    d2 = sum(1 for r in table if r["status"] == "Upcoming"
+             and r["scheduled_days"] is not None
+             and 0 <= r["scheduled_days"] <= 2)
+    released = sum(1 for r in table if r["status"].startswith("Released"))
     high = sum(1 for r in table if r["high_impact"])
     try:
         alerts = len(get_all_alerts() or [])
@@ -340,7 +484,7 @@ def _render_summary_cards(table: list[dict]) -> None:
         stat_card("Next 2 days", str(d2), "Within 2 sessions", "calendar",
                   tone="warning" if d2 else "muted")
     with cols[3]:
-        stat_card("Released", str(sum(1 for r in table if r["status"] == "Released")),
+        stat_card("Released", str(released),
                   "Already reported", "check_circle", tone="info")
     with cols[4]:
         stat_card("High impact", str(high), "By the rule below", "star",
@@ -350,7 +494,7 @@ def _render_summary_cards(table: list[dict]) -> None:
                   tone="purple" if alerts else "muted")
 
 
-def _render_table(table: list[dict]) -> None:
+def _render_table(table: list[dict], timing: str) -> None:
     top = st.columns([3, 1])
     with top[0]:
         section_title(f"Results ({len(table)})")
@@ -363,7 +507,7 @@ def _render_table(table: list[dict]) -> None:
         table = [r for r in table if q in r["symbol"].upper()
                  or q in r["company"].upper()]
     if not table:
-        st.caption("Nothing matches.")
+        st.caption(f"No results match the {timing.lower()} filter.")
         return
 
     # The bar is rendered AFTER the table but computes the slice first, so
@@ -371,9 +515,15 @@ def _render_table(table: list[dict]) -> None:
     start, end = page_slice(len(table), "rp", default_size=20)
     window = table[start:end]
 
-    headers = ["Symbol", "Company", "Sector", "Result Date", "Session",
-               "Countdown", "Impact", "Expected EPS", "Expected Rev (Cr)",
-               "Status", "Price Reaction", "OI / Vol Spike"]
+    released_view = timing in _RELEASE_TIMINGS
+    headers = ["Symbol", "Company", "Sector",
+               "Reported Date" if released_view else "Result Date",
+               "Session",
+               "Reported" if released_view else "Countdown",
+               "Impact",
+               "Reported EPS" if released_view else "Expected EPS",
+               "EPS Surprise" if released_view else "Expected Rev (Cr)",
+               "Status", "Last Day Move", "OI / Vol Spike"]
     head = "<tr>" + "".join(
         f"<th style='text-align:left;padding:7px 8px;font-size:0.68rem;"
         f"color:#8A8F98;font-weight:600;white-space:nowrap;"
@@ -384,10 +534,14 @@ def _render_table(table: list[dict]) -> None:
     body = ""
     for r in window:
         cd = r["countdown"]
-        cd_tone = ("bearish" if cd == "TODAY" else
-                   "warning" if cd in ("1 DAY", "2 DAYS") else "muted")
+        cd_tone = (
+            "info" if r["is_reported_view"] else
+            "bearish" if cd == "TODAY" else
+            "warning" if cd in ("1 DAY", "2 DAYS") else "muted"
+        )
         st_tone = {"Due Today": "bearish", "Upcoming": "warning",
-                   "Released": "info"}.get(r["status"], "muted")
+                   "Released": "info", "Released Today": "info",
+                   "Released Yesterday": "info"}.get(r["status"], "muted")
         # title= gives the exact rule that matched, so a flag is never opaque.
         impact = (
             f"<span title='{html.escape(r['impact_why'])}'>"
@@ -401,8 +555,18 @@ def _render_table(table: list[dict]) -> None:
             col = "#16794A" if r["reaction"] >= 0 else "#C23B33"
             reaction = (f"<span style='color:{col};font-weight:600;'>"
                         f"{r['reaction']:+.2f}%</span>")
+        eps = r["reported_eps"] if released_view else r["eps"]
+        secondary = r["surprise"] if released_view else r["revenue_cr"]
+        secondary_cell = (
+            f"{secondary:+.1f}%" if released_view and secondary is not None
+            else f"{secondary:,.0f}" if secondary is not None else dash
+        )
+        chart_url = html.escape(build_detail_url(r["symbol"], "NSE"), quote=True)
         cells = [
-            f"<b>{html.escape(r['symbol'])}</b>",
+            f"<a href='{chart_url}' target='_blank' rel='noopener noreferrer' "
+            f"title='Open {html.escape(r['symbol'], quote=True)} chart in a new tab' "
+            "style='color:#175CD3;font-weight:800;text-decoration:none;'>"
+            f"{html.escape(r['symbol'])}</a>",
             f"<span style='color:#71757C;'>{html.escape(r['company'])[:26]}</span>",
             html.escape(r["sector"]),
             html.escape(r["result_date"] or "—"),
@@ -411,8 +575,8 @@ def _render_table(table: list[dict]) -> None:
             dash,
             bias_pill(cd, cd_tone),
             impact,
-            f"{r['eps']:.2f}" if r["eps"] is not None else dash,
-            f"{r['revenue_cr']:,.0f}" if r["revenue_cr"] is not None else dash,
+            f"{eps:.2f}" if eps is not None else dash,
+            secondary_cell,
             bias_pill(r["status"], st_tone),
             reaction,
             dash,

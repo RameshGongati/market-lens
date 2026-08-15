@@ -12,9 +12,9 @@ the dashboard stays populated while the user moves between pages. Before any
 scan the setup panels show a "run a scan" hint; the market strip still renders,
 because index data does not depend on a scan.
 
-**Placeholders.** Sector strength, the sector heatmap, and the HTF/ITF trend
-columns are drawn as labelled but empty boxes — see ui/components/panels.py
-for why they are explicit rather than omitted or faked.
+**Placeholders.** Sector strength and the HTF/ITF trend columns are drawn as
+labelled but empty boxes — see ui/components/panels.py for why they are
+explicit rather than omitted or faked.
 """
 
 from __future__ import annotations
@@ -23,16 +23,24 @@ import html
 
 import streamlit as st
 
+from data import market_heatmap as mh
 from data.market_indices import fetch_all_indices, market_bias
 from storage.database import get_all_alerts
 from ui.components.panels import (
     bias_pill,
     kv_row,
     page_title,
-    pending_panel,
     section_title,
     stat_card,
 )
+from ui.pages.market_heatmap import (
+    dashboard_heatmap_tiles,
+    render_dashboard_heatmap_card,
+    render_dashboard_movers_card,
+    render_dashboard_sector_strength_card,
+    strong_sector_count,
+)
+from utils.helpers import get_nse_batch_stocks, get_nse_stock_batches
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -168,6 +176,52 @@ def _top_opportunities(results: dict[str, dict], limit: int = 10) -> list[dict]:
     return rows[:limit]
 
 
+def _source_credentials() -> tuple[tuple[str, str], ...]:
+    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    creds = st.session_state.get("credentials", {}) or {}
+    return tuple(sorted(dict(creds.get(source_name, {}) or {}).items()))
+
+
+def _selected_watchlist_universe() -> tuple[str, tuple[str, ...]]:
+    source = st.session_state.get("watchlist_source", "Index Watchlists")
+    if source == "My Watchlists":
+        try:
+            from watchlist.manager import get_all_watchlists, get_stocks
+
+            watchlist_id = st.session_state.get("selected_watchlist_id")
+            watchlists = get_all_watchlists()
+            watchlist = next((wl for wl in watchlists if wl.id == watchlist_id), None)
+            if watchlist is None:
+                return "Selected Watchlist Movers", ()
+            symbols = tuple(stock.symbol for stock in get_stocks(watchlist.id))
+            return f"{watchlist.name} Movers", symbols
+        except Exception as exc:
+            logger.warning("Could not load selected custom watchlist movers: %s", exc)
+            return "Selected Watchlist Movers", ()
+
+    if source == "All NSE Stocks":
+        start = int(st.session_state.get("selected_nse_batch_start", 0) or 0)
+        end = int(st.session_state.get("selected_nse_batch_end", 200) or 200)
+        symbols = tuple(stock["symbol"] for stock in get_nse_batch_stocks(start, end))
+        label = st.session_state.get("selected_nse_batch") or "Selected NSE Batch"
+        return f"{label} Movers", symbols
+
+    predefined = mh.predefined_watchlists()
+    default_name = str(predefined[0]["name"]) if predefined else "Nifty 50"
+    name = str(st.session_state.get("selected_predefined_watchlist") or default_name)
+    return f"{name} Movers", tuple(mh.symbols_for_watchlist(name))
+
+
+def _all_market_universe() -> tuple[str, tuple[str, ...]]:
+    symbols: list[str] = []
+    for batch in get_nse_stock_batches():
+        symbols.extend(
+            stock["symbol"]
+            for stock in get_nse_batch_stocks(batch["start"], batch["end"])
+        )
+    return "All NSE Market Movers", tuple(symbols)
+
+
 def render_market_overview() -> None:
     """Render the dashboard landing page."""
     results: dict[str, dict] = st.session_state.get("analysis_results", {}) or {}
@@ -213,6 +267,8 @@ def render_market_overview() -> None:
     # ---- Top summary cards -------------------------------------------------
     indices = indices_cached()
     bias, bias_reason = market_bias(indices)  # type: ignore[arg-type]
+    heatmap_tiles = dashboard_heatmap_tiles()
+    strong_sectors = strong_sector_count(heatmap_tiles)
 
     high_odd = sum(
         1 for r in results.values()
@@ -238,7 +294,13 @@ def render_market_overview() -> None:
                  "bearish" if bias == "BEARISH" else "muted",
         )
     with cards[1]:
-        stat_card("Strong sectors", icon="trophy", pending="p7")
+        stat_card(
+            "Strong sectors",
+            str(strong_sectors) if heatmap_tiles else "—",
+            "Sectors up today",
+            "trophy",
+            tone="bullish" if strong_sectors else "muted",
+        )
     with cards[2]:
         stat_card("Valid setups", str(valid_setups), "Zones detected", "target", tone="info")
     with cards[3]:
@@ -312,9 +374,33 @@ def render_market_overview() -> None:
                     stat_card(label, f"{counts[key]}", "stocks", tone=tone)
 
     with right:
-        pending_panel(
-            "Market Heatmap", "p7",
-            "Sector performance tiles need sector index data.",
+        render_dashboard_heatmap_card(results)
+
+    # ---- Movers ------------------------------------------------------------
+    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    credentials = _source_credentials()
+    selected_title, selected_symbols = _selected_watchlist_universe()
+    all_title, all_symbols = _all_market_universe()
+    mover_left, mover_right = st.columns(2)
+    with mover_left:
+        render_dashboard_movers_card(
+            selected_title,
+            selected_symbols,
+            source_name,
+            credentials,
+            results,
+            limit=5,
+            compact=True,
+        )
+    with mover_right:
+        render_dashboard_movers_card(
+            all_title,
+            all_symbols,
+            source_name,
+            credentials,
+            results,
+            limit=5,
+            compact=True,
         )
 
     # ---- Opportunities + sector strength ----------------------------------
@@ -328,10 +414,7 @@ def render_market_overview() -> None:
             else:
                 _render_opportunity_table(rows)
     with sect_col:
-        pending_panel(
-            "Sector Strength", "p7",
-            "Per-sector strength bars need sector index data.",
-        )
+        render_dashboard_sector_strength_card(results)
 
     # ---- Selected stock + alerts + quick tools -----------------------------
     a, b, c = st.columns([2, 1, 1])
@@ -460,6 +543,7 @@ def _render_quick_tools() -> None:
     """Shortcut grid. Tools that do not exist yet are present but disabled."""
     built = [
         ("Watchlist Manager", ":material/list:", "watchlist_manager"),
+        ("Market Heatmap", ":material/grid_view:", "market_heatmap"),
         ("Settings", ":material/settings:", "settings"),
     ]
     for label, icon, page in built:
@@ -470,7 +554,6 @@ def _render_quick_tools() -> None:
     for label, icon in [
         ("Risk Calculator", ":material/calculate:"),
         ("Trade Journal", ":material/book:"),
-        ("Sector View", ":material/donut_small:"),
         ("Backtest", ":material/science:"),
     ]:
         st.button(label, icon=icon, use_container_width=True, disabled=True,

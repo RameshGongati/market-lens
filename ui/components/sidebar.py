@@ -480,6 +480,8 @@ def render_sidebar() -> None:
                         label_visibility="collapsed",
                     )
                 st.session_state["watchlist_source"] = wl_source
+                if wl_source != _current_wl:
+                    save_preferences({"watchlist_source": wl_source})
 
                 _watchlist_caption = ""
 
@@ -527,6 +529,8 @@ def render_sidebar() -> None:
                                 label_visibility="collapsed",
                             )
                         st.session_state["selected_predefined_watchlist"] = selected_pd
+                        if selected_pd != current_pd:
+                            save_preferences({"selected_predefined_watchlist": selected_pd})
                         wl_data = predefined[pd_names.index(selected_pd)]
                         _watchlist_caption = (
                             f"{wl_data['description']} ({len(wl_data['symbols'])} stocks)"
@@ -591,6 +595,8 @@ def render_sidebar() -> None:
                             label_visibility="collapsed",
                         )
                     st.session_state["selected_nse_batch"] = selected_batch
+                    if selected_batch != current_batch:
+                        save_preferences({"selected_nse_batch": selected_batch})
                     batch_data = batches[batch_labels.index(selected_batch)]
                     st.session_state["selected_nse_batch_start"] = batch_data["start"]
                     st.session_state["selected_nse_batch_end"] = batch_data["end"]

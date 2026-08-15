@@ -123,6 +123,20 @@ Listed in recommended implementation order within each phase. See `requirements.
 
 ---
 
+## Shipped Since (`cdb9eda` → `542e658`, 2026-08-07..11)
+
+| Commit | What |
+|--------|------|
+| `61c2db3` | Polish the analysis results table. |
+| `ea6bc97` | Configurable scan progress styles — five (capsule / donut / speedometer / pulse / ribbon), selectable in Settings, persisted as `scan_progress_style`. |
+| `736fca8` | **Market heatmap dashboard** — `data/market_heatmap.py` (20 index/sector groups, batched Yahoo quotes, unweighted-basket fallback), `ui/pages/market_heatmap.py` (group grid → per-group stock tiles, `st.cache_data` quotes with scan overlays applied outside the cache), heatmap widget on the Market Overview. 6 tests. |
+| `1eaf15c` | **Preserve scans across heatmap navigation.** Heatmap tiles are real URL navigations that can start a fresh Streamlit session, so: preferences are now RESTORED at launch (11 session keys — reverses the old "recorded, not restored" design; Gotcha 14 rewritten), a single-row `latest_analysis_snapshot` table restores the last scan, and the heatmap query-param handler uses an idempotency tuple. 5 tests. |
+| `542e658` | Reports timing filters (same-day not "still due"; upcoming/recent windows) and chart navigation. 3 tests. |
+
+Full heatmap spec: *Market Heatmap* in `requirements.md`.
+
+---
+
 ## Chart Pattern Scanner (DONE — `c37385b`, `6f76404`, 2026-08-06)
 
 M69, previously Do Not Build. Reversed and built as an independent pipeline:
@@ -165,6 +179,35 @@ doing real work.
 
 ---
 
+## Known Issues (found in the 2026-08-12 codebase audit, not yet fixed)
+
+Confirmed against the code; none has a fix committed. Ordered by likely impact.
+
+| # | Issue | Detail |
+|---|-------|--------|
+| 1 | **Swapped export arguments on the results page** | `ui/pages/analysis_results.py:186-190` passes `(results, ctx["analysis_type"], ctx["wl_name"])` but the signatures are `_do_export_excel/_do_export_pdf(results, wl_name, analysis_type)` — every export from the results page writes the strategy name into the watchlist field and vice versa (and into the filename). The dead `_render_filter_sort_bar` path passes them correctly, so this regressed in the page split (`96d5c36`). |
+| 2 | **"All Chart Patterns" empties the pattern results table** | `ui/pages/pattern_results.py:219` offers `["All Families", *PATTERN_FAMILIES]`, and `PATTERN_FAMILIES[0]` is `"All Chart Patterns"`. Only the `"All Families"` literal bypasses filtering; selecting `"All Chart Patterns"` compares every match's family against that string and returns zero rows. Two "all" entries, one of which silently filters out everything. `"All Families"` is also a bare literal not declared in `pattern_types.py` — exactly the drift CLAUDE.md's single-source rule warns about. |
+| 3 | **NSE holiday table stops at 2025** | `utils/market_hours.py:_NSE_HOLIDAYS` has no 2026 entries (and duplicates `2025-10-02`), so every 2026 holiday is treated as a trading day: `is_market_open()` returns True, the alert monitor runs full cycles on closed markets, and `fill_missing_sessions` hunts for bars that never existed. |
+| 4 | **`alert_monitor._run_cycle` double-writes the config** | `_flush_history` re-reads/merges/saves per alert precisely to avoid overwrites, but the end of the cycle calls `save_alert_config(config)` with the stale object loaded at cycle start — reintroducing the overwrite hazard for every non-`alert_history` key. |
+| 5 | **Zone-proximity math implemented twice** | `alerts/zone_alert_checker.check_zone_alerts` and `alert_monitor._run_cycle` contain independent copies of the same distance/filter logic; a fix to one silently diverges from the other. The monitor could build its results dict and call the checker. |
+| 6 | **`jugaad-data` missing from `requirements.txt`** | Installed in the venv (0.33.1) but not listed, so a fresh `pip install -r requirements.txt` produces a broken Jugaad source. |
+| 7 | **NSE index refresh dirties the repo and serves stale data** | `data/nse_indices.refresh_all_watchlists()` rewrites the git-tracked `data/predefined_watchlists.json` in place, and does not invalidate `utils.helpers.load_predefined_watchlists`'s `lru_cache(maxsize=1)`, so the running process keeps serving the pre-refresh list. |
+| 8 | **Stale comment contradicts Gotcha 7** | `analysis/demand_supply.py:203-205` still describes `filter_zones` output as "overlaps merged" — merging is deliberately never invoked (dropped M65). A reader following the comment would conclude the merge is live. |
+| 9 | **Settings "Last Used Selections" label is stale** | Preferences have been restored at launch since `1eaf15c`; the label (and the block's framing) still describes the old recorded-only behaviour. |
+| 10 | **`alerts_on` has no sidebar UI** | `ui/components/alerts_toggle.py` lost its caller; the flag is still read by `run_scan` and persisted by the Run button, but nothing in the sidebar renders a toggle to change it. |
+| 11 | **Pattern results export built eagerly** | `pattern_results._render_export_bar` builds both the Excel and the PDF bytes on every rerun (`st.download_button(data=...)` is eager), whether or not anyone exports. |
+
+### Dead code inventory (confirmed no importers/callers)
+
+- `alerts/inapp.py` — every function wraps a `storage.database` function the UI calls directly.
+- `ui/components/alerts_toggle.py:render_alerts_toggle` — see issue 10.
+- `ui/pages/dashboard.py:_render_filter_sort_bar` / `_render_results_grid` and `ui/components/stock_card.py:render_stock_card` — the pre-split results grid (kept pending review, see *Dead Code — Awaiting Review* below).
+- `ui/components/panels.py:pending_panel` — defined, documented, never called.
+- `ui/pages/placeholders.py:render_reports_page` — shadowed by the real `reports_page.py` import in `app.py`.
+- `analysis/long_term.py`, `analysis/intraday.py` — legacy single-axis modules with no importers; `analysis/short_term.py` is still imported for `_compute_rsi` (chart RSI subplot) only.
+
+---
+
 ## Pending — Discussed, Not Started
 
 ### UI Redesign — Open Decisions (PENDING, 2026-08-03)
@@ -185,10 +228,14 @@ Awaiting a call from the user; nothing blocked on implementation.
 are defined but unreachable. They lost their caller when the results grid moved
 to `ui/pages/analysis_results.py` in `96d5c36`. Exports, filters and sorting
 were rebuilt on the new page; the zone-proximity alert banner they also
-contained was NOT, and is now the Alerts page (`0fb5106`).
+contained was NOT, and is now the Alerts page (`0fb5106`). The orphaning also
+strands `render_stock_card` in `ui/components/stock_card.py` (241 lines; only
+`build_detail_url` from that module is still live).
 
-Roughly 130 lines. Left in place at the user's request pending review — the
-decision is whether anything in them is still wanted before deletion.
+Roughly 130 lines in `dashboard.py` plus the card component. Left in place at
+the user's request pending review — the decision is whether anything in them
+is still wanted before deletion. The full dead-code inventory is under *Known
+Issues* above.
 
 ### Reports Page — Phase 2 (PENDING)
 

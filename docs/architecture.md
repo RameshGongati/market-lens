@@ -68,10 +68,11 @@ Constants: `_MAX_SCAN_BASE_CANDLES=10`, `_MAX_LEG_RUN=6`, `_MIN_GAP_LEGOUT_PCT=0
 
 **Test counting (`count_zone_tests` — M3 + M46):**
 - Walks forward from `test_scan_start_idx` (= legout_end + 1)
-- Entry = wick touches/crosses proximal; Exit = wick leaves the zone
-- Only complete enter+exit cycles count as a test
+- Entry = wick touches/crosses proximal (wick-based); Exit = candle CLOSES back out through the proximal (close-based)
+- Only complete enter+exit cycles count as a test; a candle that enters AND closes outside on the same bar counts as one test
 - `activation_touch` = True if price has entered the zone at least once (even without exiting)
-- Invalidation: only when CLOSE is strictly beyond the distal (M46). Wick through distal = zone survives.
+- Invalidation (M46): ANY penetration strictly beyond the distal — wick OR close — invalidates (`458ba6c`). Exactly AT the distal survives (strict inequality)
+- Persistent habitation: 4 consecutive closes inside the zone after entry invalidates it (`_HABITATION_LIMIT = 4`); the counter resets on any close outside
 
 **Closing quality (`assess_closing_quality` — M8):**
 - For each zone, finds the nearest opposing zone that the legout passed through
@@ -86,7 +87,7 @@ Constants: `_MAX_SCAN_BASE_CANDLES=10`, `_MAX_LEG_RUN=6`, `_MIN_GAP_LEGOUT_PCT=0
 
 #### `models.py` — Zone Data Model
 
-Single `Zone` dataclass with ~40 fields in three groups:
+Single `Zone` dataclass with 34 fields in three groups (5 legacy aliases — `top`, `bottom`, `mid`, `touches`, `bar_index` — are added later by `demand_supply._zone_dict()`, giving 39 keys in the result dicts):
 - **Stage 1:** zone_type, category, proximal, distal, exceptional variants, base indices, ODD score breakdown, marking labels
 - **Stage 2:** trend_at_zone, ema20_enhancer, is_tradeable, trade_warning
 - **Stage 3:** fib_confluence, fib_levels_in_zone, fib_strongest, confluence_score, confluence_label
@@ -158,7 +159,7 @@ analyse(symbol, data, use_fibonacci=False)
 Full detail view: interactive Plotly chart (candlestick/line/TradingView types), zone rectangle overlays with proximal/distal lines and right-edge score/strength labels, SMA/EMA reference lines, Fibonacci retracement lines (opt-in), volume subplot, key metrics row, analysis history timeline, personal notes.
 
 #### `ui/components/stock_card.py`
-Dashboard grid card: status badge, strength badge, price/change, "In Zone" pulsing indicator, "View SYMBOL →" deep link (`target="_blank"` with `urlencode()`).
+`build_detail_url()` — the deep-link builder used by every page's "View" links (`target="_blank"` with `urlencode()`) — is the live surface of this module. The `render_stock_card` grid card (status/strength badges, "In Zone" indicator) became unreachable when the results grid moved to `analysis_results.py` and is kept pending review.
 
 #### `ui/components/sidebar.py`
 Two-axis control panel: Trading Type selector → Primary Strategy selector → Enhancer checkboxes (cascading resets via `on_change` callbacks). Market status clock, data source picker, watchlist picker (My Watchlists / Index Watchlists / All NSE Stocks), screener filters.
@@ -172,19 +173,27 @@ Every helper must emit newline-free HTML — see Gotcha 23.
 #### `ui/pages/dashboard.py` — NOT a page
 Despite the name it renders no page. It holds the scan (`run_scan`,
 `scan_context`), the screener predicate, exports, the per-stock detail view and
-single-stock analysis for deep links. `app.main()` routes eleven states; the
-`dashboard` state renders `market_overview.render_market_overview`.
+single-stock analysis for deep links. `app.main()` routes twelve states on
+`st.session_state.active_page`; the `dashboard` state (also the `else`
+fallthrough for unknown values) renders `market_overview.render_market_overview`.
+
+The scan itself executes inside `render_analysis_results` — the sidebar's
+Run/Re-run buttons only set `analysing = True` and navigate, so the progress
+card appears where the results will land. After each scan the results page
+saves the single-row `latest_analysis_snapshot` so a fresh session (new tab,
+heatmap navigation) can restore the results.
 
 #### Pages
 | Module | Role |
 |--------|------|
-| `market_overview.py` | Landing page: market strip, bias, top opportunities |
-| `analysis_results.py` | Scan results — cards, filters, ranked table, View links |
+| `market_overview.py` | Landing page: market strip, bias, heatmap widget, top opportunities, quick tools |
+| `market_heatmap.py` | Full heatmap: 20 group tiles → per-group stock tiles; quotes cached via `st.cache_data` (15 min groups / 5 min stocks) with scan-setup overlays applied outside the cache. Not in the sidebar nav — reached from the dashboard or `?heatmap_group=` URLs |
+| `analysis_results.py` | Scan results — cards, filters, ranked table, View links; executes the scan and saves the snapshot |
 | `alerts_page.py` | One deduplicated feed of live zone matches and Telegram deliveries |
-| `reports_page.py` | F&O results monitor over the earnings calendar |
+| `reports_page.py` | F&O results monitor over the earnings calendar, with timing filters |
 | `settings.py` | Status strip, chart/alert/appearance panels, Telegram setup, monitor control, data management |
 | `pattern_scanner.py` / `pattern_results.py` / `pattern_detail.py` / `pattern_common.py` | Chart Pattern Scanner |
-| `watchlist_manager.py`, `placeholders.py` | Watchlists; Trade Journal placeholder |
+| `watchlist_manager.py`, `placeholders.py` | Watchlists (thin wrapper over `components/watchlist_panel.py`); Trade Journal placeholder |
 
 ### Chart Pattern Scanner (`analysis/pattern_*`)
 
@@ -195,10 +204,16 @@ A second detection pipeline, deliberately independent of the zone engine.
 - `pattern_detectors/pattern_types.py` — every family and type label, declared
   once. They are compared by equality throughout the filter chain, so a second
   copy drifts silently.
-- `pattern_detectors/shared.py` — swing finding, line fitting and break tests
-  shared by all detectors.
-- `pattern_detectors/{triangles,vcp,range_breakouts,flag_pennant,double_patterns}.py`
-  — one module per family.
+- `pattern_detectors/shared.py` — `PatternCandidate` (the common currency) and
+  `candidate_to_match` (stage / breakout bias / confidence / risk-reward /
+  freshness assembly), plus line fits and break tests. NOTE the dependency
+  direction: `shared.py` imports helpers FROM `triangles.py`.
+- `pattern_detectors/triangles.py` — the de-facto base module as well as the
+  triangle family: `_prepare_frame` (forming-bar drop, lookback, volume
+  synthesis) and `_find_swings` (fractal pivots) live here and every other
+  detector imports them.
+- `pattern_detectors/{vcp,range_breakouts,flag_pennant,double_patterns}.py`
+  — one module per remaining family.
 - `pattern_scanner.py` — watchlist orchestration, `apply_result_filters` for
   the results page, and `matches_to_export_rows`.
 
@@ -256,15 +271,40 @@ minutes was observed before a parse failure. The call runs on a worker thread
 with a 30s budget, so one bad symbol cannot block a whole watchlist run. The
 request itself cannot be cancelled; only the wait is bounded.
 
+#### `data/market_heatmap.py`
+Streamlit-free universe and quote shaping for the heatmap. 20 groups
+(`GROUPS`), each either watchlist-backed or built from hardcoded manual symbol
+lists (`_MANUAL_GROUP_SYMBOLS`, for sectors with no shipped watchlist).
+Quotes come from one batched `yf.download` (180-symbol chunks); when an index
+ticker is missing/not-ok the tile falls back to an unweighted mean of up to 60
+constituents' `change_pct` (`source="basket"`). Caching lives in the UI layer
+(`ui/pages/market_heatmap.py`) so this module stays testable.
+
+#### `data/nse_indices.py`
+Refreshes `data/predefined_watchlists.json` from live NSE: index constituents
+from niftyindices.com CSVs, the F&O list from the NSE OI-spurts API (needs a
+session cookie). Behind a sidebar button, no caching. NOTE: it rewrites the
+**git-tracked** JSON in place, and does not invalidate
+`utils.helpers.load_predefined_watchlists`'s `lru_cache`, so the running
+process may keep serving the pre-refresh list.
+
+#### `data/market_indices.py` / `data/earnings_calendar.py`
+NIFTY 50 / BANK NIFTY snapshots plus the 20-EMA market bias; and the results
+calendar (disk-cached per calendar day at `~/.market-lens/earnings`, fetched
+only on explicit Refresh — see Gotcha 27).
+
 ### Config (`config/`)
 
 #### `config/preferences.py`
 JSON persistence at `~/.market-lens/user_preferences.json`, with migration from the
-legacy single-axis "analysis type" model. Sidebar changes are written here, but
-**only `show_candle_tooltip` and `last_analysis_timestamp` are read back** —
-`app.init_session_state()` starts from fixed defaults every launch, so the rest is
-a record of last-used selections rather than restored state. The Settings page
-labels it accordingly.
+legacy single-axis "analysis type" model. Sidebar changes are written here per
+widget change (`save_preferences` merges over the current file), and since
+`1eaf15c` (2026-08-10) **`app.init_session_state()` restores them at launch** —
+eleven session keys covering watchlist selection, the two-axis triple, data
+source and `alerts_on`, plus `show_candle_tooltip` and
+`last_analysis_timestamp`. Restoration was forced by the heatmap: tile clicks
+are real URL navigations that can start a fresh session. (The Settings page's
+"Last Used Selections" label predates this and is stale.)
 
 #### `config/alert_settings.py`
 Load/save for `config/alert_config.json` (gitignored — it holds the Telegram bot
@@ -283,18 +323,34 @@ Telegram zone-proximity notifications, configured on the Settings page.
 - `alerts/telegram.py` — Bot API delivery (`sendMessage`, HTML parse mode) plus
   message formatting for zone alerts and the connectivity test
 - `alerts/zone_alert_checker.py` — scans cached analysis results for zones within
-  the configured proximity, honouring the min-score and zone-type filters
+  the configured proximity, honouring the min-score and zone-type filters. It
+  sends nothing itself — callers render/deliver
+- `alerts/manager.py` — `check_and_trigger_alerts`: writes BULLISH/BEARISH signal
+  rows to the `alerts` table during a scan. Needs a real `stock_id`, so it only
+  fires for user watchlists (predefined index/F&O stocks carry id 0)
+- `alerts/monitor_control.py` — probes the monitor's state by trying to TAKE the
+  flock (never by trusting the PID in the lock file), and starts/stops it
 - `alert_monitor.py` — standalone background script (**not** inside Streamlit) that
-  reuses the same `DemandSupplyAnalysis` / `detect_zones` / `filter_zones` pipeline,
-  so no detection logic is duplicated. Checks every 5 minutes during market hours
-  and sleeps outside them. Three cooldown modes: once-per-zone-per-day,
-  every-approach, once-per-zone-ever
+  reuses the same `DemandSupplyAnalysis` / `detect_zones` / `filter_zones` pipeline
+  for detection. It hardcodes Yahoo Finance and the Short-term timeframe (1y/1d)
+  regardless of the app's selections, and its zone-proximity distance math is a
+  separate inline copy of `zone_alert_checker`'s — a change to one does not reach
+  the other. Checks every 5 minutes during market hours and sleeps outside them.
+  Single-instance guard via `fcntl.flock` on `~/.market-lens/alert_monitor.lock`.
+  Three cooldown modes: once-per-zone-per-day, every-approach, once-per-zone-ever.
+  Sent history is flushed to `config/alert_config.json` per alert, not per cycle
 
 ### Storage (`storage/database.py`)
 
-SQLite at `~/.market-lens/market_lens.db` with 6 tables:
+SQLite at `~/.market-lens/market_lens.db` with 7 tables:
 - `watchlists` / `stocks` — user watchlist management
-- `analysis_results` — append-only with 20-per-stock pruning
+- `analysis_results` — append-only with 20-per-(stock, analysis_type) pruning
+- `latest_analysis_snapshot` — single row (`CHECK (id = 1)`, upserted) holding
+  the last completed watchlist scan. Exists because predefined universes
+  (Nifty 50, F&O) have no rows in `stocks`, so their per-stock results cannot
+  be restored from `analysis_results`; written by the results page after each
+  scan, read by `app.main()` so results survive a fresh session (new tab,
+  heatmap navigation)
 - `alerts` — triggered alerts with read/unread state
 - `stock_notes` — per-stock personal notes
 - `pattern_scans` — Chart Pattern Scanner result cache, pruned to the newest
@@ -361,27 +417,34 @@ OHLCV DataFrame
 
 ### 5. Display
 
-- Dashboard: 3-column grid of `stock_card` components
+- Analysis Results page: summary cards, filters, ranked table with search,
+  paging and per-row View links
 - Detail: Plotly chart with zone overlays, metrics, history, notes
 - Export: Excel (3 sheets) or PDF
 
 ### 6. Deep-Link (New Tab)
 
-Card generates `?stock=SYMBOL&exchange=EXCHANGE&src=…&tt=…&ps=…&enh=…`. The extra
-params carry the analysis context because a new browser tab is a **separate
-Streamlit session** with empty state — without them the tab fell back to launch
-defaults and could chart a different data source than the analysis just run.
+Three independent deep-link schemes, all handled at the top of `app.main()`
+**before** `render_sidebar()` so the sidebar and the routed page agree:
 
-On load:
-- `app.py` reads query params → validates each against its allowed list
-  (`SUPPORTED_DATA_SOURCES`, `TRADING_TYPES`, `PRIMARY_STRATEGIES`, `ENHANCERS`)
-  → sets session state → routes to detail view. This must happen **before**
-  `render_sidebar()` so the sidebar and chart agree. An empty `enh=` means "no
-  enhancers selected"; an unrecognised value falls back to the default
-- `dashboard.py:_run_single_stock_analysis()` runs analysis on-the-fly if no cached result
+- `?stock=SYMBOL&exchange=…&src=…&tt=…&ps=…&enh=…&cf=0|1` — the "View" links.
+  The extra params carry the analysis context because a new browser tab is a
+  **separate Streamlit session** with empty state. Each param is validated
+  against its allowed list (`SUPPORTED_DATA_SOURCES`, `TRADING_TYPES`,
+  `PRIMARY_STRATEGIES`, `ENHANCERS`); an empty `enh=` means "no enhancers
+  selected"; an unrecognised value leaves the default untouched.
+  `dashboard.py:_run_single_stock_analysis()` runs analysis on-the-fly if no
+  cached result exists.
+- `?pattern_scan=<id>&pattern_symbol=SYM` — Pattern Detail links; the matches
+  are restored from the `pattern_scans` table by id.
+- `?heatmap_group=<id>&heatmap_view=…` — heatmap tiles. Guarded by an
+  idempotency tuple (`_hm_qp_last`) rather than a one-shot flag, so navigating
+  tile-to-tile re-fires while a plain rerun does not clobber in-page selections.
 
-App-launch defaults are deliberately NOT read from saved preferences — only this
-link carries selections forward. See the preferences gotcha in `CLAUDE.md`.
+Since `1eaf15c`, launch defaults ALSO come from saved preferences (see
+`config/preferences.py` above), and an empty `analysis_results` is restored
+from the `latest_analysis_snapshot` table — deep links carry the per-link
+context, preferences and the snapshot carry everything else.
 
 ---
 
@@ -405,7 +468,7 @@ GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule i
 
 ## Testing Strategy
 
-**468 tests** across 19 files:
+**481 tests** across 22 files:
 
 | File | Tests | What It Validates |
 |------|-------|-------------------|
@@ -418,16 +481,19 @@ GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule i
 | `test_incomplete_bars.py` | 24 | NaN-bar removal, bhavcopy repair, missing-session rebuild. Autouse fixture redirects `_DISK_CACHE` — see Gotcha 19 |
 | `test_system_info.py` | 22 | App-dir disk footprint, cache clearing, flock-based monitor probe |
 | `test_zone_confirmation.py` | 17 | Confirmation screener: distance, score floor, recency, per-side cap |
+| `test_preferences_migration.py` | 17 | Legacy single-axis → two-axis migration; launch restoration keys |
 | `test_sidebar_selection_logic.py` | 16 | Trading type changes reset strategy and enhancers |
 | `test_fibonacci_lines.py` | 16 | Fibonacci lines drawn on Plotly figures |
-| `test_preferences_migration.py` | 15 | Legacy single-axis → two-axis migration |
 | `test_alerts_feed.py` | 14 | Alert feed ordering, cooldown-key parsing, per-symbol dedupe |
 | `test_recent_backfill.py` | 12 | Rebuilding sessions the data sources drop |
 | `test_watchlist_autocomplete.py` | 11 | Symbol/name matching and ranking |
+| `test_market_heatmap.py` | 6 | Heatmap tile shaping: symbol resolution, basket fallback, overlays, filter/sort |
 | `test_triangle_pattern_detector.py` | 5 | Triangle detection, stages, serialisation round-trip |
 | `test_named_pattern_detectors.py` | 4 | VCP, range breakout, flag/pennant, double top/bottom |
 | `test_stock_detail_source_symbol.py` | 3 | Detail-chart symbol resolution per data source |
 | `test_confirmation_overlay.py` | 3 | Confirmation zones drawn on the chart |
+| `test_reports_timing.py` | 3 | Reports-page timing filters (same-day, upcoming/recent windows) |
+| `test_analysis_snapshot.py` | 2 | Latest-scan snapshot round-trip and replacement |
 
 **Test patterns:**
 - **Hand-crafted OHLC data:** Every test builds custom DataFrames with specific candle shapes. Inline comments explain the arithmetic (e.g., `body_pct = 9/15 = 0.60`).
