@@ -16,3 +16,16 @@ def test_source_symbol_formats_tradingview_exchange_prefix() -> None:
 
 def test_source_symbol_keeps_plain_symbol_for_other_sources() -> None:
     assert stock_detail._source_symbol("SBIN", "NSE", "Jugaad") == "SBIN"
+
+
+def test_normalise_live_quote_keeps_valid_live_values() -> None:
+    assert stock_detail._normalise_live_quote({
+        "current_price": "35395",
+        "change": "155",
+        "change_pct": "0.44",
+    }) == {"price": 35395.0, "change": 155.0, "change_pct": 0.44}
+
+
+def test_normalise_live_quote_rejects_missing_or_invalid_price() -> None:
+    assert stock_detail._normalise_live_quote({"current_price": 0}) is None
+    assert stock_detail._normalise_live_quote({"current_price": "not-a-price"}) is None

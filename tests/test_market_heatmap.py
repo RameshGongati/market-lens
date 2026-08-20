@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import pandas as pd
+
 from data import market_heatmap as mh
 
 
@@ -31,6 +33,26 @@ def test_symbols_for_watchlist_reads_predefined_watchlist(monkeypatch) -> None:
     )
 
     assert mh.symbols_for_watchlist("F&O Stocks") == ["AAA", "BBB"]
+
+
+def test_stale_yahoo_daily_symbol_detects_missing_prior_session() -> None:
+    dates = {
+        "DIXON": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-19")),
+        "PAGEIND": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-18")),
+        "RELIANCE": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-19")),
+    }
+
+    assert mh._stale_yahoo_daily_symbols(dates) == {"PAGEIND"}
+
+
+def test_stale_yahoo_daily_symbol_allows_market_wide_holiday_gap() -> None:
+    dates = {
+        "DIXON": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-18")),
+        "PAGEIND": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-18")),
+        "RELIANCE": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-18")),
+    }
+
+    assert mh._stale_yahoo_daily_symbols(dates) == set()
 
 
 def test_group_tiles_use_basket_fallback_and_setup_counts(monkeypatch) -> None:

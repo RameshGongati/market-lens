@@ -133,6 +133,14 @@ def test_15m_spec() -> None:
     assert s["resample"] is False
 
 
+def test_60m_spec_uses_native_hourly_fetch() -> None:
+    s = INTERVAL_OPTIONS["60m"]
+    assert s["interval"] == "60m"
+    assert s["period"] == "1y"
+    assert s["fetch_interval"] == "60m"
+    assert s["resample"] is False
+
+
 def test_75m_spec_uses_15m_fetch_and_resample() -> None:
     """75m label must fetch 15m data and resample (yfinance has no 75m)."""
     s = INTERVAL_OPTIONS["75m"]
@@ -261,6 +269,17 @@ def test_fetch_by_interval_15m_calls_15m() -> None:
 
     fetch_by_interval("TEST.NS", "15m", fetch_fn=_log)
     assert call_log[0] == "15m"
+
+
+def test_fetch_by_interval_60m_calls_native_60m() -> None:
+    call_log: list[tuple[str, str]] = []
+
+    def _log(_sym: str, period: str, interval: str) -> pd.DataFrame:
+        call_log.append((period, interval))
+        return _make_good_daily_df(25)
+
+    fetch_by_interval("TEST.NS", "60m", fetch_fn=_log)
+    assert call_log == [("1y", "60m")]
 
 
 def test_fetch_by_interval_75m_fetches_15m() -> None:

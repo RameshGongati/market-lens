@@ -172,6 +172,49 @@ def _source_symbol(symbol: str, exchange: str, source_name: str) -> str:
     return symbol
 
 
+def _normalise_live_quote(quote: dict[str, Any]) -> dict[str, float] | None:
+    """Return display-safe live quote values, or ``None`` when unavailable."""
+    try:
+        price = float(quote.get("current_price", 0.0) or 0.0)
+        change = float(quote.get("change", 0.0) or 0.0)
+        change_pct = float(quote.get("change_pct", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(price) or price <= 0:
+        return None
+    if not math.isfinite(change) or not math.isfinite(change_pct):
+        return None
+    return {"price": price, "change": change, "change_pct": change_pct}
+
+
+def _live_header_quote(
+    symbol: str,
+    exchange: str,
+    source_name: str,
+    credentials: dict[str, str],
+) -> dict[str, float] | None:
+    """Fetch a short-lived quote for the detail header without changing a scan."""
+    cache_key = f"stock_detail_header_quote_{source_name}_{exchange}_{symbol}"
+    cached = st.session_state.get(cache_key)
+    now = datetime.now()
+    if cached and (now - cached["fetched_at"]).total_seconds() < 30:
+        return cached["quote"]
+
+    try:
+        manager = build_source_manager(source_name, credentials)
+        quote = _normalise_live_quote(
+            manager.get_quote(_source_symbol(symbol, exchange, source_name))
+        )
+    except Exception as exc:
+        logger.warning("Could not refresh detail quote for %s: %s", symbol, exc)
+        return None
+
+    if quote is not None:
+        st.session_state[cache_key] = {"fetched_at": now, "quote": quote}
+    return quote
+
+
 def _make_analyser_for_chart(primary_strategy: str):
     """Instantiate the correct analyser for a chart re-analysis.
 
@@ -212,7 +255,10 @@ def render_stock_detail(
         result: Analysis result dict from the analysis module.
         stock_id: Database stock id for history/notes lookup.
     """
-    _render_detail_header(symbol, exchange, analysis_type, result)
+    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    credentials = st.session_state.get("credentials", {}).get(source_name, {})
+    live_quote = _live_header_quote(symbol, exchange, source_name, credentials)
+    _render_detail_header(symbol, exchange, analysis_type, result, live_quote)
 
     if "error" in result:
         st.error(result["error"])
@@ -519,7 +565,11 @@ def _market_status_text() -> str:
 
 
 def _render_detail_header(
-    symbol: str, exchange: str, analysis_type: str, result: dict[str, Any],
+    symbol: str,
+    exchange: str,
+    analysis_type: str,
+    result: dict[str, Any],
+    live_quote: dict[str, float] | None = None,
 ) -> None:
     """Symbol, verdict badge, live price and the page actions.
 
@@ -527,9 +577,11 @@ def _render_detail_header(
     ``result["status"]`` — status is "neutral" for most stocks and would put a
     WAIT badge on a page whose chart clearly shows a fresh demand zone.
     """
-    price = result.get("current_price", 0.0) or 0.0
-    change = float(result.get("change", 0.0) or 0.0)
-    change_pct = float(result.get("change_pct", 0.0) or 0.0)
+    price = (live_quote or {}).get("price", result.get("current_price", 0.0)) or 0.0
+    change = float((live_quote or {}).get("change", result.get("change", 0.0)) or 0.0)
+    change_pct = float(
+        (live_quote or {}).get("change_pct", result.get("change_pct", 0.0)) or 0.0
+    )
     company = get_company_name(symbol)
 
     zones = [*(result.get("demand_zones") or []),

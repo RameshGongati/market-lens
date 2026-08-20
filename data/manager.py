@@ -283,6 +283,8 @@ INTERVAL_OPTIONS: dict[str, dict[str, str | bool]] = {
     "Daily":   {"interval": "1d",  "period": "5y",  "fetch_interval": "1d",  "resample": False},
     "Weekly":  {"interval": "1wk", "period": "5y",  "fetch_interval": "1wk", "resample": False},
     "Monthly": {"interval": "1mo", "period": "10y", "fetch_interval": "1mo", "resample": False},
+    # Yahoo supports 60-minute bars natively for up to roughly one year.
+    "60m":     {"interval": "60m", "period": "1y",  "fetch_interval": "60m", "resample": False},
     "75m":     {"interval": "75m", "period": "60d", "fetch_interval": "15m", "resample": True},
     "15m":     {"interval": "15m", "period": "60d", "fetch_interval": "15m", "resample": False},
 }
@@ -294,6 +296,7 @@ _INTERVAL_TO_LABEL: dict[str, str] = {
     "1d":  "Daily",
     "1wk": "Weekly",
     "1mo": "Monthly",
+    "60m": "60m",
     "15m": "15m",
     "75m": "75m",
 }

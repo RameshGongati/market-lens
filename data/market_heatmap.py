@@ -12,6 +12,7 @@ from pathlib import Path
 import json
 import logging
 import math
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
@@ -199,6 +200,39 @@ def _empty_quote(symbol: str, error: str = "") -> dict[str, Any]:
     }
 
 
+def _stale_yahoo_daily_symbols(
+    session_dates: dict[str, tuple[pd.Timestamp, pd.Timestamp]],
+) -> set[str]:
+    """Find symbols whose Yahoo daily bars are behind the market majority.
+
+    Yahoo's multi-ticker daily response occasionally omits one symbol's prior
+    session while returning the current session. Calculating change from the
+    next available bar then turns a one-day move into a multi-day move. The
+    dominant dates across the same batch provide a cheap, reliable way to flag
+    only those outliers for an individual quote refresh.
+    """
+    if len(session_dates) < 2:
+        return set()
+
+    latest_counts = Counter(last for last, _prev in session_dates.values())
+    market_latest, _ = latest_counts.most_common(1)[0]
+    matching_latest = {
+        symbol: prev
+        for symbol, (last, prev) in session_dates.items()
+        if last == market_latest
+    }
+    if len(matching_latest) < 2:
+        return set()
+
+    previous_counts = Counter(matching_latest.values())
+    market_previous, _ = previous_counts.most_common(1)[0]
+    return {
+        symbol
+        for symbol, (last, prev) in session_dates.items()
+        if last < market_latest or (last == market_latest and prev < market_previous)
+    }
+
+
 def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
     """Fetch latest close-to-close changes from Yahoo in one batch."""
     unique = _dedupe(symbols)
@@ -227,6 +261,8 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
         return {s: _empty_quote(s, str(exc)) for s in unique}
 
     out: QuoteMap = {}
+    session_dates: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    ticker_by_symbol = dict(zip(unique, tickers))
     for plain, ticker in zip(unique, tickers):
         try:
             if isinstance(raw.columns, pd.MultiIndex):
@@ -242,6 +278,10 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
                 continue
             last = float(closes.iloc[-1])
             prev = float(closes.iloc[-2])
+            session_dates[plain] = (
+                pd.Timestamp(closes.index[-1]).normalize(),
+                pd.Timestamp(closes.index[-2]).normalize(),
+            )
             change = last - prev
             volumes = frame["Volume"].dropna().astype(float) if "Volume" in frame else pd.Series(dtype=float)
             volume = int(volumes.iloc[-1]) if not volumes.empty else 0
@@ -256,6 +296,29 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
             }
         except Exception as exc:
             out[plain] = _empty_quote(plain, str(exc))
+
+    # Repair only per-symbol holes in Yahoo's batch daily history. This keeps
+    # the fast batch path for the normal case while matching the quote method
+    # used by the stock-detail page for the affected symbols.
+    for plain in _stale_yahoo_daily_symbols(session_dates):
+        try:
+            info = yf.Ticker(ticker_by_symbol[plain]).fast_info
+            price = float(getattr(info, "last_price", 0) or 0)
+            prev_close = float(getattr(info, "previous_close", 0) or 0)
+            if not (math.isfinite(price) and price > 0 and math.isfinite(prev_close) and prev_close > 0):
+                continue
+            change = price - prev_close
+            out[plain].update({
+                "price": price,
+                "change": change,
+                "change_pct": change / prev_close * 100.0,
+                "ok": True,
+            })
+            logger.info(
+                "Repaired stale Yahoo daily change for %s using fast quote", plain
+            )
+        except Exception as exc:
+            logger.warning("Yahoo quote repair failed for %s: %s", plain, exc)
     return out
 
 
