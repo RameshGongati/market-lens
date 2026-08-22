@@ -221,6 +221,34 @@ Zone output enters only as `zone_context` (nearest demand/supply proximity).
 Nothing in this pipeline writes to a `Zone` or to `odd_score`. Like the zone
 engine, the detectors drop the still-forming bar before deciding a breakout.
 
+### Research Engine (`research_engine/`, `ui/pages/research_page.py`)
+
+A third independent pipeline (after the zone engine and the pattern scanner):
+evidence base for scanner design. Three parts, with strict boundaries:
+
+- `research_engine/harness/` — offline walk-forward backtesting (fetch →
+  detect → simulate → aggregate → Word reports). Run from the CLI
+  (`bash research_engine/harness/run_all.sh`), never from the app. It patches
+  the zone engine's forward-looking invalidation filter for backtests, but
+  ONLY behind `enable_backtest_mode()`, which only harness runners call; the
+  harness zone detectors raise without it. Deps in `requirements-research.txt`.
+- `research_engine/store.py` — a SEPARATE SQLite database at
+  `~/.market-lens/research_engine.db` holding run metadata, findings tables,
+  and selected candidates. Large parquet/CSV/chart artifacts stay on disk
+  (gitignored) and are referenced by path.
+- `research_engine/importer.py` — loads harness outputs into the store as
+  labelled runs (Run 1: "2026-08 in-sample year"); missing files degrade to
+  per-run warnings.
+
+The Research page (tabs: Findings, Trade Candidates, Run Research placeholder,
+Engine Config, Validation History) reads only from the store — importing it
+never touches the zone engine (enforced by `tests/test_research_engine.py`).
+The sidebar's "Research ↗" is an `<a target="_blank">` to `?research=1`, so
+the Research Engine opens as a separate Streamlit session while the dashboard
+keeps working in the original tab. All candidate labels are research
+classifications (TAKE candidate / WAIT / WATCH / REDUCE SIZE / AVOID /
+NO TRADE), never buy/sell recommendations.
+
 ### Data Layer (`data/`)
 
 #### `data/manager.py`
@@ -468,7 +496,13 @@ GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule i
 
 ## Testing Strategy
 
-**481 tests** across 22 files:
+**496 tests** across 23 files:
+
+| File | Tests | What It Validates |
+|------|-------|-------------------|
+| `test_research_engine.py` | 15 | Research Engine isolation (page import never patches `score_zone`; backtest mode explicit + reversible), store round-trip, importer degradation, candidate filter helpers |
+
+Plus the pre-existing suite:
 
 | File | Tests | What It Validates |
 |------|-------|-------------------|

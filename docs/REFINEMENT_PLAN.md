@@ -208,6 +208,34 @@ Confirmed against the code; none has a fix committed. Ordered by likely impact.
 
 ---
 
+## Research Engine V1 (BUILT — uncommitted, on feature/research-engine)
+
+The two-layer F&O research study (816,937 simulated trades; see
+`research_engine/output/FnO_Pattern_Research_Report.docx` and
+`Overall_Strategy_Engine_Report.docx`) shipped as a separate subsystem:
+
+- `research_engine/harness/` — the reproducible backtest (CLI-run, survivorship
+  patch quarantined behind `enable_backtest_mode()`).
+- `research_engine/store.py` + `importer.py` — separate DB at
+  `~/.market-lens/research_engine.db`; Run 1 = "2026-08 in-sample year".
+- `ui/pages/research_page.py` — "Market Lens Research Engine": Findings,
+  Trade Candidates (historical, with outcomes), Run Research (V2 placeholder),
+  Engine Config (read-only), Validation History (+ Re-import).
+- Sidebar "Research ↗" opens `?research=1` in a new tab (separate session).
+- 15 tests incl. the isolation guard (page import must not patch `score_zone`).
+
+### Research Engine V2 (PENDING)
+
+| # | Item | Detail |
+|---|------|--------|
+| 1 | Detached background runner | flock-guarded process + `monitor_control`-style probe + progress file; wire the Run Research tab. |
+| 2 | Out-of-sample validation | Re-run the harness on a second year / rolling window; every current weight is in-sample. Top priority before any dashboard surfacing. |
+| 3 | Live candidate generation | Apply the gate stack (setup tier × zone location × traps T4/T13/T9 × RR) to a fresh scan. |
+| 4 | Production graduation | Gap-Up Continuation scanner, SMA50 gate on zone touches, demand-side confirmation default, trap chips, RR-to-opposing column — each becomes production code the harness then imports (single source). |
+| 5 | Real institutional data | NSE delivery %, F&O OI build-up, FII/DII before the Institutional Support Score gets any veto power (OBV/AD tested harmful; VWAP alignment +0.099R was the one good proxy). |
+
+---
+
 ## Pending — Discussed, Not Started
 
 ### UI Redesign — Open Decisions (PENDING, 2026-08-03)
