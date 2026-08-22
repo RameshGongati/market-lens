@@ -224,14 +224,40 @@ The two-layer F&O research study (816,937 simulated trades; see
 - Sidebar "Research ↗" opens `?research=1` in a new tab (separate session).
 - 15 tests incl. the isolation guard (page import must not patch `score_zone`).
 
+### Research Engine — Out-of-sample validation (DONE, Run 2)
+
+Run 1's parameters were applied FROZEN (no re-fitting) to the prior year
+(2024-08-11..2025-08-10, daily+weekly, 63,420 trades; intraday history that
+old is unavailable). `research_engine/harness/oos_validate.py`; imported as
+Run 2 "2024-25 out-of-sample (daily+weekly, frozen params)".
+
+**The engine survives at roughly half strength** — TAKE +0.045R (n=4,928,
+PF 1.07) vs NO TRADE −0.056R; AVOID was the worst bucket (−0.187R). Decision
+ordering held. Expect this in-sample→OOS decay pattern in every future run.
+
+Twice-validated (build with confidence): Gap-Up Continuation daily
+(+0.41 → +0.34R), Fresh Zone Touch daily (+0.09 → +0.10R) and weekly
+(+0.07 → +0.09R), MACD bull cross weekly (+0.28 → +0.31R, n=99), the
+zone-location gate itself, and trap T4 breakout-without-volume (+2.9 →
++2.3pp stop uplift — the only trap that replicated on stops).
+
+Exposed as in-sample flukes (do NOT build): weekly hammer (−0.23R OOS) and
+morning star (−0.26R) — the old R4 recommendation is cut back to its
+MACD-cross part only; RSI/stochastic divergence daily (−0.19/−0.20R); MACD
+cross daily (−0.13R); weekly demand bounce (−0.11R). Traps T13/T9 faded to
+~zero stop-uplift OOS (keep as informational flags, not hard gates); T10
+stale zones was strong OOS (+5.6pp) after being negligible in-sample —
+regime-sensitive, but consistent with the app already excluding 2+-tested
+zones.
+
 ### Research Engine V2 (PENDING)
 
 | # | Item | Detail |
 |---|------|--------|
 | 1 | Detached background runner | flock-guarded process + `monitor_control`-style probe + progress file; wire the Run Research tab. |
-| 2 | Out-of-sample validation | Re-run the harness on a second year / rolling window; every current weight is in-sample. Top priority before any dashboard surfacing. |
-| 3 | Live candidate generation | Apply the gate stack (setup tier × zone location × traps T4/T13/T9 × RR) to a fresh scan. |
-| 4 | Production graduation | Gap-Up Continuation scanner, SMA50 gate on zone touches, demand-side confirmation default, trap chips, RR-to-opposing column — each becomes production code the harness then imports (single source). |
+| 2 | Production graduation (twice-validated list only) | Gap-Up Continuation daily scanner; SMA50 gate on fresh zone touches; weekly MACD-cross scan; T4 volume gate + informational T13/T9 chips; RR-to-opposing column. Each becomes production code the harness then imports (single source). |
+| 3 | Live candidate generation | Apply the gate stack to a fresh scan (frozen, twice-validated parameters). |
+| 4 | Rolling re-validation | Re-run OOS quarterly as new data accrues; watch Run-over-run drift in Validation History. |
 | 5 | Real institutional data | NSE delivery %, F&O OI build-up, FII/DII before the Institutional Support Score gets any veto power (OBV/AD tested harmful; VWAP alignment +0.099R was the one good proxy). |
 
 ---
