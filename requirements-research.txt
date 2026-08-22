@@ -1,0 +1,7 @@
+# Research Engine harness dependencies (offline backtesting + report building).
+# The app itself does NOT need these; install only to run research_engine/harness:
+#   pip install -r requirements-research.txt
+matplotlib>=3.11.0
+mplfinance>=0.12.10b0
+python-docx>=1.1.0
+jugaad-data>=0.33

@@ -22,6 +22,7 @@ from ui.pages.pattern_results import render_pattern_results
 from ui.pages.pattern_scanner import render_pattern_scanner
 from ui.pages.placeholders import render_trade_journal_page
 from ui.pages.reports_page import render_reports_page
+from ui.pages.research_page import render_research_page
 from ui.pages.watchlist_manager import render_watchlist_manager
 from ui.pages.settings import render_settings
 from utils.logger import get_logger
@@ -478,6 +479,14 @@ def main() -> None:
         st.session_state.active_page = "market_heatmap"
         st.session_state["_hm_qp_last"] = _hm_query
 
+    # Research Engine new-tab support. The sidebar's "Research ↗" item is an
+    # <a target="_blank"> (native buttons cannot open tabs), so a fresh session
+    # lands here with ?research=1. One-shot, like ?stock: the flag routes the
+    # first run only, leaving in-tab navigation away from the page free.
+    if st.query_params.get("research") == "1" and not st.session_state.get("_qp_research_handled"):
+        st.session_state.active_page = "research"
+        st.session_state["_qp_research_handled"] = True
+
     try:
         init_db()
     except Exception as exc:
@@ -562,6 +571,8 @@ def main() -> None:
         render_watchlist_manager()
     elif page == "settings":
         render_settings()
+    elif page == "research":
+        render_research_page()
     else:
         render_market_overview()
 

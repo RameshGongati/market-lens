@@ -158,6 +158,23 @@ def _render_secondary_nav() -> None:
             st.session_state.active_page = page
             st.rerun()
 
+    # Research Engine opens in a NEW TAB so the dashboard keeps working here.
+    # Native st.button cannot target _blank, so this is a styled anchor to the
+    # ?research=1 route (handled one-shot in app.main). Styled like the nav
+    # buttons above it: white pill, thin border, dark text — the sidebar rail
+    # is LIGHT, so white text would vanish (verified against the running app).
+    # Single-line HTML — a blank line would terminate the markdown HTML block
+    # (Gotcha 23).
+    st.markdown(
+        "<a href='?research=1' target='_blank' rel='noopener' "
+        "style='display:block;padding:0.44rem 0.75rem;margin:0.15rem 0;"
+        "background:#FFFFFF;border:1px solid rgba(49,51,63,0.2);"
+        "border-radius:0.5rem;color:#31333F;text-decoration:none;"
+        "font-size:0.875rem;font-weight:400;line-height:1.4;'>"
+        "&#128300;&nbsp; Research <span style='opacity:0.6;'>&#8599;</span></a>",
+        unsafe_allow_html=True,
+    )
+
 
 def _panel_marker() -> None:
     """Emit an invisible marker identifying a container as a sidebar PANEL.

@@ -225,3 +225,8 @@ __marimo__/
 credentials.json
 .market-lens/
 config/alert_config.json
+
+# Research Engine — generated data never enters git (caches, backtest outputs,
+# reports, charts). The harness/store/importer CODE is committed; data is not.
+research_engine/cache/
+research_engine/output/
