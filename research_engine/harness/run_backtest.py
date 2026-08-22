@@ -30,7 +30,11 @@ from research_engine.harness.simulate import simulate  # noqa: E402
 
 OUT = REPO_ROOT / "research_engine" / "output"
 CACHE = REPO_ROOT / "research_engine" / "cache"
-TEST_START = pd.Timestamp("2025-08-11")
+# Test window (daily/weekly signal filter). Overridable via env so the same
+# harness can run out-of-sample windows; defaults reproduce the original run.
+import os as _os
+TEST_START = pd.Timestamp(_os.environ.get("RE_TEST_START", "2025-08-11"))
+TEST_END = pd.Timestamp(_os.environ["RE_TEST_END"]) if _os.environ.get("RE_TEST_END") else None
 
 SETUP_TYPE = {}
 for s in ("bullish_engulfing bearish_engulfing hammer shooting_star inverted_hammer "
@@ -130,6 +134,9 @@ def process_symbol(sym: str, tf: str, sector: str, cname: str,
     if tf in ("daily", "weekly"):
         keep_from = df.index.searchsorted(TEST_START)
         sigs = [s for s in sigs if s.i >= keep_from]
+        if TEST_END is not None:
+            keep_to = df.index.searchsorted(TEST_END)
+            sigs = [s for s in sigs if s.i < keep_to]
     sigs.sort(key=lambda s: (s.setup, s.i))
     deduped, last_i = [], {}
     for s in sigs:

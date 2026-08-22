@@ -30,7 +30,8 @@ CACHE = REPO_ROOT / "research_engine" / "cache"
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 FETCH_SPECS = {
-    "daily": {"period": "2y", "interval": "1d"},
+    # 4y daily: 2 test years (in-sample + out-of-sample) + indicator warm-up
+    "daily": {"period": "4y", "interval": "1d"},
     "60m": {"period": "1y", "interval": "60m"},
     "15m": {"period": "60d", "interval": "15m"},
 }

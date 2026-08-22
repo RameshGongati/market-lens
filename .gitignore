@@ -230,3 +230,4 @@ config/alert_config.json
 # reports, charts). The harness/store/importer CODE is committed; data is not.
 research_engine/cache/
 research_engine/output/
+research_engine/output_oos/
