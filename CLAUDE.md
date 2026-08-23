@@ -57,9 +57,15 @@ alerts/
                                 #   (needs a real stock_id, so index/F&O scans never persist)
   inapp.py                      # DEAD CODE — no importers; UI calls storage.database directly
   monitor_control.py            # flock-based status + start/stop for alert_monitor
+  gap_alerts.py                 # Gap-Up Continuation Telegram alerts: EOD confirmed-signal
+                                #   pass (16:00 IST, session-keyed with 2-session catch-up),
+                                #   intraday stop-loss/target touches over gap_registry, and
+                                #   authoritative EOD resolutions. Three-source bar chain:
+                                #   Yahoo daily -> intraday synthesis -> NSE bhavcopy
 alert_monitor.py                # Standalone background monitor (runs outside Streamlit).
                                 #   Hardcodes Yahoo + Short-term (1y/1d); duplicates the
-                                #   zone-proximity math of zone_alert_checker inline
+                                #   zone-proximity math of zone_alert_checker inline.
+                                #   Also hosts the gap-signal passes (alerts/gap_alerts.py)
 config/
   trading_config.py             # Two-axis model: trading types, strategies, enhancers, timeframes
   preferences.py                # JSON persistence with legacy migration; restored at launch (Gotcha 14)
