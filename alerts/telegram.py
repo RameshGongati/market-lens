@@ -106,3 +106,99 @@ def format_test_message() -> str:
         f"Bot: connected\n"
         f"Time: {timestamp}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Gap-Up Continuation (Signals) alerts — always "stop loss", never "stop";
+# always research-classification language, never buy/sell recommendations.
+# --------------------------------------------------------------------------- #
+
+_GAP_DISCLAIMER = "Research classification: TAKE candidate — not a buy/sell recommendation."
+
+
+def _ist_stamp() -> str:
+    return dt.datetime.now(_IST).strftime("%I:%M %p IST | %b %d, %Y")
+
+
+def format_gap_signal_alert(symbol: str, sig, tracked, late: bool,
+                            volume_ok: bool = False,
+                            result_days: int | None = None) -> str:
+    """Confirmed Gap-Up Continuation signal (fresh after the close, or a
+    late catch-up once the entry session has already begun)."""
+    sig_date = str(getattr(sig, "date", ""))[:10]
+    tags = []
+    if volume_ok:
+        tags.append("volume ✓")
+    if result_days is not None:
+        tags.append(f"results in {result_days}d ⚠")
+    tags_line = f"Tags: {' · '.join(tags)}\n" if tags else ""
+    target = tracked.target if tracked.target is not None else sig.target_2r()
+
+    if late and tracked.entry_price is not None:
+        entry_line = (f"Entry (already occurred, {str(tracked.entry_date)[:10]} open): "
+                      f"₹{tracked.entry_price:,.2f}\n")
+        header = f"📈 <b>Gap-Up Continuation — LATE ALERT</b> (signal {sig_date})"
+        status_line = (f"Current status: {tracked.status.replace('_', ' ')}"
+                       + (f" ({tracked.r_multiple:+.2f}R)" if tracked.r_multiple is not None else "")
+                       + "\n")
+    elif late:
+        entry_line = "Entry window (the open after the signal day) has passed.\n"
+        header = f"📈 <b>Gap-Up Continuation — LATE ALERT</b> (signal {sig_date})"
+        status_line = ""
+    else:
+        entry_line = f"Candidate entry: next session's open (~₹{sig.close:,.2f})\n"
+        header = "📈 <b>Gap-Up Continuation (confirmed)</b>"
+        status_line = ""
+
+    return (
+        f"{header}\n\n"
+        f"<b>{symbol}</b> gapped +{sig.gap_pct:.2f}% over the prior high "
+        f"and held into the close ({sig_date}).\n\n"
+        f"{entry_line}"
+        f"Stop loss: ₹{sig.stop:,.2f} (prior-day low − 0.1 ATR)\n"
+        f"2R target: ₹{target:,.2f}\n"
+        f"{status_line}{tags_line}\n"
+        f"{_GAP_DISCLAIMER}\n"
+        f"{_ist_stamp()}"
+    )
+
+
+def format_gap_touch_alert(entry: dict, event: str, price: float) -> str:
+    """Provisional intraday touch of the stop loss or the 2R target."""
+    symbol = entry.get("symbol", "")
+    if event == "stop_loss":
+        head = "🔴 <b>Stop loss touched (intraday, provisional)</b>"
+        level = f"Stop loss: ₹{entry.get('stop', 0):,.2f}"
+    else:
+        head = "🟢 <b>2R target touched (intraday, provisional)</b>"
+        level = f"2R target: ₹{entry.get('target', 0):,.2f}"
+    return (
+        f"{head}\n\n"
+        f"<b>{symbol}</b> (gap signal {entry.get('signal_date', '')}) "
+        f"traded at ₹{price:,.2f}.\n"
+        f"{level} · entry was ₹{entry.get('entry_price') or 0:,.2f}\n\n"
+        f"End-of-day confirmation follows (5-minute polling can lag brief "
+        f"moves). Research tracking — not a buy/sell recommendation.\n"
+        f"{_ist_stamp()}"
+    )
+
+
+def format_gap_resolution_alert(symbol: str, sig, tracked) -> str:
+    """Authoritative end-of-day resolution from the tracker walk."""
+    labels = {
+        "target_hit": ("🟢", "2R target hit"),
+        "stop_loss_hit": ("🔴", "Stop loss hit"),
+        "time_stopped": ("⚪", "Time-stopped (20 sessions)"),
+    }
+    icon, label = labels.get(tracked.status, ("ℹ️", tracked.status))
+    r = f"{tracked.r_multiple:+.2f}R" if tracked.r_multiple is not None else ""
+    return (
+        f"{icon} <b>Gap signal resolved: {label}</b>\n\n"
+        f"<b>{symbol}</b> (signal {str(getattr(sig, 'date', ''))[:10]}, "
+        f"entry ₹{tracked.entry_price or 0:,.2f} on {str(tracked.entry_date)[:10]})\n"
+        f"Exit: ₹{tracked.exit_price or 0:,.2f} on {str(tracked.exit_date)[:10]} "
+        f"→ <b>{r}</b> in {tracked.days_active} session(s).\n\n"
+        f"Confirmed on completed bars (matches the Signals page and the "
+        f"backtest exactly). Research tracking — not a buy/sell recommendation.\n"
+        f"{_ist_stamp()}"
+    )

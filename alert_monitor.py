@@ -16,6 +16,7 @@ import time
 from datetime import date, datetime, timedelta
 
 from analysis.demand_supply import DemandSupplyAnalysis
+from alerts import gap_alerts
 from alerts.telegram import format_zone_alert, send_to_all_recipients
 from alerts.zone_alert_checker import AlertMatch
 from config.alert_settings import load_alert_config, save_alert_config
@@ -218,12 +219,95 @@ def _run_cycle(config: dict) -> int:
     return alerts_sent
 
 
+def _gap_send(messages: list[tuple[str, dict]], bot_token: str,
+              recipients: list) -> tuple[int, int]:
+    """Send (message, history_updates) pairs; flush each key on success only,
+    so a failed send stays unrecorded and is retried next cycle."""
+    sent = failed = 0
+    for msg, updates in messages:
+        if _shutdown:
+            break
+        outcome = send_to_all_recipients(bot_token, recipients, msg)
+        if outcome.get("sent"):
+            gap_alerts.apply_state(updates)
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed
+
+
+def _gap_eod_pass() -> int:
+    """Confirmed-signal + resolution alerts for any unscanned completed
+    session (incl. catch-up after downtime). Cheap no-op when nothing pends."""
+    config = load_alert_config()
+    if not gap_alerts.gap_alerts_enabled(config):
+        return 0
+    now = get_current_ist_time()
+    if not gap_alerts.pending_sessions(config.get("alert_history", {}), now):
+        return 0
+    tg = config.get("telegram", {})
+    bot_token, recipients = tg.get("bot_token", ""), tg.get("recipients", [])
+    if not bot_token or not recipients:
+        return 0
+    symbols = _resolve_stock_list(config)
+    if not symbols:
+        return 0
+    _log(f"Gap signals: end-of-day pass over {len(symbols)} stocks...")
+    ds = DataSourceManager()
+    ds.switch_source("Yahoo Finance")
+    try:
+        from data.earnings_calendar import get_earnings
+        earnings = get_earnings(symbols, cache_only=True)
+    except Exception:  # noqa: BLE001
+        earnings = {}
+    result = gap_alerts.run_eod_pass(config, ds, symbols, now=now, earnings=earnings)
+    if result is None:
+        return 0
+    sent, failed = _gap_send(result.messages, bot_token, recipients)
+    # scan guards persist only when every alert went out (or none existed);
+    # otherwise the next cycle rescans and resends just the unrecorded ones
+    if failed == 0:
+        gap_alerts.apply_state(result.guard_updates, result.registry)
+        _log(f"Gap signals: {sent} alert(s) sent, "
+             f"{len(result.registry)} active signal(s) in the registry.")
+    else:
+        gap_alerts.apply_state({}, result.registry)
+        _log(f"Gap signals: {failed} send(s) failed — pass will retry.")
+    return sent
+
+
+def _gap_touch_pass(config: dict) -> int:
+    """Provisional intraday stop-loss / 2R-target touch alerts (market hours)."""
+    if not gap_alerts.gap_alerts_enabled(config):
+        return 0
+    registry = config.get(gap_alerts.REGISTRY_KEY) or []
+    if not registry:
+        return 0
+    tg = config.get("telegram", {})
+    bot_token, recipients = tg.get("bot_token", ""), tg.get("recipients", [])
+    if not bot_token or not recipients:
+        return 0
+    ds = DataSourceManager()
+    ds.switch_source("Yahoo Finance")
+    messages = gap_alerts.run_touch_pass(config, lambda s: ds.get_quote(f"{s}.NS"))
+    sent, _failed = _gap_send(messages, bot_token, recipients)
+    return sent
+
+
 def _wait_for_market_open() -> None:
-    """Sleep until the next market open, checking every 60 seconds."""
+    """Sleep until the next market open, checking every 60 seconds.
+
+    The gap-signal end-of-day pass runs from inside this loop: after the
+    close (16:00 IST onwards) and as catch-up whenever the machine comes
+    back from downtime. Its own guards make the call a cheap no-op."""
     while not _shutdown:
         now = get_current_ist_time()
         if is_market_open(now):
             return
+        try:
+            _gap_eod_pass()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"Gap signals pass error: {exc}")
         # Find next market open for display
         if is_trading_day(now) and now.hour < 9:
             _log("Market opens today at 9:15 AM IST. Waiting...")
@@ -304,6 +388,12 @@ def main() -> None:
 
         config = load_alert_config()
         sent = _run_cycle(config)
+        # gap signals: intraday touch alerts + next-day catch-up during hours
+        try:
+            sent += _gap_touch_pass(config)
+            sent += _gap_eod_pass()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"Gap signals pass error: {exc}")
 
         next_check = get_current_ist_time() + timedelta(seconds=_CHECK_INTERVAL_SEC)
         _log(f"{sent} alert{'s' if sent != 1 else ''} sent. "

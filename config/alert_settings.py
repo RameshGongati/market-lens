@@ -23,8 +23,15 @@ _DEFAULTS: dict[str, Any] = {
         "min_score": 6,
         "zone_type": "both",
         "cooldown": "once_per_zone_per_day",
+        # Gap-Up Continuation alerts (Signals V1.1). Nested keys are NOT
+        # back-filled into older config files — readers must default to True
+        # when the key is absent (gap_alerts.gap_alerts_enabled does).
+        "gap_alerts": True,
     },
     "alert_history": {},
+    # Active gap signals the intraday touch pass watches; rebuilt by every
+    # EOD pass. [{symbol, signal_date, status, entry_price, stop, target}]
+    "gap_registry": [],
 }
 
 
