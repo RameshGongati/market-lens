@@ -250,6 +250,35 @@ stale zones was strong OOS (+5.6pp) after being negligible in-sample —
 regime-sensitive, but consistent with the app already excluding 2+-tested
 zones.
 
+### Research experiments log (research-only; no product changes)
+
+**Gap definition A/B — prior HIGH vs prior CLOSE (2026-08-24, DECIDED: keep
+production rule unchanged).** `harness/run_gap_ab.sh` + `gap_ab_analysis.py`,
+both test years, daily+weekly; results in `output/gap_definition_ab.csv`.
+Close-based gaps are a SUPERSET of the production rule, so the question is the
+marginal cohort (clears the prior close but not the prior high — "partial
+gaps"). Findings (daily): the marginal cohort is genuinely profitable in both
+years (+0.14R / +0.16R, PF ~1.3, ~700 trades/yr) but roughly HALF the
+production rule's edge (+0.41R / +0.34R, PF 1.9–2.3) with nearly double the
+stop-loss rate (~48% vs ~25–34%). Weekly: unusable under either definition.
+Decision: production stays high-based; the partial-gap cohort has passed the
+two-year bar and could later ship as a clearly-labelled weaker second tier if
+breadth is ever wanted. The `gap_up_close_go` setup stays in the harness as a
+research-only setup and gets re-validated for free in future runs.
+
+**Gap-day base rates (2026-08-24, myth check).** Across both years, the
+gap-up candle itself is a coin flip: full gaps closed green 49.0% of the time
+(baseline any-day: 46.1%), mean open→close −0.03%, and 34% faded >1% from the
+open. The scanner's edge never lived on the gap day — the close-holds filter
+splits the coin flip after the fact and the +0.34R plays out over the
+following sessions. Supporting the full-gap definition: only 20% of full gaps
+filled back to the prior close intraday vs 46% of partial gaps.
+
+**Possible future experiment:** a 1.3% threshold ROBUSTNESS sweep (0.8%–3%).
+The number was inherited from GTF M5 a priori, never optimized — which is why
+the OOS validation is clean. The sweep's goal would be confirming the edge
+sits on a plateau, NOT picking a new "best" value (that would be curve-fitting).
+
 ### Research Engine V2 (PENDING)
 
 | # | Item | Detail |
