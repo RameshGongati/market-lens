@@ -100,6 +100,15 @@ def init_db() -> None:
                 results_json   TEXT NOT NULL DEFAULT '[]',
                 created_at     TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS gap_scans (
+                id             TEXT PRIMARY KEY,
+                settings_json  TEXT NOT NULL DEFAULT '{}',
+                universe_label TEXT NOT NULL DEFAULT '',
+                source_name    TEXT NOT NULL DEFAULT '',
+                results_json   TEXT NOT NULL DEFAULT '[]',
+                created_at     TEXT NOT NULL
+            );
             """
         )
     logger.info("Database initialised at %s", _DB_PATH)
@@ -407,6 +416,56 @@ def get_pattern_scan(scan_id: str) -> dict[str, Any] | None:
         for m in raw_matches
         if isinstance(m, dict)
     ]
+    return data
+
+
+def save_gap_scan(
+    settings: dict[str, Any],
+    universe_label: str,
+    source_name: str,
+    rows: list[dict[str, Any]],
+) -> str:
+    """Persist a Gap Signals result set for cross-tab navigation.
+
+    Rows are plain dicts (no domain objects in the storage layer)."""
+    scan_id = uuid4().hex
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO gap_scans
+               (id, settings_json, universe_label, source_name, results_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                scan_id,
+                json.dumps(settings, default=str),
+                universe_label,
+                source_name,
+                json.dumps(rows, default=str),
+                _now(),
+            ),
+        )
+        conn.execute(
+            """DELETE FROM gap_scans WHERE id NOT IN (
+               SELECT id FROM gap_scans ORDER BY created_at DESC LIMIT 20
+            )"""
+        )
+    return scan_id
+
+
+def get_gap_scan(scan_id: str) -> dict[str, Any] | None:
+    """Return a cached gap scan, or None when the id is unknown."""
+    if not scan_id:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM gap_scans WHERE id = ?",
+            (scan_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    data["settings"] = json.loads(data.get("settings_json") or "{}")
+    data["rows"] = [r for r in json.loads(data.get("results_json") or "[]")
+                    if isinstance(r, dict)]
     return data
 
 

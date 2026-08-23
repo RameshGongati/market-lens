@@ -21,6 +21,7 @@ from ui.pages.pattern_detail import render_pattern_detail
 from ui.pages.pattern_results import render_pattern_results
 from ui.pages.pattern_scanner import render_pattern_scanner
 from ui.pages.placeholders import render_trade_journal_page
+from ui.pages.gap_signals import render_signals_page
 from ui.pages.reports_page import render_reports_page
 from ui.pages.research_page import render_research_page
 from ui.pages.watchlist_manager import render_watchlist_manager
@@ -487,6 +488,14 @@ def main() -> None:
         st.session_state.active_page = "research"
         st.session_state["_qp_research_handled"] = True
 
+    # Gap Signals new-tab support: the cached scan id rides the URL so a fresh
+    # session can restore the results table (same pattern as ?pattern_scan).
+    _qp_gap_scan = st.query_params.get("gap_scan")
+    if _qp_gap_scan and not st.session_state.get("_qp_gap_handled"):
+        st.session_state["_qp_gap_scan_id"] = _qp_gap_scan
+        st.session_state.active_page = "signals"
+        st.session_state["_qp_gap_handled"] = True
+
     try:
         init_db()
     except Exception as exc:
@@ -573,6 +582,8 @@ def main() -> None:
         render_settings()
     elif page == "research":
         render_research_page()
+    elif page == "signals":
+        render_signals_page()
     else:
         render_market_overview()
 

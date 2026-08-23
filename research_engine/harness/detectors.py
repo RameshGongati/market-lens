@@ -213,9 +213,9 @@ def indicator_signals(df: pd.DataFrame, tf: str) -> list[Signal]:
             sigs.append(Signal(i, "bb_squeeze_breakout", 1, min(l[i - 5 : i + 1]) - buf))
         if squeeze[i - 1] and c[i] < bb_lo[i]:
             sigs.append(Signal(i, "bb_squeeze_breakdown", -1, max(h[i - 5 : i + 1]) + buf))
-        # Gaps (>= 1.3%, the app's gap threshold)
-        if o[i] > h[i - 1] * 1.013 and c[i] >= o[i]:
-            sigs.append(Signal(i, "gap_up_go", 1, l[i - 1] - buf, tags={"gap_pct": (o[i] / h[i - 1] - 1) * 100}))
+        # Gap DOWN stays research-only (never OOS-validated); the gap UP rule
+        # graduated to production and is injected after this loop from
+        # analysis.gap_signals — the single source shared with the Signals page.
         if o[i] < l[i - 1] * 0.987 and c[i] <= o[i]:
             sigs.append(Signal(i, "gap_down_go", -1, h[i - 1] + buf, tags={"gap_pct": (1 - o[i] / l[i - 1]) * 100}))
 
@@ -261,6 +261,15 @@ def indicator_signals(df: pd.DataFrame, tf: str) -> list[Signal]:
             if c[i - 1] >= pdl[i] > c[i] and pdl_done_day != d:
                 pdl_done_day = d
                 sigs.append(Signal(i, "pdl_breakdown", -1, max(h[i - 3 : i + 1]) + buf))
+
+    # Gap-Up Continuation — from the PRODUCTION detector (single source with
+    # the Signals page). dedupe_bars=1 disables its internal dedupe so the
+    # run-level 3-bar dedupe reproduces the original inline behaviour exactly;
+    # i >= 60 matches this loop's start.
+    from analysis.gap_signals import detect_gap_up_continuation
+    for g in detect_gap_up_continuation(df, atr=df["atr"], dedupe_bars=1):
+        if g.i >= 60:
+            sigs.append(Signal(g.i, "gap_up_go", 1, g.stop, tags={"gap_pct": g.gap_pct}))
 
     # Fibonacci pullback bounce (checked on a stride to bound cost)
     for i in range(120, n, 1):

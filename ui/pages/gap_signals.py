@@ -1,0 +1,392 @@
+"""Signals page — home of rules graduated from the Research Engine.
+
+V1.1 carries one rule: Gap-Up Continuation (daily, long only, confirmed
+end-of-day bars only), now shown with its FULL LIFECYCLE: signals from the
+last ~60 sessions are walked forward under the exact backtest trade rules and
+grouped into Active / Target hit / Stop loss hit / Time-stopped tabs, with
+counts in the tab labels so the real win/loss ratio is always visible.
+
+Detection and tracking live in analysis.gap_signals — the single source shared
+with the research harness — so this page can never drift from what was
+backtested.
+
+Isolation contract: nothing here touches the zone engine, ODD/GTF scoring or
+the Run Analysis flow. Zone context is read from the last scan's result dicts
+(read-only); T9/T13 render as informational tags and affect nothing.
+"""
+from __future__ import annotations
+
+import datetime as dt
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+
+from analysis.gap_signals import (
+    STATUS_ACTIVE, STATUS_AWAITING, STATUS_STOP, STATUS_TARGET, STATUS_TIME,
+    EXCLUDED_SYMBOLS, GapSignal, TrackedSignal, detect_gap_up_continuation,
+    evidence_rank, track_signal, volume_expansion_tag, zone_context_tag,
+)
+from data.manager import build_source_manager, fetch_by_interval
+from storage.database import get_gap_scan, save_gap_scan
+from ui.components.panels import page_title, scan_progress
+from ui.components.stock_card import build_detail_url
+from ui.pages.pattern_common import resolve_pattern_universe
+
+_SCOPES = ["Current Watchlist", "Nifty 50", "F&O Stocks", "All NSE"]
+_IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
+SIGNAL_LOOKBACK_BARS = 60   # how far back signals are tracked (~3 months)
+
+_SORTS = {
+    "Most recent first": lambda r: (r.get("signal_date") or "", r.get("evidence_rank") or 0),
+    "Days active": lambda r: (r.get("days_active") or 0, r.get("signal_date") or ""),
+    "Unrealized R": lambda r: (r.get("r_multiple") if r.get("r_multiple") is not None else -99,),
+    "Evidence rank": lambda r: (r.get("evidence_rank") or 0, r.get("signal_date") or ""),
+}
+
+
+# ---------------------------------------------------------------- pure helpers
+def drop_forming_bar(df: pd.DataFrame, now: dt.datetime | None = None) -> pd.DataFrame:
+    """Drop today's still-forming daily bar before 4 PM IST (the app rule)."""
+    if df is None or df.empty or not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    now = now or dt.datetime.now(_IST)
+    last = df.index[-1]
+    last_date = last.date() if last.tzinfo is None else last.tz_convert("Asia/Kolkata").date()
+    if last_date >= now.date() and now.hour < 16:
+        return df.iloc[:-1]
+    return df
+
+
+def days_to_result(earnings_row: dict | None, as_of: dt.date) -> int | None:
+    """Days until the next result date, if the cached calendar knows it."""
+    if not earnings_row:
+        return None
+    raw = earnings_row.get("result_date")
+    if not raw:
+        return None
+    try:
+        d = dt.date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+    delta = (d - as_of).days
+    return delta if 0 <= delta <= 30 else None
+
+
+def build_row(symbol: str, company: str, tracked: TrackedSignal, *, from_zone: bool,
+              volume_ok: bool, result_days: int | None,
+              market_extended: bool) -> dict[str, Any]:
+    sig: GapSignal = tracked.signal
+    return {
+        "symbol": symbol,
+        "company_name": company,
+        "status": tracked.status,
+        "signal_date": str(pd.Timestamp(sig.date).date()),
+        "gap_pct": sig.gap_pct,
+        "entry_date": str(pd.Timestamp(tracked.entry_date).date()) if tracked.entry_date is not None else None,
+        "entry_price": tracked.entry_price,
+        "stop": round(sig.stop, 2),
+        "target_2r": tracked.target if tracked.target is not None else sig.target_2r(),
+        "exit_date": str(pd.Timestamp(tracked.exit_date).date()) if tracked.exit_date is not None else None,
+        "exit_price": tracked.exit_price,
+        "days_active": tracked.days_active,
+        "r_multiple": tracked.r_multiple,
+        "from_demand_zone": bool(from_zone),
+        "volume_expansion": bool(volume_ok),
+        "result_in_days": result_days,
+        "market_extended": bool(market_extended),
+        "evidence_rank": evidence_rank(from_zone, volume_ok),
+    }
+
+
+def apply_tag_filters(rows: list[dict], *, zone_only: bool, volume_only: bool,
+                      hide_results_week: bool) -> list[dict]:
+    out = rows
+    if zone_only:
+        out = [r for r in out if r.get("from_demand_zone")]
+    if volume_only:
+        out = [r for r in out if r.get("volume_expansion")]
+    if hide_results_week:
+        out = [r for r in out if not (
+            r.get("result_in_days") is not None and r["result_in_days"] <= 5)]
+    return out
+
+
+def split_by_status(rows: list[dict]) -> dict[str, list[dict]]:
+    """Active (incl. awaiting entry) / target / stop loss / time-stopped."""
+    groups: dict[str, list[dict]] = {STATUS_ACTIVE: [], STATUS_TARGET: [],
+                                     STATUS_STOP: [], STATUS_TIME: []}
+    for r in rows:
+        status = r.get("status")
+        key = STATUS_ACTIVE if status in (STATUS_ACTIVE, STATUS_AWAITING) else status
+        if key in groups:
+            groups[key].append(r)
+    return groups
+
+
+def sort_rows(rows: list[dict], sort_name: str) -> list[dict]:
+    key = _SORTS.get(sort_name, _SORTS["Most recent first"])
+    return sorted(rows, key=key, reverse=True)
+
+
+def _nifty_extended(manager) -> bool:
+    """Informational T13 tag: NIFTY more than 2 ATR above its 20-EMA."""
+    try:
+        df, _ = fetch_by_interval("^NSEI", "Daily", fetch_fn=manager.get_history)
+        if df is None or len(df) < 30:
+            return False
+        df = drop_forming_bar(df)
+        c = df["Close"]
+        ema20 = c.ewm(span=20, adjust=False).mean()
+        tr = pd.concat([df["High"] - df["Low"], (df["High"] - c.shift()).abs(),
+                        (df["Low"] - c.shift()).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / 14, adjust=False).mean()
+        return bool((c.iloc[-1] - ema20.iloc[-1]) / atr.iloc[-1] > 2)
+    except Exception:
+        return False
+
+
+def _zone_result_for(symbol: str) -> dict | None:
+    """Read-only: the last Run Analysis result dict for this symbol, if any."""
+    for res in st.session_state.get("analysis_results", []) or []:
+        if isinstance(res, dict) and res.get("symbol") == symbol:
+            return res
+    return None
+
+
+# ------------------------------------------------------------------ scan
+def _run_scan(scope: str) -> None:
+    label, stocks = resolve_pattern_universe(scope)
+    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+    creds = st.session_state.get("credentials", {}).get(source_name, {})
+    try:
+        manager = build_source_manager(source_name, creds)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not connect to {source_name}: {exc}")
+        return
+
+    from data.earnings_calendar import get_earnings
+    try:
+        earnings = get_earnings([s.symbol for s in stocks], cache_only=True)
+    except Exception:
+        earnings = {}
+    market_ext = _nifty_extended(manager)
+
+    placeholder = st.empty()
+    rows: list[dict] = []
+    errors = 0
+    today = dt.datetime.now(_IST).date()
+    for k, stock in enumerate(stocks, 1):
+        placeholder.markdown(scan_progress(label, stock.symbol, k, len(stocks)),
+                             unsafe_allow_html=True)
+        if stock.symbol in EXCLUDED_SYMBOLS:
+            continue
+        try:
+            full_symbol = f"{stock.symbol}.NS" if source_name == "Yahoo Finance" else stock.symbol
+            df, _meta = fetch_by_interval(full_symbol, "Daily", fetch_fn=manager.get_history)
+            if df is None or len(df) < 30:
+                continue
+            df = drop_forming_bar(df)
+            keep_from = max(0, len(df) - SIGNAL_LOOKBACK_BARS)
+            for sig in detect_gap_up_continuation(df):
+                if sig.i < keep_from:
+                    continue
+                tracked = track_signal(df, sig)
+                if tracked is None:      # backtest risk guard would skip it
+                    continue
+                rows.append(build_row(
+                    stock.symbol,
+                    getattr(stock, "company_name", "") or stock.symbol,
+                    tracked,
+                    from_zone=zone_context_tag(_zone_result_for(stock.symbol), sig.close),
+                    volume_ok=volume_expansion_tag(df, sig.i),
+                    result_days=days_to_result(earnings.get(stock.symbol), today),
+                    market_extended=market_ext,
+                ))
+        except Exception:  # noqa: BLE001
+            errors += 1
+    placeholder.empty()
+
+    settings = {"scope": scope, "rule": "gap_up_continuation_daily_v1.1",
+                "lookback_bars": SIGNAL_LOOKBACK_BARS}
+    scan_id = save_gap_scan(settings, label, source_name, rows)
+    st.session_state["gap_scan_rows"] = rows
+    st.session_state["gap_scan_id"] = scan_id
+    st.session_state["gap_scan_label"] = label
+    st.session_state["gap_scan_time"] = dt.datetime.now(_IST).strftime("%d %b %Y · %H:%M IST")
+    if errors:
+        st.session_state["gap_scan_errors"] = errors
+
+
+# ------------------------------------------------------------------ tables
+_STATUS_LABELS = {
+    STATUS_AWAITING: "Awaiting entry",
+    STATUS_ACTIVE: "Active",
+    STATUS_TARGET: "Target hit",
+    STATUS_STOP: "Stop loss hit",
+    STATUS_TIME: "Time-stopped",
+}
+
+_TAG_COLUMNS = {
+    "from_demand_zone": st.column_config.CheckboxColumn(
+        "From zone", help="Gap left from / near a demand zone found by the last "
+        "Run Analysis (read-only context)"),
+    "volume_expansion": st.column_config.CheckboxColumn("Volume ✓"),
+    "result_in_days": st.column_config.NumberColumn(
+        "Results in (d)", help="Informational (T9): results ahead raise stop-out "
+        "odds slightly; not a gate"),
+    "market_extended": st.column_config.CheckboxColumn(
+        "Mkt extended ⚠", help="Informational (T13): NIFTY > 2 ATR above its "
+        "20-EMA at scan time; not a gate"),
+    "evidence_rank": st.column_config.NumberColumn(
+        "Evidence rank", help="Sorting aid only: 70 base + 10 from-zone + 5 "
+        "volume. Not predictive confidence."),
+    "view": st.column_config.LinkColumn("View", display_text="Open ↗"),
+}
+
+
+def _render_table(rows: list[dict], *, active: bool, key: str) -> None:
+    if not rows:
+        st.caption("Nothing in this bucket for the scanned window.")
+        return
+    table = pd.DataFrame(rows)
+    table["status"] = table["status"].map(_STATUS_LABELS).fillna(table["status"])
+    table["view"] = [build_detail_url(r["symbol"], "NSE") + "&sig=gapup" for r in rows]
+    if active:
+        cols = ["symbol", "company_name", "status", "signal_date", "gap_pct",
+                "entry_date", "entry_price", "stop", "target_2r", "days_active",
+                "r_multiple", "from_demand_zone", "volume_expansion",
+                "result_in_days", "market_extended", "evidence_rank", "view"]
+        r_col = st.column_config.NumberColumn(
+            "Unrealized R", help="(last close − entry) / (entry − stop loss); "
+            "changes every session until the trade resolves", format="%.2f")
+    else:
+        cols = ["symbol", "company_name", "signal_date", "gap_pct", "entry_date",
+                "entry_price", "stop", "target_2r", "exit_date", "exit_price",
+                "days_active", "r_multiple", "from_demand_zone",
+                "volume_expansion", "evidence_rank", "view"]
+        r_col = st.column_config.NumberColumn("Realized R", format="%.2f")
+    st.dataframe(
+        table[cols], use_container_width=True, hide_index=True,
+        height=min(430, 60 + 35 * len(rows)), key=key,
+        column_config={
+            "symbol": st.column_config.TextColumn("Symbol"),
+            "company_name": st.column_config.TextColumn("Company"),
+            "status": st.column_config.TextColumn("Status"),
+            "signal_date": st.column_config.TextColumn("Signal date"),
+            "gap_pct": st.column_config.NumberColumn("Gap %", format="%.2f"),
+            "entry_date": st.column_config.TextColumn("Entry date"),
+            "entry_price": st.column_config.NumberColumn(
+                "Entry ₹", help="The session open AFTER the signal day — the "
+                "backtested entry", format="%.2f"),
+            "stop": st.column_config.NumberColumn(
+                "Stop loss ₹", help="Prior day's low − 0.1 × ATR(14)", format="%.2f"),
+            "target_2r": st.column_config.NumberColumn("2R target ₹", format="%.2f"),
+            "exit_date": st.column_config.TextColumn("Exit date"),
+            "exit_price": st.column_config.NumberColumn("Exit ₹", format="%.2f"),
+            "days_active": st.column_config.NumberColumn("Days"),
+            "r_multiple": r_col,
+            **_TAG_COLUMNS,
+        },
+    )
+
+
+# ------------------------------------------------------------------ page
+def render_signals_page() -> None:
+    page_title(
+        "Signals",
+        "Rules graduated from the Research Engine — twice-validated on "
+        "independent years before reaching this page",
+    )
+    st.info(
+        "**Gap-Up Continuation (daily, long side).** Validated on two "
+        "independent years (+0.41R in-sample, +0.34R out-of-sample, profit "
+        "factor > 2, positive on 77% of stocks). Expect MOST individual "
+        "signals to hit their stop loss — roughly 60 in 100 do; the edge is "
+        "that target hits pay 2R. Signals are research classifications for "
+        "further study — not buy/sell recommendations. *Evidence rank* is a "
+        "sorting aid, not predictive confidence.",
+        icon=":material/verified:",
+    )
+
+    qp_scan = st.session_state.pop("_qp_gap_scan_id", None)
+    if qp_scan and not st.session_state.get("gap_scan_rows"):
+        cached = get_gap_scan(str(qp_scan))
+        if cached:
+            st.session_state["gap_scan_rows"] = cached.get("rows", [])
+            st.session_state["gap_scan_label"] = cached.get("universe_label", "")
+            st.session_state["gap_scan_time"] = cached.get("created_at", "")
+
+    c1, c2 = st.columns([2.2, 1.0])
+    scope = c1.selectbox("Universe", _SCOPES, index=2, key="gap_scan_scope")
+    if c2.button("Scan signals", type="primary",
+                 use_container_width=True, key="gap_scan_run"):
+        _run_scan(scope)
+
+    rows = st.session_state.get("gap_scan_rows")
+    if rows is None:
+        st.caption(
+            f"Finds every confirmed signal of the last {SIGNAL_LOOKBACK_BARS} "
+            "sessions (gap > 1.3% over the prior day's high, close held) and "
+            "walks each forward under the backtested rules — entry at the next "
+            "session's open, stop-loss at the prior day's low − 0.1 ATR, 2R "
+            "primary target, 20-session time stop. Tabs group them by where "
+            "each trade stands now."
+        )
+        return
+
+    st.caption(
+        f"{st.session_state.get('gap_scan_label', '')} · scanned "
+        f"{st.session_state.get('gap_scan_time', '')} · signals from the last "
+        f"{SIGNAL_LOOKBACK_BARS} sessions, confirmed end-of-day only" + (
+            f" · {st.session_state['gap_scan_errors']} symbols failed to fetch"
+            if st.session_state.get("gap_scan_errors") else "")
+    )
+    f1, f2, f3, f4 = st.columns([1, 1, 1, 1.2])
+    zone_only = f1.checkbox("From demand zone only", key="gap_f_zone")
+    volume_only = f2.checkbox("Volume confirmed only", key="gap_f_vol")
+    hide_res = f3.checkbox("Hide results within 5 days", key="gap_f_res")
+    sort_name = f4.selectbox("Sort active by", list(_SORTS), key="gap_sort")
+
+    filtered = apply_tag_filters(rows, zone_only=zone_only, volume_only=volume_only,
+                                 hide_results_week=hide_res)
+    groups = split_by_status(filtered)
+    n_act, n_tgt = len(groups[STATUS_ACTIVE]), len(groups[STATUS_TARGET])
+    n_stp, n_tim = len(groups[STATUS_STOP]), len(groups[STATUS_TIME])
+    if not filtered:
+        st.warning("No signals in the scanned window match the filters.")
+        return
+
+    tabs = st.tabs([
+        f"Active ({n_act})",
+        f"🟢 Target hit ({n_tgt})",
+        f"🔴 Stop loss hit ({n_stp})",
+        f"⚪ Time-stopped ({n_tim})",
+    ])
+    with tabs[0]:
+        st.caption(
+            "Open trades: neither the stop loss nor the 2R target has been hit "
+            "yet (time stop: 20 sessions). 'Awaiting entry' = confirmed on the "
+            "last session; the entry is the NEXT session's open. These are "
+            "TRACKED positions, not fresh entries — the validated entry was "
+            "the open after the signal day."
+        )
+        _render_table(sort_rows(groups[STATUS_ACTIVE], sort_name),
+                      active=True, key="gap_tbl_active")
+    with tabs[1]:
+        _render_table(sort_rows(groups[STATUS_TARGET], "Most recent first"),
+                      active=False, key="gap_tbl_target")
+    with tabs[2]:
+        _render_table(sort_rows(groups[STATUS_STOP], "Most recent first"),
+                      active=False, key="gap_tbl_stop")
+    with tabs[3]:
+        _render_table(sort_rows(groups[STATUS_TIME], "Most recent first"),
+                      active=False, key="gap_tbl_time")
+
+    st.caption(
+        "Read the tab counts together: stop-loss hits normally OUTNUMBER "
+        "target hits (≈60 vs ≈23 in 100 historically) — the rule's edge comes "
+        "from targets paying 2R, not from winning often. Validated on two "
+        "independent years (+0.41R in-sample, +0.34R out-of-sample). Research "
+        "classification — not a buy/sell recommendation."
+    )

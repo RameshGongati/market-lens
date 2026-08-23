@@ -524,6 +524,7 @@ def _render_chart_panel(
         # handling needed here.
         df_view = _filter_by_period(chart_df, selected_period)
         fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df, interval_label=interval_label)
+        _add_gap_signal_overlay(fig, df_view, interval_label)
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
@@ -954,6 +955,41 @@ def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Chart builder
 # ---------------------------------------------------------------------------
+
+def _add_gap_signal_overlay(fig, df_view, interval_label: str) -> None:
+    """Gap-Up Continuation overlay, drawn ONLY when the chart was opened from
+    the Signals page (?sig=gapup) and shows Daily candles.
+
+    Levels are re-derived from the chart's own frame via the production
+    detector (the single source), never passed through the URL — a tampered
+    or stale link can therefore never draw wrong prices.
+    """
+    try:
+        if st.query_params.get("sig") != "gapup" or interval_label != "Daily":
+            return
+        from analysis.gap_signals import detect_gap_up_continuation
+        sigs = detect_gap_up_continuation(df_view)
+        if not sigs:
+            return
+        sig = sigs[-1]
+        entry_ref = sig.close
+        fig.add_vline(x=sig.date, line_width=1, line_dash="dot",
+                      line_color="#7f7f7f", opacity=0.6)
+        fig.add_hline(y=sig.stop, line_dash="dash", line_color="#B3261E",
+                      line_width=1.2,
+                      annotation_text=f"Stop loss {sig.stop:,.2f}",
+                      annotation_font_size=10)
+        fig.add_hline(y=sig.target_2r(entry_ref), line_dash="dot",
+                      line_color="#6750A4", line_width=1.2,
+                      annotation_text=f"2R target {sig.target_2r(entry_ref):,.2f}",
+                      annotation_font_size=10)
+        fig.add_annotation(x=sig.date, y=sig.open, text=f"Gap +{sig.gap_pct:.1f}%",
+                           showarrow=True, arrowhead=2, ax=0, ay=-32,
+                           font=dict(size=10))
+    except Exception:
+        # the overlay is decorative; never let it break the chart
+        return
+
 
 def _build_chart(
     symbol: str,

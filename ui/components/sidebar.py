@@ -435,6 +435,17 @@ def render_sidebar() -> None:
             ):
                 st.session_state.active_page = "pattern_scanner"
                 st.rerun()
+            # Home of rules graduated from the Research Engine after
+            # out-of-sample validation (Gap-Up Continuation first).
+            if st.button(
+                "Signals",
+                icon=":material/bolt:",
+                use_container_width=True,
+                type="primary" if _current_page == "signals" else "secondary",
+                key="nav_signals",
+            ):
+                st.session_state.active_page = "signals"
+                st.rerun()
 
         # ---------- Panel 2: analysis controls ----------
         with st.container(border=True):

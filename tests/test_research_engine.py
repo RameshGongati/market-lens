@@ -41,10 +41,14 @@ def test_research_page_import_does_not_patch_zone_engine():
 
 
 def test_research_page_module_does_not_import_harness():
+    # Contract: importing the page ADDS no harness modules. (Other tests in
+    # the same session may import the harness legitimately — e.g. the gap
+    # detector parity test — so assert on the delta, not global sys.modules.)
+    sys.modules.pop("ui.pages.research_page", None)
+    before = {m for m in sys.modules if m.startswith("research_engine.harness")}
     page = importlib.import_module("ui.pages.research_page")
-    assert not any(m.startswith("research_engine.harness") for m in sys.modules
-                   if sys.modules[m] is not None and m in sys.modules), \
-        "research page pulled in harness modules"
+    after = {m for m in sys.modules if m.startswith("research_engine.harness")}
+    assert after == before, "research page import pulled in harness modules"
     # and the page module itself has no harness attribute chain
     assert "harness" not in vars(page)
 
