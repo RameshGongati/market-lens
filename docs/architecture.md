@@ -188,6 +188,7 @@ heatmap navigation) can restore the results.
 |--------|------|
 | `market_overview.py` | Landing page: market strip, bias, heatmap widget, top opportunities, quick tools |
 | `market_heatmap.py` | Full heatmap: 20 group tiles → per-group stock tiles; quotes cached via `st.cache_data` (15 min groups / 5 min stocks) with scan-setup overlays applied outside the cache. Not in the sidebar nav — reached from the dashboard or `?heatmap_group=` URLs |
+| `gap_signals.py` | Signals page — rules graduated from the Research Engine after out-of-sample validation. Gap-Up Continuation (daily, long, confirmed EOD): signals from the last 60 sessions walked under the exact backtest rules into Active / Target hit / Stop loss hit / Time-stopped tabs with counts. Detection + lifecycle tracking in `analysis/gap_signals.py` — the SINGLE SOURCE the research harness also imports, with a simulator-parity test pinning the two together. Results cached in the `gap_scans` table for `?gap_scan=` deep links; chart overlay via `?sig=gapup` (levels re-derived from the chart's own frame, never from the URL) |
 | `analysis_results.py` | Scan results — cards, filters, ranked table, View links; executes the scan and saves the snapshot |
 | `alerts_page.py` | One deduplicated feed of live zone matches and Telegram deliveries |
 | `reports_page.py` | F&O results monitor over the earnings calendar, with timing filters |
@@ -496,10 +497,11 @@ GTF methodology rules are identified by M-numbers (M1 through M74+). Each rule i
 
 ## Testing Strategy
 
-**496 tests** across 23 files:
+**528 tests** across 24 files:
 
 | File | Tests | What It Validates |
 |------|-------|-------------------|
+| `test_gap_signals.py` | 25 | Gap-Up Continuation: every rule threshold at/above/below boundary (strict >1.3% over prior HIGH, close holds), stop-loss/ATR arithmetic, dedupe, risk guards, lifecycle tracking incl. both-levels-same-day = loss and the 20-session time stop, tracker-vs-simulator parity, storage round-trip, zone-engine isolation |
 | `test_research_engine.py` | 15 | Research Engine isolation (page import never patches `score_zone`; backtest mode explicit + reversible), store round-trip, importer degradation, candidate filter helpers |
 
 Plus the pre-existing suite:

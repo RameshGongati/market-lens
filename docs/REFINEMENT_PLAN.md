@@ -255,7 +255,7 @@ zones.
 | # | Item | Detail |
 |---|------|--------|
 | 1 | Detached background runner | flock-guarded process + `monitor_control`-style probe + progress file; wire the Run Research tab. |
-| 2 | Production graduation (twice-validated list only) | Gap-Up Continuation daily scanner; SMA50 gate on fresh zone touches; weekly MACD-cross scan; T4 volume gate + informational T13/T9 chips; RR-to-opposing column. Each becomes production code the harness then imports (single source). |
+| 2 | Production graduation (twice-validated list only) | **Gap-Up Continuation daily scanner: BUILT** — Signals page (`ui/pages/gap_signals.py`), single-source detector + lifecycle tracker (`analysis/gap_signals.py:track_signal`, simulator-parity tested) now imported by the harness, `gap_scans` cache table, chart overlay via `?sig=gapup`, Evidence rank (sorting aid; T9/T13 informational only), confirmed-EOD signals from the last 60 sessions grouped into Active / Target hit / Stop loss hit / Time-stopped tabs with counts; Telegram alert deferred. Still pending: SMA50 gate on fresh zone touches; weekly MACD-cross scan; T4 volume gate + chips in the Pattern Scanner; RR-to-opposing column. |
 | 3 | Live candidate generation | Apply the gate stack to a fresh scan (frozen, twice-validated parameters). |
 | 4 | Rolling re-validation | Re-run OOS quarterly as new data accrues; watch Run-over-run drift in Validation History. |
 | 5 | Real institutional data | NSE delivery %, F&O OI build-up, FII/DII before the Institutional Support Score gets any veto power (OBV/AD tested harmful; VWAP alignment +0.099R was the one good proxy). |
