@@ -43,7 +43,7 @@ for s in ("bullish_engulfing bearish_engulfing hammer shooting_star inverted_ham
     SETUP_TYPE[s] = "candlestick"
 for s in ("ema20_bounce ema20_rejection sma50_pullback_long sma50_pullback_short "
           "macd_cross_long macd_cross_short bb_squeeze_breakout bb_squeeze_breakdown "
-          "gap_up_go gap_down_go rsi_bull_divergence rsi_bear_divergence "
+          "gap_up_go gap_down_go gap_up_close_go rsi_bull_divergence rsi_bear_divergence "
           "stoch_bull_divergence stoch_bear_divergence hh_hl_continuation "
           "lh_ll_continuation pdh_breakout pdl_breakdown fib_pullback_long "
           "fib_pullback_short").split():

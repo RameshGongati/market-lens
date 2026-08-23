@@ -218,6 +218,13 @@ def indicator_signals(df: pd.DataFrame, tf: str) -> list[Signal]:
         # analysis.gap_signals — the single source shared with the Signals page.
         if o[i] < l[i - 1] * 0.987 and c[i] <= o[i]:
             sigs.append(Signal(i, "gap_down_go", -1, h[i - 1] + buf, tags={"gap_pct": (1 - o[i] / l[i - 1]) * 100}))
+        # EXPERIMENT (research-only): gap measured vs prior CLOSE instead of
+        # prior HIGH — a SUPERSET of gap_up_go. also_high_gap tags the overlap
+        # so analysis can isolate the marginal cohort (clears close, not high).
+        if o[i] > c[i - 1] * 1.013 and c[i] >= o[i]:
+            sigs.append(Signal(i, "gap_up_close_go", 1, l[i - 1] - buf,
+                               tags={"gap_pct": (o[i] / c[i - 1] - 1) * 100,
+                                     "also_high_gap": bool(o[i] > h[i - 1] * 1.013)}))
 
         # Swing bookkeeping + divergences + structure breaks
         if sw_lo_conf[i]:
