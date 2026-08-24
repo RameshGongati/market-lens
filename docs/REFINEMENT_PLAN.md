@@ -279,6 +279,36 @@ The number was inherited from GTF M5 a priori, never optimized — which is why
 the OOS validation is clean. The sweep's goal would be confirming the edge
 sits on a plateau, NOT picking a new "best" value (that would be curve-fitting).
 
+### Options Trade Lab V1 (BUILT — uncommitted)
+
+Research Engine sub-page (`active_page="options_trade_lab"`, entry button on
+the Research page, `?options_trade_lab=1` deep link) that researches ONE
+bought CE/PE idea in two layers: stock setup (point-in-time, frame cut at the
+research/buy date — no lookahead, test-pinned) and option suitability. Built
+to the externally-reviewed design: Premium Burden rating (never
+cheap/expensive — no IV history exists), observed-flags-only sideways/trap
+scores with a data-coverage meter (missing data reduces coverage, never adds
+risk), market/sector shown as unscored context (per the OOS finding),
+three-badge expiry model (Confirmed by NSE / Unverified suggestion / Manual —
+accepting a suggestion is MANUAL confirmation; analysis refuses to run on an
+unconfirmed suggestion), lots × lot size × total-quantity arithmetic (lot
+size user-entered), live NSE option chain via `data/nse_options.py` behind an
+explicit fetch (20s timeout; per-strike IV of 0 treated as missing; schema
+verified against the live endpoint; NSE's v3 endpoint serves one expiry per
+request so the wrapper fetches each listed expiry and merges — without that,
+far-month contracts silently fell back to proxy metrics), intrinsic/time-value
+decomposition
+(exact only with user-supplied spot timestamps, else daily-close proxy, else
+descriptive; theta and IV never separated), post-trade learning notes, saves
+to `trade_lab_analyses` in the research DB. Pure logic in
+`research_engine/trade_lab.py`; 21 tests incl. the CDSL-shaped fixture, the
+containing-zone anchor rule, the no-lookahead pin and the per-expiry
+chain-merge behaviour.
+
+V1.1 candidates: importer materializes per-symbol zone-resolution stats
+(currently "not in store" in the coverage meter), multi-strike comparison,
+saved-analyses browser, Word/PDF export.
+
 ### Research Engine V2 (PENDING)
 
 | # | Item | Detail |

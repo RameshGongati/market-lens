@@ -12,7 +12,7 @@ A separate **Chart Pattern Scanner** sits alongside the GTF engine — triangles
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`, 7 tables) for watchlists, analysis results, alerts, notes, the last-scan snapshot and the pattern-scan cache; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (528 tests across 24 files)
+- **Tests:** pytest (563 tests across 26 files)
 - **Dependency note:** `jugaad-data` is installed in the venv but MISSING from `requirements.txt` — a fresh `pip install -r requirements.txt` breaks the Jugaad source. Research-only deps (matplotlib, mplfinance, python-docx) live in `requirements-research.txt` and are NOT needed to run the app
 
 ## Repo Structure
@@ -81,6 +81,11 @@ data/
                                 #   unweighted-basket fallback for patchy sector indices
   nse_indices.py                # Refreshes predefined_watchlists.json from live NSE (writes the
                                 #   TRACKED repo file; does not invalidate helpers' lru_cache)
+  nse_options.py                # Live NSE option chain (jugaad NSELive) — EXPLICIT fetch only,
+                                #   20s thread timeout, IV==0 treated as missing, never raises.
+                                #   NSE's v3 endpoint serves ONE expiry per request (defaulting to
+                                #   the nearest), so the wrapper fetches each listed expiry and
+                                #   merges — a single call LOOKS complete but far months are empty
   earnings_calendar.py          # Results calendar, disk-cached daily (~/.market-lens/earnings)
   sources/base.py               # DataSource ABC + drop_incomplete_bars() + fill_missing_sessions()
   sources/yahoo_finance.py      # Working source; unadjusted prices (auto_adjust=False)
@@ -123,6 +128,14 @@ ui/
   pages/research_page.py        # Market Lens Research Engine (Findings, Trade Candidates,
                                 #   Run Research placeholder, Engine Config, Validation History).
                                 #   Reads ONLY research_engine.store/importer — never harness
+  pages/options_trade_lab.py    # Options Trade Lab (Research Engine sub-page): researches ONE
+                                #   bought CE/PE idea — stock setup (point-in-time, frame cut at
+                                #   the research/buy date) and option suitability judged
+                                #   separately. All interpretation in research_engine/trade_lab.py
+                                #   (pure, tested); live NSE chain via data/nse_options.py behind
+                                #   an explicit fetch button. Premium Burden (not cheap/expensive),
+                                #   observed-flags-only scores + data-coverage meter, three-badge
+                                #   expiry model (Confirmed by NSE / Unverified suggestion / Manual)
   pages/gap_signals.py          # Signals page: rules graduated from the Research Engine.
                                 #   Gap-Up Continuation (daily, long, confirmed EOD only) with a
                                 #   lifecycle tracker: signals from the last 60 sessions walked
@@ -135,6 +148,10 @@ research_engine/
                                 #   enable_backtest_mode() — see Gotcha 34. CLI-run, not app-run
   store.py                      # SEPARATE SQLite DB: ~/.market-lens/research_engine.db
   importer.py                   # Loads harness outputs into the store as runs (file reads only)
+  trade_lab.py                  # Options Trade Lab pure logic: smart-text parser, expiry rules,
+                                #   option maths, Premium Burden, sideways/trap scores (observed
+                                #   flags only), verdict mapping, intrinsic/time-value split.
+                                #   Read-only detect_zones; no harness imports
   cache/, output/               # Generated data — gitignored, never committed
 storage/database.py             # SQLite CRUD (7 tables, incl. pattern_scans and the
                                 #   single-row latest_analysis_snapshot)
@@ -289,7 +306,7 @@ After completing any task from `docs/requirements.md`, update both `docs/require
 
 21. **Popover content renders in a portal OUTSIDE the sidebar.** `st.popover` bodies land under `[data-testid="stPopoverBody"]` at body level, so `section[data-testid="stSidebar"] ...` rules do not reach the screener's dropdowns even though they appear inside the sidebar visually.
 
-22. **`dashboard.py` is not a page.** It holds the scan (`run_scan`, `scan_context`) and the helpers the pages share — the screener predicate, exports, the per-stock detail view, single-stock analysis for deep links. `app.main()` routes fourteen states on `st.session_state.active_page`: `dashboard` → `market_overview.render_market_overview` (the `else` fallthrough — any unknown value lands here), plus `analysis_results`, `stock_detail`, `market_heatmap`, `alerts`, `reports`, `trade_journal`, `watchlist_manager`, `settings`, `research`, `signals`, `pattern_scanner`, `pattern_results`, `pattern_detail`. `_render_filter_sort_bar` and `_render_results_grid` are still in `dashboard.py` but UNREACHABLE — they lost their caller in the page split and are kept pending review, not because anything calls them. That orphaning also strands `render_stock_card` in `stock_card.py` (only `build_detail_url` is still live from that module).
+22. **`dashboard.py` is not a page.** It holds the scan (`run_scan`, `scan_context`) and the helpers the pages share — the screener predicate, exports, the per-stock detail view, single-stock analysis for deep links. `app.main()` routes fifteen states on `st.session_state.active_page`: `dashboard` → `market_overview.render_market_overview` (the `else` fallthrough — any unknown value lands here), plus `analysis_results`, `stock_detail`, `market_heatmap`, `alerts`, `reports`, `trade_journal`, `watchlist_manager`, `settings`, `research`, `signals`, `options_trade_lab`, `pattern_scanner`, `pattern_results`, `pattern_detail`. `_render_filter_sort_bar` and `_render_results_grid` are still in `dashboard.py` but UNREACHABLE — they lost their caller in the page split and are kept pending review, not because anything calls them. That orphaning also strands `render_stock_card` in `stock_card.py` (only `build_detail_url` is still live from that module).
 
 23. **Every helper in `panels.py` must emit newline-free HTML.** A multi-line f-string produced a whitespace-only line whenever an optional slot (the icon) was empty, and a blank line TERMINATES a markdown HTML block — everything indented after it was then parsed as an indented code block, so cards without an icon rendered their own source as visible text. Cards with icons rendered fine, which is why it survived review.
 
