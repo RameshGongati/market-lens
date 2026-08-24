@@ -324,6 +324,11 @@ def render_research_page() -> None:
         icon="logo",
     )
     _disclaimer()
+    if st.button(":material/biotech: Open Options Trade Lab — research one "
+                 "CE/PE idea (stock setup + option suitability)",
+                 key="research_open_otl"):
+        st.session_state.active_page = "options_trade_lab"
+        st.rerun()
     run = _ensure_data()
     tabs = st.tabs(["Findings", "Trade Candidates", "Run Research",
                     "Engine Config", "Validation History"])

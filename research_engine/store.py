@@ -58,6 +58,14 @@ def init_db(db_path: Path | None = None) -> None:
                 rows_json TEXT NOT NULL,
                 PRIMARY KEY (run_id, name)
             );
+            CREATE TABLE IF NOT EXISTS trade_lab_analyses (
+                id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                inputs_json TEXT NOT NULL DEFAULT '{}',
+                report_json TEXT NOT NULL DEFAULT '{}'
+            );
             CREATE TABLE IF NOT EXISTS candidates (
                 run_id INTEGER NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
                 symbol TEXT, sector TEXT, timeframe TEXT, signal_date TEXT,
@@ -186,3 +194,40 @@ def get_candidates(run_id: int, db_path: Path | None = None) -> pd.DataFrame:
     with _conn(db_path) as conn:
         return pd.read_sql_query(
             "SELECT * FROM candidates WHERE run_id = ?", conn, params=(run_id,))
+
+
+# ------------------------------------------------------- Options Trade Lab
+def save_trade_lab_analysis(symbol: str, mode: str, inputs: dict, report: dict,
+                            db_path: Path | None = None) -> str:
+    from uuid import uuid4
+    init_db(db_path)
+    analysis_id = uuid4().hex
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO trade_lab_analyses (id, symbol, mode, created_at, "
+            "inputs_json, report_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (analysis_id, symbol, mode,
+             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             json.dumps(inputs, default=str), json.dumps(report, default=str)))
+    return analysis_id
+
+
+def list_trade_lab_analyses(limit: int = 20, db_path: Path | None = None) -> list[dict]:
+    init_db(db_path)
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, symbol, mode, created_at FROM trade_lab_analyses "
+            "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_trade_lab_analysis(analysis_id: str, db_path: Path | None = None) -> dict | None:
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM trade_lab_analyses WHERE id = ?", (analysis_id,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["inputs"] = json.loads(d.pop("inputs_json") or "{}")
+    d["report"] = json.loads(d.pop("report_json") or "{}")
+    return d

@@ -22,6 +22,7 @@ from ui.pages.pattern_results import render_pattern_results
 from ui.pages.pattern_scanner import render_pattern_scanner
 from ui.pages.placeholders import render_trade_journal_page
 from ui.pages.gap_signals import render_signals_page
+from ui.pages.options_trade_lab import render_options_trade_lab
 from ui.pages.reports_page import render_reports_page
 from ui.pages.research_page import render_research_page
 from ui.pages.watchlist_manager import render_watchlist_manager
@@ -496,6 +497,12 @@ def main() -> None:
         st.session_state.active_page = "signals"
         st.session_state["_qp_gap_handled"] = True
 
+    # Options Trade Lab deep link (Research Engine sub-page), one-shot.
+    if st.query_params.get("options_trade_lab") == "1" \
+            and not st.session_state.get("_qp_otl_handled"):
+        st.session_state.active_page = "options_trade_lab"
+        st.session_state["_qp_otl_handled"] = True
+
     try:
         init_db()
     except Exception as exc:
@@ -584,6 +591,8 @@ def main() -> None:
         render_research_page()
     elif page == "signals":
         render_signals_page()
+    elif page == "options_trade_lab":
+        render_options_trade_lab()
     else:
         render_market_overview()
 
