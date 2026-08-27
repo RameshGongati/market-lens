@@ -12,7 +12,7 @@ A separate **Chart Pattern Scanner** sits alongside the GTF engine — triangles
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`, 7 tables) for watchlists, analysis results, alerts, notes, the last-scan snapshot and the pattern-scan cache; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (563 tests across 26 files)
+- **Tests:** pytest (571 tests across 28 files)
 - **Dependency note:** `jugaad-data` is installed in the venv but MISSING from `requirements.txt` — a fresh `pip install -r requirements.txt` breaks the Jugaad source. Research-only deps (matplotlib, mplfinance, python-docx) live in `requirements-research.txt` and are NOT needed to run the app
 
 ## Repo Structure
@@ -76,7 +76,14 @@ config/
 data/
   manager.py                    # DataSourceManager, timeframe-aware fetching, intraday fallback
   nse_bhavcopy.py               # NSE end-of-day file; backup close for an unfinished bar
-  market_indices.py             # NIFTY 50 / BANK NIFTY snapshots + 20-EMA market bias
+  market_indices.py             # 8 NSE/BSE option-enabled index snapshots (NIFTY, BANKNIFTY,
+                                #   FINNIFTY, MIDCPNIFTY, NIFTY NEXT 50, FPI 150, SENSEX,
+                                #   BANKEX), fetched concurrently. Yahoo history for sparkline/
+                                #   20-EMA where covered; live NSE all-indices quote overlays the
+                                #   headline level, so no-Yahoo indices degrade to quote-only
+                                #   (ema20=None), never a fake EMA. Market bias = NIFTY vs 20-EMA.
+                                #   NOTE: Yahoo's ^NSMIDCP IS "NIFTY NEXT 50" despite the name —
+                                #   do not "fix" that mapping to a midcap index
   market_heatmap.py             # Heatmap universe: 20 index/sector groups, batched Yahoo quotes,
                                 #   unweighted-basket fallback for patchy sector indices
   nse_indices.py                # Refreshes predefined_watchlists.json from live NSE (writes the
@@ -109,8 +116,12 @@ ui/
                                 #   sidebar UI to set it
   pages/dashboard.py            # Scan engine (run_scan, scan_context) + shared helpers.
                                 #   NOT a page — see Gotcha 22
-  pages/market_overview.py      # Dashboard landing page (market strip, heatmap widget,
-                                #   top opportunities, quick tools)
+  pages/market_overview.py      # Dashboard landing page (option-index overview, scan overview,
+                                #   heatmap widget, movers, top opportunities, quick tools).
+                                #   Four panels are preference-gated (Settings > Dashboard
+                                #   Content); disabled mover panels build NO quote universe, and
+                                #   Market Bias falls back to a NIFTY-only fetch when the index
+                                #   panel is off. All-NSE movers default OFF (full-universe quote)
   pages/market_heatmap.py       # Full heatmap page: group grid + per-group stock tiles,
                                 #   st.cache_data quotes (15min groups / 5min stocks),
                                 #   scan-setup overlay applied OUTSIDE the cache
@@ -118,7 +129,8 @@ ui/
                                 #   executes the scan and saves the latest_analysis_snapshot
   pages/alerts_page.py          # Zone-proximity matches + Telegram alert history
   pages/reports_page.py         # F&O results monitor (earnings calendar, timing filters)
-  pages/settings.py             # Status strip, chart/alert/appearance panels,
+  pages/settings.py             # Status strip, dashboard-content panel (4 persisted
+                                #   visibility toggles), chart/alert/appearance panels,
                                 #   Telegram setup, monitor control, data management
   pages/pattern_scanner.py      # Pattern scan setup (family, type, scope, filters)
   pages/pattern_results.py      # Pattern results table + scan execution
@@ -163,7 +175,7 @@ utils/
   logger.py                     # File + console logging
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
 watchlist/models.py             # Watchlist & Stock dataclasses
-tests/                          # 22 test files, 481 tests
+tests/                          # 28 test files, 571 tests
 ```
 
 ## Running Locally
@@ -244,7 +256,7 @@ A market/sector heatmap dashboard: 20 index/sector groups (`data/market_heatmap.
 
 - **Tiles are real URL navigations** (`<a target='_self'>` to `?heatmap_group=<id>&heatmap_view=Group Stocks`), which can start a FRESH Streamlit session. Three restore mechanisms make that survivable: `init_session_state()` seeds 11 keys from saved preferences; an empty `analysis_results` is restored from the single-row `latest_analysis_snapshot` SQLite table (written by the results page after each scan); and the heatmap query-param handler uses an idempotency tuple `_hm_qp_last = (group, view)` — not a one-shot flag — so tile-to-tile navigation re-fires but a plain rerun does not clobber in-page selections.
 - **Quotes and scan overlays are cached separately.** Group tiles use `@st.cache_data(ttl=900)`, stock tiles `ttl=300`; the scan-setup counts are layered on AFTER the cache (`_overlay_setup_counts`), so a fresh scan updates setups without invalidating quotes.
-- **Sector tiles can be a basket average, not the index.** When Yahoo's index ticker is missing/not-ok, the tile falls back to an unweighted mean of up to 60 constituents' `change_pct` (`source="basket"` is the only signal). NIFTY200/NIFTY500 tiles are backed by the F&O watchlist by design (`note="F&O coverage"`). Note `market_indices.py` (older) deliberately REFUSES to fetch sector indices for patchiness; `market_heatmap.py` (newer) fetches them and papers over gaps with the basket — two opposite decisions about the same data.
+- **Sector tiles can be a basket average, not the index.** When Yahoo's index ticker is missing/not-ok, the tile falls back to an unweighted mean of up to 60 constituents' `change_pct` (`source="basket"` is the only signal). NIFTY200/NIFTY500 tiles are backed by the F&O watchlist by design (`note="F&O coverage"`). Note the division of labour with `market_indices.py`: sector indices live ONLY in `market_heatmap.py` (which papers over Yahoo gaps with the basket), while `market_indices.py` covers only option-enabled index underlyings and papers over Yahoo gaps with a live NSE quote instead — same problem, two different fallbacks.
 
 ## Dropped Rules
 

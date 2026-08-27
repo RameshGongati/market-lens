@@ -208,7 +208,7 @@ Confirmed against the code; none has a fix committed. Ordered by likely impact.
 
 ---
 
-## Research Engine V1 (BUILT — uncommitted, on feature/research-engine)
+## Research Engine V1 (BUILT — on feature/research-engine, pending merge to develop/main)
 
 The two-layer F&O research study (816,937 simulated trades; see
 `research_engine/output/FnO_Pattern_Research_Report.docx` and
@@ -279,7 +279,7 @@ The number was inherited from GTF M5 a priori, never optimized — which is why
 the OOS validation is clean. The sweep's goal would be confirming the edge
 sits on a plateau, NOT picking a new "best" value (that would be curve-fitting).
 
-### Options Trade Lab V1 (BUILT — uncommitted)
+### Options Trade Lab V1 (BUILT — `9a51b1e`, 2026-08-27)
 
 Research Engine sub-page (`active_page="options_trade_lab"`, entry button on
 the Research page, `?options_trade_lab=1` deep link) that researches ONE
@@ -422,6 +422,27 @@ pyflakes flags it because pyflakes does not honour `# noqa`.)
 ---
 
 ## Completed Features (Non-GTF)
+
+### Configurable Dashboard Panels + Option-Index Overview (DONE — `410d314`, 2026-08-28)
+
+Settings gained a **Dashboard Content** panel with four persisted toggles
+(`config/preferences.py` defaults): indices overview, scan overview,
+selected-watchlist movers, and All NSE market movers. The expensive panel —
+All NSE movers, which builds and quotes the full stock universe — defaults
+OFF, and a disabled mover panel builds no quote universe at all
+(test-pinned via `_dashboard_mover_universes`). Market Bias survives the
+indices panel being hidden through a NIFTY-only fallback fetch.
+
+The overview strip grew from two headline indices to the eight NSE/BSE
+option-enabled underlyings (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY,
+NIFTY NEXT 50, NIFTY INDIA FPI 150, SENSEX, BANKEX), fetched concurrently:
+Yahoo history supplies sparkline + 20 EMA where covered, a live NSE
+all-indices quote overlays the headline level/change, and indices without
+Yahoo history degrade to "NSE quote" with "20 EMA unavailable"
+(`ema20=None`) rather than a fabricated trend. Live-verified: Yahoo's
+`^NSMIDCP` is NIFTY NEXT 50 despite the mnemonic, camelCase `fast_info`
+keys resolve, and all six configured NSE index names (including
+NIFTY INDIA FPI 150) exist in the live feed. 8 new tests (571 total).
 
 ### Select Control Borders (DONE — `c4d3fa9`, then app-wide, 2026-08-02)
 
