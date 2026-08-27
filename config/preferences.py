@@ -60,6 +60,13 @@ _DEFAULTS: dict[str, Any] = {
     # Chart display preferences.
     "show_candle_tooltip": True,
     "scan_progress_style": "speedometer",
+    # Dashboard content. The selected watchlist is small enough to remain a
+    # useful default; building and quoting the full NSE universe is opt-in so
+    # it cannot delay every dashboard visit.
+    "dashboard_show_indices_overview": True,
+    "dashboard_show_scan_overview": True,
+    "dashboard_show_watchlist_movers": True,
+    "dashboard_show_all_nse_movers": False,
 }
 
 

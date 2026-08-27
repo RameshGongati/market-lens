@@ -124,6 +124,10 @@ def test_no_file_returns_defaults() -> None:
     prefs = load_preferences()
     assert prefs["trading_type"] == "Options Trading"
     assert prefs["scan_progress_style"] == "speedometer"
+    assert prefs["dashboard_show_indices_overview"] is True
+    assert prefs["dashboard_show_scan_overview"] is True
+    assert prefs["dashboard_show_watchlist_movers"] is True
+    assert prefs["dashboard_show_all_nse_movers"] is False
     assert "selected_analysis_type" not in prefs
 
 
@@ -131,6 +135,20 @@ def test_scan_progress_style_preference_is_preserved() -> None:
     _write_prefs({"scan_progress_style": "pulse"})
     prefs = load_preferences()
     assert prefs["scan_progress_style"] == "pulse"
+
+
+def test_dashboard_mover_preferences_are_preserved() -> None:
+    _write_prefs({
+        "dashboard_show_indices_overview": False,
+        "dashboard_show_scan_overview": False,
+        "dashboard_show_watchlist_movers": False,
+        "dashboard_show_all_nse_movers": True,
+    })
+    prefs = load_preferences()
+    assert prefs["dashboard_show_indices_overview"] is False
+    assert prefs["dashboard_show_scan_overview"] is False
+    assert prefs["dashboard_show_watchlist_movers"] is False
+    assert prefs["dashboard_show_all_nse_movers"] is True
 
 
 def test_watchlist_selection_preferences_are_preserved() -> None:

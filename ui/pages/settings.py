@@ -71,6 +71,8 @@ def render_settings() -> None:
     spacer(14)
     _render_preferences_panel(prefs)
     spacer(14)
+    _render_dashboard_settings(prefs)
+    spacer(14)
 
     col_chart, col_alerts, col_look = st.columns(3)
     with col_chart:
@@ -331,6 +333,87 @@ def _watchlist_label(prefs: dict) -> str:
         except Exception:
             pass
     return str(st.session_state.get("selected_predefined_watchlist") or "Nifty 50")
+
+
+# ---------------------------------------------------------------------------
+# Dashboard content
+# ---------------------------------------------------------------------------
+
+def _render_dashboard_settings(prefs: dict) -> None:
+    """Persist visibility for dashboard panels with non-trivial fetch cost."""
+    with st.container(border=True):
+        panel_head(
+            "Dashboard Content",
+            "Choose which overview and market-data panels load on the dashboard",
+            icon="monitor",
+            tone="info",
+        )
+        indices_col, scan_col = st.columns(2)
+        current_indices = bool(prefs.get("dashboard_show_indices_overview", True))
+        current_scan = bool(prefs.get("dashboard_show_scan_overview", True))
+        current_watchlist = bool(prefs.get("dashboard_show_watchlist_movers", True))
+        current_market = bool(prefs.get("dashboard_show_all_nse_movers", False))
+
+        with indices_col:
+            show_indices = st.toggle(
+                "Show market indices overview",
+                value=current_indices,
+                key="set_dashboard_indices_overview",
+                help="Shows option-enabled indices from NSE and BSE, including NIFTY, "
+                     "BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX and BANKEX.",
+            )
+            st.caption("NSE/BSE option-index levels, daily change and available trend history.")
+
+        with scan_col:
+            show_scan = st.toggle(
+                "Show scan overview",
+                value=current_scan,
+                key="set_dashboard_scan_overview",
+                help="Shows breadth, strongest long/short names and latest zone-state counts.",
+            )
+            st.caption("Uses the latest saved analysis results; it does not run a new scan.")
+
+        st.markdown("---")
+        watchlist_col, market_col = st.columns(2)
+        with watchlist_col:
+            show_watchlist = st.toggle(
+                "Show selected-watchlist movers",
+                value=current_watchlist,
+                key="set_dashboard_watchlist_movers",
+                help="Loads gainers, losers and volume leaders for the watchlist "
+                     "currently selected in the sidebar, such as F&O Stocks.",
+            )
+            st.caption(
+                "Follows the active sidebar watchlist. Usually a smaller, faster quote request."
+            )
+
+        with market_col:
+            show_market = st.toggle(
+                "Show All NSE market movers",
+                value=current_market,
+                key="set_dashboard_all_nse_movers",
+                help="Loads gainers, losers and volume leaders across the full NSE stock universe.",
+            )
+            st.caption(
+                "Large quote request. Keep this off for a faster dashboard and enable it only when needed."
+            )
+
+        changed: dict[str, bool] = {}
+        if show_indices != current_indices:
+            changed["dashboard_show_indices_overview"] = show_indices
+        if show_scan != current_scan:
+            changed["dashboard_show_scan_overview"] = show_scan
+        if show_watchlist != current_watchlist:
+            changed["dashboard_show_watchlist_movers"] = show_watchlist
+        if show_market != current_market:
+            changed["dashboard_show_all_nse_movers"] = show_market
+        if changed:
+            save_preferences(changed)
+            st.session_state["settings_flash"] = (
+                "success",
+                "Dashboard content preferences saved.",
+            )
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------

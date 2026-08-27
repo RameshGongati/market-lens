@@ -24,7 +24,8 @@ import html
 import streamlit as st
 
 from data import market_heatmap as mh
-from data.market_indices import fetch_all_indices, market_bias
+from data.market_indices import INDEX_TICKERS, fetch_all_indices, fetch_index_snapshot, market_bias
+from config.preferences import load_preferences
 from storage.database import get_all_alerts
 from ui.components.panels import (
     bias_pill,
@@ -58,6 +59,13 @@ def indices_cached() -> list[dict]:
     Streamlit-free and testable.
     """
     return [dict(s) for s in fetch_all_indices()]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def headline_index_cached() -> dict:
+    """NIFTY 50 only, used by Market Bias when the full index panel is off."""
+    name = "NIFTY 50"
+    return dict(fetch_index_snapshot(name, INDEX_TICKERS[name]))
 
 
 def _sparkline(values: list[float], up: bool) -> str:
@@ -222,10 +230,156 @@ def _all_market_universe() -> tuple[str, tuple[str, ...]]:
     return "All NSE Market Movers", tuple(symbols)
 
 
+def _scan_breadth(results: dict[str, dict]) -> dict[str, int]:
+    """Mutually comprehensible breadth counts for the latest saved scan."""
+    breadth = {"scanned": len(results), "tradeable": 0, "bullish": 0, "bearish": 0}
+    for res in results.values():
+        zones = [*(res.get("demand_zones") or []), *(res.get("supply_zones") or [])]
+        if not zones:
+            continue
+        best = max(zones, key=lambda zone: float(zone.get("odd_score", 0) or 0))
+        if best.get("category") == "demand":
+            breadth["bullish"] += 1
+        elif best.get("category") == "supply":
+            breadth["bearish"] += 1
+        if any(zone.get("is_tradeable") for zone in zones):
+            breadth["tradeable"] += 1
+    return breadth
+
+
+def _render_indices_overview(indices: list[dict]) -> None:
+    """Option-enabled NSE/BSE indices, arranged as compact stable tiles."""
+    with st.container(border=True):
+        section_title("Today's Options Indices Overview")
+        st.caption("NSE and BSE index-option underlyings with daily movement and available 20 EMA context.")
+        column_count = 4 if len(indices) >= 8 else 3
+        for start in range(0, len(indices), column_count):
+            columns = st.columns(column_count, gap="small")
+            for column, snap in zip(columns, indices[start:start + column_count]):
+                with column:
+                    ok = bool(snap.get("ok"))
+                    up = float(snap.get("change", 0.0) or 0.0) >= 0
+                    colour = "#16794A" if up else "#C23B33"
+                    tint = "#F0FAF5" if up else "#FFF4F3"
+                    border = "#B9E3CF" if up else "#F0C8C4"
+                    value = f"{float(snap.get('last', 0.0)):,.2f}" if ok else "—"
+                    delta = (
+                        f"{float(snap.get('change', 0.0)):+,.2f} "
+                        f"({float(snap.get('change_pct', 0.0)):+.2f}%)"
+                        if ok else "Unavailable"
+                    )
+                    ema_side = snap.get("above_ema20")
+                    ema_text = (
+                        "Above 20 EMA" if ema_side is True else
+                        "Below 20 EMA" if ema_side is False else "20 EMA unavailable"
+                    )
+                    spark = _sparkline(snap.get("spark") or [], up)
+                    history_label = "Recent trend" if spark else "NSE quote"
+                    st.markdown(
+                        f"<div style='background:{tint};border:1px solid {border};"
+                        f"border-top:3px solid {colour};border-radius:7px;padding:10px 12px;"
+                        f"min-height:118px;margin-bottom:8px;display:flex;flex-direction:column;"
+                        f"justify-content:space-between;box-sizing:border-box;'>"
+                        f"<div><div style='display:flex;align-items:center;gap:7px;'>"
+                        f"<span style='width:7px;height:7px;border-radius:50%;background:{colour};"
+                        f"display:inline-block;flex:0 0 7px;'></span>"
+                        f"<span style='font-size:0.69rem;color:#566175;font-weight:800;"
+                        f"text-transform:uppercase;'>{html.escape(str(snap.get('name', 'Index')))}</span>"
+                        f"</div><div style='font-size:1.12rem;font-weight:800;color:#16233A;"
+                        f"margin-top:5px;'>{value}</div>"
+                        f"<div style='font-size:0.73rem;color:{colour};font-weight:700;"
+                        f"margin-top:1px;'>{delta}</div></div>"
+                        f"<div style='display:flex;align-items:flex-end;justify-content:space-between;"
+                        f"gap:8px;margin-top:8px;min-height:22px;'>"
+                        f"<div style='display:flex;align-items:center;gap:6px;'>"
+                        f"{spark}<span style='font-size:0.59rem;color:#8A8F98;'>{history_label}</span>"
+                        f"</div><span style='font-size:0.6rem;color:#596579;background:#FFFFFF;"
+                        f"border:1px solid #D9E0E8;border-radius:999px;padding:2px 6px;"
+                        f"white-space:nowrap;'>{ema_text}</span></div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+
+def _render_scan_overview(results: dict[str, dict]) -> None:
+    """Latest scan breadth, leaders and zone states, with no market quotes."""
+    with st.container(border=True):
+        section_title("Scan Overview")
+        if not results:
+            st.caption("Run an analysis to populate scan breadth and setup states.")
+            return
+
+        breadth = _scan_breadth(results)
+        summary = st.columns(4)
+        for column, (label, key) in zip(summary, [
+            ("Scanned", "scanned"),
+            ("Tradeable", "tradeable"),
+            ("Bullish", "bullish"),
+            ("Bearish", "bearish"),
+        ]):
+            column.metric(label, breadth[key])
+
+        leader_left, leader_right = st.columns(2)
+        leaders = [
+            (leader_left, "Best Long", _best_by_bias(results, "bullish"), "#16794A"),
+            (leader_right, "Best Short", _best_by_bias(results, "bearish"), "#C23B33"),
+        ]
+        for column, label, symbols, colour in leaders:
+            with column:
+                text = ", ".join(symbols) if symbols else "—"
+                st.markdown(
+                    f"<div style='padding:4px 0 7px;border-bottom:1px solid #ECEEF1;'>"
+                    f"<div style='font-size:0.64rem;color:#7A818D;font-weight:800;"
+                    f"text-transform:uppercase;'>{label}</div>"
+                    f"<div style='font-size:0.78rem;color:{colour};font-weight:700;"
+                    f"margin-top:2px;'>{html.escape(text)}</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+        counts = _zone_state_counts(results)
+        states = st.columns(4)
+        for column, (label, key, colour) in zip(states, [
+            ("Near Demand", "demand", "#16794A"),
+            ("Near Supply", "supply", "#C23B33"),
+            ("Waiting", "waiting", "#B4791A"),
+            ("Avoid / Weak", "avoid", "#707780"),
+        ]):
+            with column:
+                st.markdown(
+                    f"<div style='padding:9px 2px 3px;'>"
+                    f"<div style='font-size:0.64rem;color:#7A818D;font-weight:700;'>"
+                    f"{html.escape(label)}</div>"
+                    f"<div style='font-size:1.18rem;color:{colour};font-weight:850;'>"
+                    f"{counts[key]}</div>"
+                    f"<div style='font-size:0.62rem;color:#9298A1;'>stocks</div></div>",
+                    unsafe_allow_html=True,
+                )
+
+
+def _dashboard_mover_universes(
+    prefs: dict,
+) -> list[tuple[str, tuple[str, ...]]]:
+    """Build only the mover universes the user explicitly enabled.
+
+    Keeping the preference check outside the universe helpers is important:
+    the All NSE helper walks every stock batch, and the resulting symbols are
+    then quoted by the mover card. A hidden panel must perform neither step.
+    """
+    universes: list[tuple[str, tuple[str, ...]]] = []
+    if bool(prefs.get("dashboard_show_watchlist_movers", True)):
+        universes.append(_selected_watchlist_universe())
+    if bool(prefs.get("dashboard_show_all_nse_movers", False)):
+        universes.append(_all_market_universe())
+    return universes
+
+
 def render_market_overview() -> None:
     """Render the dashboard landing page."""
     results: dict[str, dict] = st.session_state.get("analysis_results", {}) or {}
     scanned = len(results)
+    prefs = load_preferences()
+    show_indices_overview = bool(prefs.get("dashboard_show_indices_overview", True))
+    show_scan_overview = bool(prefs.get("dashboard_show_scan_overview", True))
 
     # ---- Header -----------------------------------------------------------
     head_l, head_r = st.columns([3, 2])
@@ -251,7 +405,7 @@ def render_market_overview() -> None:
             )
         with cols[1]:
             st.button(
-                "Pattern Scan Results", icon=":material/query_stats:",
+                "Pattern Results", icon=":material/query_stats:",
                 use_container_width=True, key="mo_pattern_results",
                 disabled=not bool(st.session_state.get("pattern_scan_results")),
                 on_click=_go_pattern_results,
@@ -265,7 +419,7 @@ def render_market_overview() -> None:
             )
 
     # ---- Top summary cards -------------------------------------------------
-    indices = indices_cached()
+    indices = indices_cached() if show_indices_overview else [headline_index_cached()]
     bias, bias_reason = market_bias(indices)  # type: ignore[arg-type]
     heatmap_tiles = dashboard_heatmap_tiles()
     strong_sectors = strong_sector_count(heatmap_tiles)
@@ -319,89 +473,37 @@ def render_market_overview() -> None:
             tone="purple" if scanned else "muted",
         )
 
-    # ---- Market overview + heatmap ----------------------------------------
+    # ---- Index overview + scan overview + heatmap -------------------------
     left, right = st.columns([3, 2])
     with left:
-        with st.container(border=True):
-            section_title("Today's Market Overview")
-            cols = st.columns(len(indices) + 2)
-            for col, snap in zip(cols, indices):
-                with col:
-                    up = snap["change"] >= 0
-                    colour = "#1e7e34" if up else "#c92a2a"
-                    val = f"{snap['last']:,.2f}" if snap["ok"] else "—"
-                    delta = (
-                        f"{snap['change']:+,.2f} ({snap['change_pct']:+.2f}%)"
-                        if snap["ok"] else "unavailable"
-                    )
-                    st.markdown(
-                        f"<div style='font-size:0.7rem;color:#6B6B63;"
-                        f"font-weight:700;'>{html.escape(snap['name'])}</div>"
-                        f"<div style='font-size:1.1rem;font-weight:700;'>{val}</div>"
-                        f"<div style='font-size:0.72rem;color:{colour};'>{delta}</div>"
-                        f"{_sparkline(snap['spark'], up)}",
-                        unsafe_allow_html=True,
-                    )
-            with cols[-2]:
-                st.markdown(
-                    "<div style='font-size:0.7rem;color:#6B6B63;font-weight:700;'>"
-                    "BEST LONG</div>", unsafe_allow_html=True)
-                longs = _best_by_bias(results, "bullish")
-                st.markdown(
-                    f"<div style='font-size:0.82rem;color:#1e7e34;font-weight:600;'>"
-                    f"{html.escape(', '.join(longs)) if longs else '—'}</div>",
-                    unsafe_allow_html=True)
-            with cols[-1]:
-                st.markdown(
-                    "<div style='font-size:0.7rem;color:#6B6B63;font-weight:700;'>"
-                    "BEST SHORT</div>", unsafe_allow_html=True)
-                shorts = _best_by_bias(results, "bearish")
-                st.markdown(
-                    f"<div style='font-size:0.82rem;color:#c92a2a;font-weight:600;'>"
-                    f"{html.escape(', '.join(shorts)) if shorts else '—'}</div>",
-                    unsafe_allow_html=True)
-
-            st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-            counts = _zone_state_counts(results)
-            pills = st.columns(4)
-            for col, (label, key, tone) in zip(pills, [
-                ("Near Demand", "demand", "bullish"),
-                ("Near Supply", "supply", "bearish"),
-                ("Waiting for Confirmation", "waiting", "warning"),
-                ("Avoid / Weak Setup", "avoid", "muted"),
-            ]):
-                with col:
-                    stat_card(label, f"{counts[key]}", "stocks", tone=tone)
+        if show_indices_overview:
+            _render_indices_overview(indices)
+        if show_scan_overview:
+            _render_scan_overview(results)
 
     with right:
         render_dashboard_heatmap_card(results)
 
     # ---- Movers ------------------------------------------------------------
-    source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
-    credentials = _source_credentials()
-    selected_title, selected_symbols = _selected_watchlist_universe()
-    all_title, all_symbols = _all_market_universe()
-    mover_left, mover_right = st.columns(2)
-    with mover_left:
-        render_dashboard_movers_card(
-            selected_title,
-            selected_symbols,
-            source_name,
-            credentials,
-            results,
-            limit=5,
-            compact=True,
-        )
-    with mover_right:
-        render_dashboard_movers_card(
-            all_title,
-            all_symbols,
-            source_name,
-            credentials,
-            results,
-            limit=5,
-            compact=True,
-        )
+    mover_universes = _dashboard_mover_universes(prefs)
+    if mover_universes:
+        source_name = st.session_state.get("selected_data_source", "Yahoo Finance")
+        credentials = _source_credentials()
+        # Keep mover cards a stable half-row width. A single enabled card
+        # stays in the left column instead of stretching across the page;
+        # enabling both fills the matching right column.
+        mover_columns = st.columns(2)
+        for column, (title, symbols) in zip(mover_columns, mover_universes):
+            with column:
+                render_dashboard_movers_card(
+                    title,
+                    symbols,
+                    source_name,
+                    credentials,
+                    results,
+                    limit=5,
+                    compact=True,
+                )
 
     # ---- Opportunities + sector strength ----------------------------------
     opp_col, sect_col = st.columns([3, 2])
