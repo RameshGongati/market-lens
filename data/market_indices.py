@@ -24,11 +24,17 @@ logger = get_logger(__name__)
 # NSE and BSE option underlyings, in dashboard display order. An empty Yahoo
 # ticker means NSE can supply the current level/change but no reliable Yahoo
 # history is available for the sparkline or 20 EMA.
+#
+# FINNIFTY/MIDCPNIFTY use Yahoo's long-form symbols, NOT ^CNXFIN: verified
+# 2026-08-28, ^CNXFIN quotes ~28,506 while FINNIFTY's real level is ~26,280 —
+# a different/stale series. The long-form symbols quote the correct level but
+# are newly listed on Yahoo (single bar), so their history accumulates one
+# session at a time from 2026-08 onward.
 INDEX_TICKERS: dict[str, str] = {
     "NIFTY 50": "^NSEI",
     "BANK NIFTY": "^NSEBANK",
-    "FINNIFTY": "^CNXFIN",
-    "MIDCPNIFTY": "",
+    "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+    "MIDCPNIFTY": "NIFTY_MID_SELECT.NS",
     "NIFTY NEXT 50": "^NSMIDCP",
     "NIFTY INDIA FPI 150": "",
     "BSE SENSEX": "^BSESN",
@@ -42,6 +48,13 @@ INDEX_NSE_NAMES: dict[str, str] = {
     "MIDCPNIFTY": "NIFTY MIDCAP SELECT",
     "NIFTY NEXT 50": "NIFTY NEXT 50",
     "NIFTY INDIA FPI 150": "NIFTY INDIA FPI 150",
+}
+
+# Yahoo ticker -> dashboard display name, for the index-tile chart deep links
+# and the detail-page header. Only indices with a Yahoo ticker are chartable;
+# the empty-ticker ones (NSE quote only) have no history to draw.
+INDEX_NAME_BY_TICKER: dict[str, str] = {
+    ticker: name for name, ticker in INDEX_TICKERS.items() if ticker
 }
 
 # Bars pulled for the sparkline and the EMA. 20-EMA needs at least 20 closes;
@@ -84,6 +97,14 @@ def fetch_index_snapshot(name: str, ticker: str) -> IndexSnapshot:
             period=_PERIOD, interval=_INTERVAL, auto_adjust=False,
         )
         df = drop_incomplete_bars(df)
+        if df is None or len(df) < _EMA_SPAN:
+            # Newborn daily series (long-form NSE index symbols): resample
+            # Yahoo's deep hourly history so the sparkline and 20 EMA exist.
+            from data.sources.yahoo_finance import synthesize_daily_from_hourly
+
+            synthesized = synthesize_daily_from_hourly(ticker)
+            if synthesized is not None and len(synthesized) > len(df if df is not None else []):
+                df = drop_incomplete_bars(synthesized)
         if df is None or df.empty or "Close" not in df:
             return _empty(name, ticker)
 

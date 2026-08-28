@@ -729,8 +729,16 @@ def render_detail_view() -> None:
 
 
 def _make_symbol(symbol: str, exchange: str, source: str) -> str:
-    """Format a ticker symbol for the active data source."""
+    """Format a ticker symbol for the active data source.
+
+    Index tickers arrive already fully qualified (``^NSEI``, ``BSE-BANK.BO``)
+    from the dashboard's index-tile deep links; suffixing those would produce
+    ``^NSEI.NS``, which Yahoo does not recognise. Keep in step with
+    ``stock_detail._source_symbol`` — they are separate code paths (Gotcha 10).
+    """
     if source == "Yahoo Finance":
+        if symbol.startswith("^") or symbol.upper().endswith((".NS", ".BO")):
+            return symbol
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
         return f"{symbol}{suffix}"
     if source == "TradingView":

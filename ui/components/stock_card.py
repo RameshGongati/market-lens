@@ -26,7 +26,7 @@ _TF_SIGNAL_COLORS = {
 }
 
 
-def build_detail_url(symbol: str, exchange: str) -> str:
+def build_detail_url(symbol: str, exchange: str, src: str | None = None) -> str:
     """Query-param deep link that opens a stock's chart in a NEW browser tab.
 
     A new tab is a SEPARATE Streamlit session with empty state — it cannot see
@@ -39,12 +39,14 @@ def build_detail_url(symbol: str, exchange: str) -> str:
     URL-encoded so symbols containing special characters (M&M) survive.
 
     Shared by the dashboard cards and the results table's "View" link so the
-    two can never drift apart on which context they carry.
+    two can never drift apart on which context they carry. ``src`` overrides
+    the session's data source for symbols only one source can serve — index
+    tickers (^NSEI) are Yahoo-only, since Jugaad fetches equity history.
     """
     return "?" + urlencode({
         "stock": symbol,
         "exchange": exchange,
-        "src": st.session_state.get("selected_data_source", "Yahoo Finance"),
+        "src": src or st.session_state.get("selected_data_source", "Yahoo Finance"),
         "tt": st.session_state.get("trading_type", "Options Trading"),
         "ps": st.session_state.get("primary_strategy", "Demand/Supply Zones"),
         # Comma-joined; use_fibonacci is derived from this on the far side.

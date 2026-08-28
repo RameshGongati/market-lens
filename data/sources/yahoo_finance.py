@@ -37,6 +37,47 @@ def _intraday_close(symbol: str, bar_date) -> float | None:
         return None
 
 
+# Below this many daily rows the series is effectively absent — true only for
+# symbols Yahoo listed recently (the long-form NSE index symbols carry years
+# of hourly history but began their daily series in 2026-08). Real equities
+# always clear it, so the synthesis fallback never fires for them.
+_SYNTH_MIN_DAILY_ROWS = 20
+_SYNTH_MIN_HOURLY_ROWS = 100
+
+
+def synthesize_daily_from_hourly(symbol: str) -> pd.DataFrame | None:
+    """Daily OHLCV resampled from Yahoo's 60-minute bars, or None.
+
+    Yahoo caps hourly history at ~730 days, so the synthesized series spans
+    up to two years. Sessions are grouped by exchange-local calendar date
+    (the intraday index is tz-aware IST for NSE/BSE symbols). Zero volume is
+    preserved — an index reports no traded volume (Gotcha 15's principle),
+    so the caller must not pass the result through a volume>0 filter.
+    """
+    try:
+        hourly = yf.Ticker(symbol).history(
+            period="730d", interval="60m", auto_adjust=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — synthesis is best-effort
+        logger.warning("Hourly fetch for daily synthesis failed for %s: %s",
+                       symbol, exc)
+        return None
+    if hourly is None or len(hourly) < _SYNTH_MIN_HOURLY_ROWS:
+        return None
+    hourly = hourly[["Open", "High", "Low", "Close", "Volume"]]
+    daily = hourly.groupby(hourly.index.date).agg(
+        Open=("Open", "first"),
+        High=("High", "max"),
+        Low=("Low", "min"),
+        Close=("Close", "last"),
+        Volume=("Volume", "sum"),
+    )
+    tz = getattr(hourly.index, "tz", None)
+    idx = pd.DatetimeIndex(pd.to_datetime(daily.index))
+    daily.index = idx.tz_localize(tz) if tz is not None else idx
+    return daily
+
+
 def _repair_last_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """Fill a missing close on the most recent daily bar from NSE's bhavcopy.
 
@@ -219,6 +260,19 @@ class YahooFinanceSource(DataSource):
             # rebuilt from the bhavcopy.
             if interval == "1d":
                 df = fill_missing_sessions(df, symbol)
+                # A near-empty daily series with deep hourly history means the
+                # daily listing is newborn (long-form NSE index symbols) — a
+                # resampled series beats one lone candle. Placed after the
+                # volume>0 filter above deliberately: indices trade no volume,
+                # so the synthesized frame must not pass through it.
+                if len(df) < _SYNTH_MIN_DAILY_ROWS:
+                    synthesized = synthesize_daily_from_hourly(symbol)
+                    if synthesized is not None and len(synthesized) > len(df):
+                        logger.info(
+                            "Daily history for %s synthesized from 60m bars "
+                            "(%d sessions)", symbol, len(synthesized),
+                        )
+                        return drop_incomplete_bars(synthesized)
             return df
         except Exception as exc:
             logger.error("YahooFinance fetch_history failed for %s: %s", symbol, exc)

@@ -26,6 +26,7 @@ import streamlit as st
 from data import market_heatmap as mh
 from data.market_indices import INDEX_TICKERS, fetch_all_indices, fetch_index_snapshot, market_bias
 from config.preferences import load_preferences
+from ui.components.stock_card import build_detail_url
 from storage.database import get_all_alerts
 from ui.components.panels import (
     bias_pill,
@@ -247,11 +248,37 @@ def _scan_breadth(results: dict[str, dict]) -> dict[str, int]:
     return breadth
 
 
+def _index_chart_url(snap: dict) -> str | None:
+    """Chart deep link for an index tile, or None when it has no Yahoo ticker.
+
+    MIDCPNIFTY and NIFTY INDIA FPI 150 have no Yahoo ticker and NO other
+    history source (jugaad's index-history endpoint no longer parses), so a
+    link would open a page with nothing on it — they stay plain tiles. A
+    ticker with thin history (FINNIFTY, BANKEX) still links: the detail page
+    shows the live quote and says honestly that zone analysis lacks data.
+
+    The URL pins ``src`` to Yahoo Finance regardless of the sidebar selection:
+    Jugaad fetches equity history only, so an index chart opened while Jugaad
+    is active would render empty. Exchange rides along for the header label —
+    the fetch path never suffixes an already-qualified index ticker.
+    """
+    ticker = str(snap.get("ticker") or "")
+    if not ticker:
+        return None
+    exchange = "BSE" if str(snap.get("name", "")).startswith("BSE") else "NSE"
+    return build_detail_url(ticker, exchange, src="Yahoo Finance")
+
+
 def _render_indices_overview(indices: list[dict]) -> None:
-    """Option-enabled NSE/BSE indices, arranged as compact stable tiles."""
+    """Option-enabled NSE/BSE indices, arranged as compact stable tiles.
+
+    Tiles with a Yahoo ticker are anchors opening the stock-detail chart in a
+    new tab (a separate Streamlit session — the URL carries the context, see
+    Gotcha 13); quote-only tiles render as plain divs.
+    """
     with st.container(border=True):
         section_title("Today's Options Indices Overview")
-        st.caption("NSE and BSE index-option underlyings with daily movement and available 20 EMA context.")
+        st.caption("NSE and BSE index-option underlyings with daily movement and available 20 EMA context. Indices marked ↗ open their chart in a new tab.")
         column_count = 4 if len(indices) >= 8 else 3
         for start in range(0, len(indices), column_count):
             columns = st.columns(column_count, gap="small")
@@ -275,30 +302,55 @@ def _render_indices_overview(indices: list[dict]) -> None:
                     )
                     spark = _sparkline(snap.get("spark") or [], up)
                     history_label = "Recent trend" if spark else "NSE quote"
-                    st.markdown(
+                    name = html.escape(str(snap.get("name", "Index")))
+                    url = _index_chart_url(snap)
+                    open_hint = (
+                        "<span style='margin-left:auto;font-size:0.72rem;"
+                        "color:#8A94A6;line-height:1;'>&#8599;</span>"
+                    ) if url else ""
+                    # Every slot has a fixed height (name row, price, delta,
+                    # bottom row) so tiles come out equal WITHOUT stretching a
+                    # tall min-height around sparse content — a 200px box with
+                    # ~110px of content read as a hollow slab.
+                    tile = (
                         f"<div style='background:{tint};border:1px solid {border};"
-                        f"border-top:3px solid {colour};border-radius:7px;padding:10px 12px;"
-                        f"min-height:118px;margin-bottom:8px;display:flex;flex-direction:column;"
-                        f"justify-content:space-between;box-sizing:border-box;'>"
-                        f"<div><div style='display:flex;align-items:center;gap:7px;'>"
+                        f"border-top:3px solid {colour};border-radius:7px;padding:9px 12px;"
+                        f"margin-bottom:8px;display:flex;flex-direction:column;"
+                        f"box-sizing:border-box;'>"
+                        f"<div style='display:flex;align-items:center;gap:7px;height:30px;"
+                        f"overflow:hidden;'>"
                         f"<span style='width:7px;height:7px;border-radius:50%;background:{colour};"
                         f"display:inline-block;flex:0 0 7px;'></span>"
-                        f"<span style='font-size:0.69rem;color:#566175;font-weight:800;"
-                        f"text-transform:uppercase;'>{html.escape(str(snap.get('name', 'Index')))}</span>"
+                        f"<span style='font-size:0.67rem;color:#566175;font-weight:800;"
+                        f"text-transform:uppercase;line-height:1.25;display:-webkit-box;"
+                        f"-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'>"
+                        f"{name}</span>{open_hint}"
                         f"</div><div style='font-size:1.12rem;font-weight:800;color:#16233A;"
-                        f"margin-top:5px;'>{value}</div>"
-                        f"<div style='font-size:0.73rem;color:{colour};font-weight:700;"
-                        f"margin-top:1px;'>{delta}</div></div>"
-                        f"<div style='display:flex;align-items:flex-end;justify-content:space-between;"
-                        f"gap:8px;margin-top:8px;min-height:22px;'>"
-                        f"<div style='display:flex;align-items:center;gap:6px;'>"
-                        f"{spark}<span style='font-size:0.59rem;color:#8A8F98;'>{history_label}</span>"
+                        f"margin-top:4px;height:26px;'>{value}</div>"
+                        f"<div style='font-size:0.72rem;color:{colour};font-weight:700;"
+                        f"height:17px;white-space:nowrap;overflow:hidden;'>{delta}</div>"
+                        f"<div style='display:flex;align-items:center;justify-content:space-between;"
+                        f"gap:8px;margin-top:7px;height:30px;'>"
+                        f"<div style='display:flex;align-items:center;gap:6px;overflow:hidden;'>"
+                        f"{spark}<span style='font-size:0.59rem;color:#8A8F98;"
+                        f"white-space:nowrap;'>{history_label}</span>"
                         f"</div><span style='font-size:0.6rem;color:#596579;background:#FFFFFF;"
                         f"border:1px solid #D9E0E8;border-radius:999px;padding:2px 6px;"
                         f"white-space:nowrap;'>{ema_text}</span></div>"
-                        f"</div>",
-                        unsafe_allow_html=True,
+                        f"</div>"
                     )
+                    if url:
+                        # The outer <div> keeps markdown treating this as an
+                        # HTML block: content starting with <a> (an inline
+                        # element) gets wrapped in a margined <p>, which
+                        # pushed linked tiles below their unlinked neighbours.
+                        tile = (
+                            f"<div><a href='{html.escape(url, quote=True)}' target='_blank' "
+                            f"title='Open {name} chart in a new tab' "
+                            f"style='text-decoration:none;color:inherit;display:block;'>"
+                            f"{tile}</a></div>"
+                        )
+                    st.markdown(tile, unsafe_allow_html=True)
 
 
 def _render_scan_overview(results: dict[str, dict]) -> None:

@@ -6,11 +6,13 @@ from data import market_indices
 
 
 def test_index_set_contains_current_nse_and_bse_option_underlyings():
+    # FINNIFTY/MIDCPNIFTY are Yahoo's long-form symbols: ^CNXFIN quotes a
+    # different/stale series (~28,506 vs FINNIFTY's real ~26,280).
     assert market_indices.INDEX_TICKERS == {
         "NIFTY 50": "^NSEI",
         "BANK NIFTY": "^NSEBANK",
-        "FINNIFTY": "^CNXFIN",
-        "MIDCPNIFTY": "",
+        "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+        "MIDCPNIFTY": "NIFTY_MID_SELECT.NS",
         "NIFTY NEXT 50": "^NSMIDCP",
         "NIFTY INDIA FPI 150": "",
         "BSE SENSEX": "^BSESN",

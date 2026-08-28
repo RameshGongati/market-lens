@@ -21,7 +21,7 @@ from data.manager import (
     default_interval_label,
     fetch_by_interval,
 )
-from data.market_indices import market_bias
+from data.market_indices import INDEX_NAME_BY_TICKER, market_bias
 from storage.database import (
     compare_analysis_results,
     delete_note,
@@ -163,8 +163,16 @@ _INTERVAL_LABELS: list[str] = list(INTERVAL_OPTIONS.keys())
 
 
 def _source_symbol(symbol: str, exchange: str, source_name: str) -> str:
-    """Format a chart fetch symbol for the selected data source."""
+    """Format a chart fetch symbol for the selected data source.
+
+    Index tickers arrive already fully qualified (``^NSEI``, ``BSE-BANK.BO``)
+    from the dashboard's index-tile deep links; suffixing those would produce
+    ``^NSEI.NS``, which Yahoo does not recognise. Keep in step with
+    ``dashboard._make_symbol`` — they are separate code paths (Gotcha 10).
+    """
     if source_name == "Yahoo Finance":
+        if symbol.startswith("^") or symbol.upper().endswith((".NS", ".BO")):
+            return symbol
         suffix = ".NS" if exchange.upper() == "NSE" else ".BO"
         return f"{symbol}{suffix}"
     if source_name == "TradingView":
@@ -261,7 +269,15 @@ def render_stock_detail(
     _render_detail_header(symbol, exchange, analysis_type, result, live_quote)
 
     if "error" in result:
-        st.error(result["error"])
+        # The chart panel fetches its own interval frame (Gotcha 11), so a
+        # thin history — Yahoo's newly listed index symbols carry a single
+        # bar — still gets its price chart; only the analysis-driven tabs
+        # need a full result to mean anything.
+        st.warning(
+            f"{result['error']} Showing the price history the source has — "
+            "chart overlays and analysis tabs appear once enough bars exist."
+        )
+        _render_chart_panel(symbol, exchange, analysis_type, result)
         return
 
     # Chart is FIRST because st.tabs has no way to preselect a tab — it always
@@ -583,7 +599,12 @@ def _render_detail_header(
     change_pct = float(
         (live_quote or {}).get("change_pct", result.get("change_pct", 0.0)) or 0.0
     )
-    company = get_company_name(symbol)
+    # Index deep links carry the Yahoo ticker as the symbol. Headline the
+    # index NAME (nobody reads ^NSEI as NIFTY 50) and demote the ticker to
+    # the subtitle slot where a stock shows its company name.
+    index_name = INDEX_NAME_BY_TICKER.get(symbol)
+    display_symbol = index_name or symbol
+    company = symbol if index_name else get_company_name(symbol)
 
     zones = [*(result.get("demand_zones") or []),
              *(result.get("supply_zones") or [])]
@@ -602,14 +623,14 @@ def _render_detail_header(
         st.markdown(
             "<div style='font-size:0.78rem;color:#9AA0A8;margin-bottom:2px;'>"
             "Dashboard &nbsp;&rsaquo;&nbsp; Analysis Results &nbsp;&rsaquo;&nbsp; "
-            f"<span style='color:#4A5361;font-weight:600;'>{html.escape(symbol)}"
+            f"<span style='color:#4A5361;font-weight:600;'>{html.escape(display_symbol)}"
             "</span></div>",
             unsafe_allow_html=True,
         )
         st.markdown(
             f"<div style='display:flex;align-items:center;gap:10px;'>"
             f"<span style='font-size:1.75rem;font-weight:800;color:#16233A;"
-            f"letter-spacing:-0.2px;'>{html.escape(symbol)}</span>"
+            f"letter-spacing:-0.2px;'>{html.escape(display_symbol)}</span>"
             f"{bias_pill(action, tone)}</div>"
             f"<div style='font-size:0.86rem;color:#6B7280;margin-top:1px;'>"
             f"{html.escape(company)} &middot; {html.escape(exchange)} &middot; "
@@ -1002,18 +1023,20 @@ def _build_chart(
 ) -> go.Figure:
     """Build an interactive Plotly chart with volume subplot and overlays."""
     show_rsi = analysis_type == "Short Term Investment"
+    # Index deep links carry the Yahoo ticker; title the chart by index name.
+    chart_title = INDEX_NAME_BY_TICKER.get(symbol, symbol)
 
     # Row heights: price + volume (+ optional RSI)
     if show_rsi:
         row_heights = [0.55, 0.2, 0.25]
         rows = 3
         specs = [[{"type": "xy"}], [{"type": "xy"}], [{"type": "xy"}]]
-        subplot_titles = (symbol, "Volume", "RSI")
+        subplot_titles = (chart_title, "Volume", "RSI")
     else:
         row_heights = [0.7, 0.3]
         rows = 2
         specs = [[{"type": "xy"}], [{"type": "xy"}]]
-        subplot_titles = (symbol, "Volume")
+        subplot_titles = (chart_title, "Volume")
 
     fig = make_subplots(
         rows=rows,
