@@ -2,7 +2,7 @@
 
 import html
 import math
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import pandas as pd
@@ -22,6 +22,7 @@ from data.manager import (
     fetch_by_interval,
 )
 from data.market_indices import INDEX_NAME_BY_TICKER, market_bias
+from data.sources.yahoo_finance import fetch_latest_daily_display_bar
 from storage.database import (
     compare_analysis_results,
     delete_note,
@@ -534,13 +535,21 @@ def _render_chart_panel(
             theme="light",
         )
     elif chart_df is not None and not chart_df.empty:
+        display_df = chart_df
+        display_has_live_index_candle = False
+        if interval_label == "Daily":
+            display_df, display_has_live_index_candle = _index_display_frame(symbol, chart_df)
         # _filter_by_period slices the fetched data for the Period range zoom.
         # Guard: if the slice would be empty (e.g. 1W window on Monthly candles),
         # _filter_by_period already falls back to the full dataset — no extra
         # handling needed here.
-        df_view = _filter_by_period(chart_df, selected_period)
+        df_view = _filter_by_period(display_df, selected_period)
         fig = _build_chart(symbol, df_view, chart_result, analysis_type, chart_type, full_df=chart_df, interval_label=interval_label)
         _add_gap_signal_overlay(fig, df_view, interval_label)
+        if display_has_live_index_candle:
+            st.caption(
+                "Today's index candle is live display data. Zone analysis uses completed daily candles only."
+            )
         if analysis_type == "Demand/Supply Zones":
             st.caption(
                 "Showing nearest fresh zones (score >= 5). "
@@ -971,6 +980,50 @@ def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
     cutoff = now - pd.Timedelta(days=days)
     sliced = df[df.index >= cutoff]
     return sliced if not sliced.empty else df
+
+
+def _append_today_display_bar(
+    completed: pd.DataFrame,
+    candidate: pd.DataFrame,
+    today: date,
+) -> tuple[pd.DataFrame, bool]:
+    """Append a valid, in-progress index candle for drawing only.
+
+    ``completed`` is the frame passed to the analyser and is never mutated.
+    The candidate is accepted only when it is today's candle and today's date
+    is not already present. That prevents duplicate bars after the normal
+    history endpoint has finalised the session.
+    """
+    if completed is None or completed.empty or candidate is None or candidate.empty:
+        return completed, False
+    if not isinstance(completed.index, pd.DatetimeIndex) or not isinstance(candidate.index, pd.DatetimeIndex):
+        return completed, False
+
+    latest = candidate.tail(1)
+    if latest.index[-1].date() != today:
+        return completed, False
+    if latest.index[-1].date() in {stamp.date() for stamp in completed.index}:
+        return completed, False
+    return pd.concat([completed, latest]).sort_index(), True
+
+
+def _index_display_frame(
+    symbol: str,
+    completed: pd.DataFrame,
+) -> tuple[pd.DataFrame, bool]:
+    """Enrich a Daily index chart without letting a forming candle affect analysis."""
+    if symbol not in INDEX_NAME_BY_TICKER:
+        return completed, False
+
+    cache_key = f"index_live_daily_bar_{symbol}"
+    cached = st.session_state.get(cache_key)
+    now = datetime.now()
+    if cached and (now - cached["fetched_at"]).total_seconds() < 30:
+        candidate = cached["bar"]
+    else:
+        candidate = fetch_latest_daily_display_bar(symbol)
+        st.session_state[cache_key] = {"fetched_at": now, "bar": candidate}
+    return _append_today_display_bar(completed, candidate, get_current_ist_time().date())
 
 
 # ---------------------------------------------------------------------------

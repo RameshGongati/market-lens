@@ -105,6 +105,51 @@ def test_analysis_fetch_symbol_matches_chart_fetch_rules():
 
 
 # ---------------------------------------------------------------------------
+# Live daily index display candle
+# ---------------------------------------------------------------------------
+
+def _daily_frame(days: list[str], closes: list[float]):
+    import pandas as pd
+
+    index = pd.DatetimeIndex(pd.to_datetime(days)).tz_localize("Asia/Kolkata")
+    return pd.DataFrame({
+        "Open": closes,
+        "High": [value + 2 for value in closes],
+        "Low": [value - 2 for value in closes],
+        "Close": closes,
+        "Volume": [0] * len(closes),
+    }, index=index)
+
+
+def test_today_index_display_bar_is_appended_without_mutating_analysis_frame():
+    from datetime import date
+    from ui.components.stock_detail import _append_today_display_bar
+
+    completed = _daily_frame(["2026-08-27"], [24090.85])
+    today = _daily_frame(["2026-08-28"], [24154.15])
+
+    display, appended = _append_today_display_bar(completed, today, date(2026, 8, 28))
+
+    assert appended is True
+    assert len(display) == 2
+    assert display.iloc[-1]["Close"] == 24154.15
+    assert len(completed) == 1
+
+
+def test_display_bar_is_not_appended_when_completed_frame_already_has_today():
+    from datetime import date
+    from ui.components.stock_detail import _append_today_display_bar
+
+    completed = _daily_frame(["2026-08-27", "2026-08-28"], [24090.85, 24154.15])
+    today = _daily_frame(["2026-08-28"], [24154.15])
+
+    display, appended = _append_today_display_bar(completed, today, date(2026, 8, 28))
+
+    assert appended is False
+    assert display is completed
+
+
+# ---------------------------------------------------------------------------
 # Daily synthesis from hourly bars (newborn Yahoo index series)
 # ---------------------------------------------------------------------------
 

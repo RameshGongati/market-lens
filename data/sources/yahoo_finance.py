@@ -78,6 +78,30 @@ def synthesize_daily_from_hourly(symbol: str) -> pd.DataFrame | None:
     return daily
 
 
+def fetch_latest_daily_display_bar(symbol: str) -> pd.DataFrame:
+    """Return Yahoo's latest valid daily OHLCV row without volume filtering.
+
+    Index providers commonly publish a valid in-progress daily candle with
+    zero volume. ``fetch_history`` deliberately filters those rows before
+    analysis because a forming candle must not move production zone logic.
+    The detail chart can use this tiny, display-only frame to show today's
+    index candle while retaining the completed analysis frame underneath.
+    """
+    columns = ["Open", "High", "Low", "Close", "Volume"]
+    try:
+        raw = yf.Ticker(symbol).history(
+            period="5d", interval="1d", auto_adjust=False,
+        )
+        if raw is None or raw.empty:
+            return pd.DataFrame(columns=columns)
+        frame = raw.reindex(columns=columns)
+        frame = drop_incomplete_bars(frame)
+        return frame.tail(1)
+    except Exception as exc:  # noqa: BLE001 — display enrichment is optional
+        logger.debug("Latest daily display bar unavailable for %s: %s", symbol, exc)
+        return pd.DataFrame(columns=columns)
+
+
 def _repair_last_bar(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
     """Fill a missing close on the most recent daily bar from NSE's bhavcopy.
 
