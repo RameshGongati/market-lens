@@ -14,6 +14,18 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _is_supported_index_ticker(symbol: str) -> bool:
+    """Return whether *symbol* is one of the dashboard's chartable indices.
+
+    Yahoo reports zero volume for index intraday bars. Equity history retains
+    its existing volume filter, but these supported index tickers must keep
+    those valid OHLC bars so the 15m/60m/75m chart controls can work.
+    """
+    from data.market_indices import INDEX_NAME_BY_TICKER
+
+    return symbol in INDEX_NAME_BY_TICKER
+
+
 def _intraday_close(symbol: str, bar_date) -> float | None:
     """Last intraday close for *symbol* on *bar_date*, or None.
 
@@ -267,7 +279,16 @@ class YahooFinanceSource(DataSource):
                 logger.warning("No history returned for %s", symbol)
             # Drop the "Adj Close" column added when auto_adjust=False
             df = df[["Open", "High", "Low", "Close", "Volume"]]
-            if interval not in ("1wk", "1mo"):
+            # Index providers publish valid intraday OHLC bars with zero
+            # volume. Preserve those bars only for the supported option-index
+            # tickers. Daily index data keeps the existing filter so a forming
+            # daily candle cannot enter production zone analysis.
+            if (
+                interval not in ("1wk", "1mo")
+                and not (
+                    interval != "1d" and _is_supported_index_ticker(symbol)
+                )
+            ):
                 df = df[df["Volume"].fillna(0) > 0]
             # Repair before dropping: a bar Yahoo left unfinished can often
             # be completed from NSE's own end-of-day file, and completing it

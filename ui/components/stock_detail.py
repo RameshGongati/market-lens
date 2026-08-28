@@ -1213,8 +1213,7 @@ def _build_chart(
     fig.update_layout(
         **{bottom_xaxis: {"rangeslider": {"visible": True, "thickness": 0.04}}}
     )
-    if interval_label not in ("Weekly", "Monthly"):
-        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+    fig.update_xaxes(rangebreaks=_rangebreaks_for_interval(interval_label))
     fig.update_xaxes(
         showgrid=True,
         gridcolor=_CHART_GRID,
@@ -1249,6 +1248,26 @@ def _build_chart(
         fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
 
     return fig
+
+
+def _rangebreaks_for_interval(interval_label: str) -> list[dict[str, Any]]:
+    """Hide closed-market time while retaining the real spacing of daily bars."""
+    if interval_label in ("Weekly", "Monthly"):
+        return []
+
+    breaks: list[dict[str, Any]] = [dict(bounds=["sat", "mon"])]
+    overnight_end = {
+        "15m": 9.0,
+        "60m": 8.25,
+        "75m": 8.0,
+    }.get(interval_label)
+    if overnight_end is not None:
+        # NSE/BSE cash sessions run 09:15--15:30 IST. Keep one nominal
+        # candle-width between sessions after compression: Yahoo timestamps
+        # the final 60m bar at 15:15, so removing all the way to 09:15 makes
+        # it overlap the next day's opening candle.
+        breaks.append(dict(bounds=[15.5, overnight_end], pattern="hour"))
+    return breaks
 
 
 # Rule: zone styling — semi-transparent fills (demand=green, supply=red),

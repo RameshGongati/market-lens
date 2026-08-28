@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data.market_indices import INDEX_NAME_BY_TICKER, INDEX_TICKERS  # noqa: E402
-from ui.components.stock_detail import _source_symbol  # noqa: E402
+from ui.components.stock_detail import _rangebreaks_for_interval, _source_symbol  # noqa: E402
 from ui.pages.dashboard import _make_symbol  # noqa: E402
 from ui.pages.market_overview import _index_chart_url  # noqa: E402
 
@@ -250,3 +250,43 @@ def test_fetch_history_leaves_deep_daily_series_alone(monkeypatch):
     df = yfin.YahooFinanceSource().fetch_history("RELIANCE.NS",
                                                  period="1y", interval="1d")
     assert len(df) == 30
+
+
+def test_fetch_history_keeps_zero_volume_intraday_bars_for_supported_index(monkeypatch):
+    from data.sources import yahoo_finance as yfin
+
+    intraday = _hourly_frame()
+    monkeypatch.setattr(yfin.yf, "Ticker", lambda _s: _FakeTicker({"60m": intraday}))
+
+    df = yfin.YahooFinanceSource().fetch_history("^NSEI", period="1y", interval="60m")
+
+    assert len(df) == len(intraday)
+    assert (df["Volume"] == 0).all()
+
+
+def test_fetch_history_still_filters_zero_volume_intraday_equity_bars(monkeypatch):
+    import pandas as pd
+    from data.sources import yahoo_finance as yfin
+
+    intraday = _hourly_frame()
+    monkeypatch.setattr(yfin.yf, "Ticker", lambda _s: _FakeTicker({"60m": intraday}))
+
+    df = yfin.YahooFinanceSource().fetch_history("RELIANCE.NS", period="1y", interval="60m")
+
+    assert df.empty
+
+
+def test_intraday_charts_hide_closed_market_hours():
+    breaks = _rangebreaks_for_interval("15m")
+
+    assert dict(bounds=["sat", "mon"]) in breaks
+    assert dict(bounds=[15.5, 9.0], pattern="hour") in breaks
+
+
+def test_hourly_charts_keep_room_between_sessions():
+    assert dict(bounds=[15.5, 8.25], pattern="hour") in _rangebreaks_for_interval("60m")
+    assert dict(bounds=[15.5, 8.0], pattern="hour") in _rangebreaks_for_interval("75m")
+
+
+def test_daily_charts_do_not_hide_weekday_hours():
+    assert _rangebreaks_for_interval("Daily") == [dict(bounds=["sat", "mon"])]
