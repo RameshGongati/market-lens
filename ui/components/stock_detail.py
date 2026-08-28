@@ -1046,16 +1046,19 @@ def _add_gap_signal_overlay(fig, df_view, interval_label: str) -> None:
         if not sigs:
             return
         sig = sigs[-1]
-        entry_ref = sig.close
+        levels = _gap_overlay_levels(df_view, sig)
+        if levels is None:
+            return
+        entry_ref, target = levels
         fig.add_vline(x=sig.date, line_width=1, line_dash="dot",
                       line_color="#7f7f7f", opacity=0.6)
-        fig.add_hline(y=sig.stop, line_dash="dash", line_color="#B3261E",
-                      line_width=1.2,
+        fig.add_hline(y=sig.stop, line_dash="dash", line_color=_CHART_DOWN_COLOR,
+                      line_width=1.6,
                       annotation_text=f"Stop loss {sig.stop:,.2f}",
                       annotation_font_size=10)
-        fig.add_hline(y=sig.target_2r(entry_ref), line_dash="dot",
-                      line_color="#6750A4", line_width=1.2,
-                      annotation_text=f"2R target {sig.target_2r(entry_ref):,.2f}",
+        fig.add_hline(y=target, line_dash="dash",
+                      line_color=_CHART_UP_COLOR, line_width=1.6,
+                      annotation_text=f"2R target {target:,.2f}",
                       annotation_font_size=10)
         fig.add_annotation(x=sig.date, y=sig.open, text=f"Gap +{sig.gap_pct:.1f}%",
                            showarrow=True, arrowhead=2, ax=0, ay=-32,
@@ -1063,6 +1066,16 @@ def _add_gap_signal_overlay(fig, df_view, interval_label: str) -> None:
     except Exception:
         # the overlay is decorative; never let it break the chart
         return
+
+
+def _gap_overlay_levels(df: pd.DataFrame, sig) -> tuple[float, float] | None:
+    """Return the validated next-open entry and 2R target for a chart signal."""
+    from analysis.gap_signals import track_signal
+
+    tracked = track_signal(df, sig)
+    if tracked is None or tracked.entry_price is None or tracked.target is None:
+        return None
+    return tracked.entry_price, tracked.target
 
 
 def _build_chart(

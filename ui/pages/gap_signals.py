@@ -99,6 +99,82 @@ def build_row(symbol: str, company: str, tracked: TrackedSignal, *, from_zone: b
     }
 
 
+def refresh_open_signal_rows(
+    rows: list[dict],
+    *,
+    fetch_fn,
+    source_name: str,
+    now: dt.datetime | None = None,
+) -> tuple[list[dict], int]:
+    """Refresh unresolved saved rows from completed daily bars.
+
+    A stored scan is intentionally reusable across tabs, but its Active rows
+    must not remain frozen after a later completed candle reaches a stop or
+    target. Re-detecting the original signal by date and delegating to
+    ``track_signal`` keeps this refresh byte-for-byte aligned with the
+    validated lifecycle rules used by a full scan.
+    """
+    refreshed: list[dict] = []
+    transitions = 0
+    for row in rows:
+        if row.get("status") not in (STATUS_ACTIVE, STATUS_AWAITING):
+            refreshed.append(row)
+            continue
+        symbol = str(row.get("symbol") or "")
+        signal_date = row.get("signal_date")
+        if not symbol or not signal_date:
+            refreshed.append(row)
+            continue
+        try:
+            full_symbol = f"{symbol}.NS" if source_name == "Yahoo Finance" else symbol
+            df = fetch_fn(full_symbol, "1y", "1d")
+            df = drop_forming_bar(df, now=now)
+            if df is None or len(df) < 30:
+                refreshed.append(row)
+                continue
+            wanted_date = pd.Timestamp(signal_date).date()
+            signal = next(
+                (candidate for candidate in detect_gap_up_continuation(df)
+                 if pd.Timestamp(candidate.date).date() == wanted_date),
+                None,
+            )
+            if signal is None:
+                refreshed.append(row)
+                continue
+            tracked = track_signal(df, signal)
+            if tracked is None:
+                refreshed.append(row)
+                continue
+            updated = dict(row)
+            updated.update({
+                "status": tracked.status,
+                "entry_date": (
+                    str(pd.Timestamp(tracked.entry_date).date())
+                    if tracked.entry_date is not None else None
+                ),
+                "entry_price": tracked.entry_price,
+                "target_2r": tracked.target if tracked.target is not None else row.get("target_2r"),
+                "exit_date": (
+                    str(pd.Timestamp(tracked.exit_date).date())
+                    if tracked.exit_date is not None else None
+                ),
+                "exit_price": tracked.exit_price,
+                "days_active": tracked.days_active,
+                "r_multiple": tracked.r_multiple,
+            })
+            if updated["status"] != row.get("status"):
+                transitions += 1
+            refreshed.append(updated)
+        except Exception:  # noqa: BLE001 -- one unavailable symbol must not hide the scan
+            refreshed.append(row)
+    return refreshed, transitions
+
+
+def _outcome_refresh_marker(scan_id: str | None, now: dt.datetime) -> str:
+    """Refresh once before and once after the daily bar is considered complete."""
+    return f"{scan_id or 'session'}:{now.date().isoformat()}:{now.hour >= 16}"
+
+
 def apply_tag_filters(rows: list[dict], *, zone_only: bool, volume_only: bool,
                       hide_results_week: bool) -> list[dict]:
     out = rows
@@ -214,6 +290,10 @@ def _run_scan(scope: str) -> None:
     st.session_state["gap_scan_id"] = scan_id
     st.session_state["gap_scan_label"] = label
     st.session_state["gap_scan_time"] = dt.datetime.now(_IST).strftime("%d %b %Y · %H:%M IST")
+    st.session_state["gap_scan_source"] = source_name
+    st.session_state["gap_outcome_refresh_marker"] = _outcome_refresh_marker(
+        scan_id, dt.datetime.now(_IST)
+    )
     if errors:
         st.session_state["gap_scan_errors"] = errors
 
@@ -314,8 +394,10 @@ def render_signals_page() -> None:
         cached = get_gap_scan(str(qp_scan))
         if cached:
             st.session_state["gap_scan_rows"] = cached.get("rows", [])
+            st.session_state["gap_scan_id"] = cached.get("id")
             st.session_state["gap_scan_label"] = cached.get("universe_label", "")
             st.session_state["gap_scan_time"] = cached.get("created_at", "")
+            st.session_state["gap_scan_source"] = cached.get("source_name", "Yahoo Finance")
 
     c1, c2 = st.columns([2.2, 1.0])
     scope = c1.selectbox("Universe", _SCOPES, index=2, key="gap_scan_scope")
@@ -335,6 +417,31 @@ def render_signals_page() -> None:
         )
         return
 
+    now = dt.datetime.now(_IST)
+    scan_id = st.session_state.get("gap_scan_id")
+    refresh_marker = _outcome_refresh_marker(scan_id, now)
+    if st.session_state.get("gap_outcome_refresh_marker") != refresh_marker:
+        source_name = st.session_state.get(
+            "gap_scan_source",
+            st.session_state.get("selected_data_source", "Yahoo Finance"),
+        )
+        creds = st.session_state.get("credentials", {}).get(source_name, {})
+        try:
+            manager = build_source_manager(source_name, creds)
+            with st.spinner("Refreshing open signal outcomes…"):
+                rows, transitions = refresh_open_signal_rows(
+                    rows,
+                    fetch_fn=manager.get_history,
+                    source_name=source_name,
+                    now=now,
+                )
+            st.session_state["gap_scan_rows"] = rows
+            if transitions:
+                st.session_state["gap_outcome_refresh_notice"] = transitions
+        except Exception:  # noqa: BLE001 -- cached scan remains useful offline
+            pass
+        st.session_state["gap_outcome_refresh_marker"] = refresh_marker
+
     st.caption(
         f"{st.session_state.get('gap_scan_label', '')} · scanned "
         f"{st.session_state.get('gap_scan_time', '')} · signals from the last "
@@ -342,6 +449,9 @@ def render_signals_page() -> None:
             f" · {st.session_state['gap_scan_errors']} symbols failed to fetch"
             if st.session_state.get("gap_scan_errors") else "")
     )
+    transitions = st.session_state.pop("gap_outcome_refresh_notice", 0)
+    if transitions:
+        st.caption(f"Updated {transitions} open signal outcome(s) from completed daily candles.")
     f1, f2, f3, f4 = st.columns([1, 1, 1, 1.2])
     zone_only = f1.checkbox("From demand zone only", key="gap_f_zone")
     volume_only = f2.checkbox("Volume confirmed only", key="gap_f_vol")

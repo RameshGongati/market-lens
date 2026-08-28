@@ -37,13 +37,11 @@ _GROUP_TICKERS: dict[str, str] = {
     "pharma": "^CNXPHARMA",
     "fmcg": "^CNXFMCG",
     "energy": "^CNXENERGY",
-    "oilgas": "^CNXOILGAS",
     "metals": "^CNXMETAL",
     "consdurbl": "^CNXCONSUM",
     "realty": "^CNXREALTY",
     "psubank": "^CNXPSUBANK",
     "media": "^CNXMEDIA",
-    "healthcare": "^CNXHEALTHCARE",
 }
 
 _MANUAL_GROUP_SYMBOLS: dict[str, list[str]] = {

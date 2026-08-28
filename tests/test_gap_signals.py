@@ -296,6 +296,50 @@ def test_track_active_with_unrealized_r_and_time_stop_at_20():
     assert t2.exit_price == pytest.approx(105.0)
 
 
+def test_saved_active_row_refreshes_to_target_hit():
+    from analysis.gap_signals import STATUS_ACTIVE, STATUS_TARGET, track_signal
+    from ui.pages.gap_signals import build_row, refresh_open_signal_rows
+
+    # A saved scan before the second post-entry bar sees an open position.
+    full, sig = _frame_with_signal([
+        (104.5, 105.0, 103.5, 104.0),
+        (104.0, 125.0, 103.8, 120.0),
+        *[(104.0, 105.0, 103.5, 104.0)] * 7,
+    ])
+    before_target = full.iloc[:22]
+    saved = track_signal(
+        before_target, detect_gap_up_continuation(before_target)[0]
+    )
+    assert saved.status == STATUS_ACTIVE
+    row = build_row("TEST", "Test Ltd", saved, from_zone=False,
+                    volume_ok=False, result_days=None, market_extended=False)
+
+    rows, transitions = refresh_open_signal_rows(
+        [row],
+        fetch_fn=lambda _symbol, _period, _interval: full,
+        source_name="Yahoo Finance",
+    )
+
+    assert transitions == 1
+    assert rows[0]["status"] == STATUS_TARGET
+    assert rows[0]["r_multiple"] == 2.0
+
+
+def test_gap_chart_overlay_uses_next_open_not_signal_close():
+    from ui.components.stock_detail import _gap_overlay_levels
+
+    df, sig = _frame_with_signal([
+        (104.5, 105.0, 103.5, 104.0),
+        (104.0, 125.0, 103.8, 120.0),
+    ])
+
+    entry, target = _gap_overlay_levels(df, sig)
+
+    assert entry == pytest.approx(104.5)
+    assert target == pytest.approx(115.94)
+    assert target != sig.target_2r(sig.close)
+
+
 def test_track_skips_trades_the_backtest_risk_guard_skipped():
     from analysis.gap_signals import track_signal
 

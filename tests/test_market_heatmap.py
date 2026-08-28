@@ -35,6 +35,17 @@ def test_symbols_for_watchlist_reads_predefined_watchlist(monkeypatch) -> None:
     assert mh.symbols_for_watchlist("F&O Stocks") == ["AAA", "BBB"]
 
 
+def test_unavailable_yahoo_sector_indices_are_not_requested() -> None:
+    assert "oilgas" not in mh._GROUP_TICKERS
+    assert "healthcare" not in mh._GROUP_TICKERS
+
+
+def test_fno_watchlist_excludes_non_equity_fpi_index_label() -> None:
+    fno = next(item for item in mh.predefined_watchlists()
+               if item.get("name") == "F&O Stocks")
+    assert "NIFTYFPI" not in fno["symbols"]
+
+
 def test_stale_yahoo_daily_symbol_detects_missing_prior_session() -> None:
     dates = {
         "DIXON": (pd.Timestamp("2026-08-20"), pd.Timestamp("2026-08-19")),
