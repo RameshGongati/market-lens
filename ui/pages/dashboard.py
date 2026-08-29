@@ -9,6 +9,7 @@ single-stock analysis used by "View" deep links.
 """
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import yfinance as yf
@@ -236,6 +237,59 @@ def scan_context() -> dict | None:
     }
 
 
+# Concurrent fetches per data source during a scan. The scan is network-bound
+# (two HTTP calls per stock: quote + history), and Yahoo serves a modest pool
+# without throttling. NSE-direct sources (Jugaad) rate-limit aggressively and
+# share a requests session, so anything else stays sequential — identical to
+# the pre-pool behaviour.
+_SCAN_WORKERS = {"Yahoo Finance": 8}
+
+
+def _scan_stock_worker(
+    stock,
+    symbol: str,
+    trading_type: str,
+    primary_strategy: str,
+    use_fibonacci: bool,
+    ds_manager: DataSourceManager,
+) -> tuple[dict, bool]:
+    """Fetch + analyse ONE stock; returns ``(result, intraday_fell_back)``.
+
+    Runs on a worker thread: no Streamlit calls, no session state, no SQLite —
+    the main loop owns progress display, persistence and alerts.
+    """
+    quote = ds_manager.get_quote(symbol)
+    hist, fetch_meta = fetch_for_trading_type(
+        symbol, trading_type, fetch_fn=ds_manager.get_history
+    )
+    # If no data at all, give analyse() an empty df — it will return a
+    # graceful "insufficient data" error dict via its own guard.
+    if hist is None:
+        hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+    analyser = get_analyzer_for_primary(primary_strategy)
+    if isinstance(analyser, DemandSupplyAnalysis):
+        result = analyser.analyse(symbol, hist, use_fibonacci=use_fibonacci)
+    else:
+        result = analyser.analyse(symbol, hist)
+    # Rule: prefer a live, finite quote price; fall back to the last valid
+    # close that analyse() stored (which itself guards against NaN — see
+    # demand_supply.py). Do NOT use plain `or` — NaN is truthy in Python and
+    # would silently bypass the fallback.
+    _quote_p = _valid_price(quote.get("current_price"))
+    _result_p = _valid_price(result.get("current_price"))
+    current_price = _quote_p if _quote_p is not None else (_result_p or 0.0)
+    change_pct = float(quote.get("change_pct") or 0.0)
+    result.update({
+        "current_price": current_price,
+        "change_pct": change_pct,
+        # Approximate absolute change from percentage
+        "change": round(current_price * change_pct / 100, 2),
+        "stock_id": stock.id,
+        "exchange": stock.exchange,
+    })
+    return result, bool(fetch_meta["fell_back"])
+
+
 def run_scan(ctx: dict) -> dict[str, dict] | None:
     """Execute the watchlist scan and store the results in session state.
 
@@ -294,7 +348,6 @@ def run_scan(ctx: dict) -> dict[str, dict] | None:
 
     # Fetch timeframe is driven entirely by the trading type via
     # get_timeframe(trading_type) / fetch_for_trading_type (see the loop below).
-    results: dict[str, dict] = {}
     fallback_symbols: list[str] = []   # tracks stocks where intraday fell back
     # A standalone progress card rather than st.progress: the built-in bar is
     # a thin strip inserted into whatever page is on screen, which made the
@@ -303,69 +356,55 @@ def run_scan(ctx: dict) -> dict[str, dict] | None:
     progress = st.empty()
     alerts_on = st.session_state.get("alerts_on", False)
 
-    for i, stock in enumerate(stocks):
-        progress.markdown(
-            scan_progress(wl_name, stock.symbol, i + 1, len(stocks)),
-            unsafe_allow_html=True,
-        )
-        symbol = _make_symbol(stock.symbol, stock.exchange, source_name)
-        try:
-            quote = ds_manager.get_quote(symbol)
-            # Stage C: fetch with trading-type-aware timeframe + intraday fallback.
-            hist, fetch_meta = fetch_for_trading_type(
-                symbol, trading_type, fetch_fn=ds_manager.get_history
+    use_fibonacci = st.session_state.get("use_fibonacci", False)
+    workers = _SCAN_WORKERS.get(source_name, 1)
+    completed: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                _scan_stock_worker,
+                stock,
+                _make_symbol(stock.symbol, stock.exchange, source_name),
+                trading_type,
+                primary_strategy,
+                use_fibonacci,
+                ds_manager,
+            ): stock
+            for stock in stocks
+        }
+        for done, future in enumerate(as_completed(futures), 1):
+            stock = futures[future]
+            progress.markdown(
+                scan_progress(wl_name, stock.symbol, done, len(stocks)),
+                unsafe_allow_html=True,
             )
-            if fetch_meta["fell_back"]:
-                fallback_symbols.append(stock.symbol)
-            # If no data at all, give analyse() an empty df — it will return a
-            # graceful "insufficient data" error dict via its own guard.
-            if hist is None:
-                hist = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-            # Stage D: real routing — get_analyzer_for_primary() instantiates
-            # the correct engine class; DemandSupplyAnalysis accepts the opt-in
-            # use_fibonacci kwarg, TrendFollowingAnalysis takes only symbol+data.
-            analyser = get_analyzer_for_primary(primary_strategy)
-            if isinstance(analyser, DemandSupplyAnalysis):
-                result = analyser.analyse(
-                    symbol, hist,
-                    use_fibonacci=st.session_state.get("use_fibonacci", False),
-                )
-            else:
-                result = analyser.analyse(symbol, hist)
-            # Rule: prefer a live, finite quote price; fall back to the last
-            # valid close that analyse() stored (which itself guards against
-            # NaN — see demand_supply.py). Do NOT use plain `or` — NaN is
-            # truthy in Python and would silently bypass the fallback.
-            _quote_p = _valid_price(quote.get("current_price"))
-            _result_p = _valid_price(result.get("current_price"))
-            current_price = _quote_p if _quote_p is not None else (_result_p or 0.0)
-            change_pct = float(quote.get("change_pct") or 0.0)
-            # Approximate absolute change from percentage
-            change = round(current_price * change_pct / 100, 2)
-            result.update({
-                "current_price": current_price,
-                "change_pct": change_pct,
-                "change": change,
-                "stock_id": stock.id,
-                "exchange": stock.exchange,
-            })
-            results[stock.symbol] = result
+            try:
+                result, fell_back = future.result()
+                if fell_back:
+                    fallback_symbols.append(stock.symbol)
+            except Exception as exc:
+                logger.error("Analysis error for %s: %s", stock.symbol, exc)
+                result = {
+                    "symbol": stock.symbol,
+                    "exchange": stock.exchange,
+                    "status": "neutral",
+                    "summary": f"Error: {exc}",
+                    "current_price": 0.0,
+                    "change_pct": 0.0,
+                    "change": 0.0,
+                    "strength": "Weak",
+                    "stock_id": stock.id,
+                }
+            completed[stock.symbol] = result
+            # SQLite writes and Telegram alerts stay on the main thread —
+            # the worker does network + analysis only.
             if stock.id:
                 save_analysis_result(stock.id, analysis_type, result)
                 check_and_trigger_alerts(stock, result, alerts_on)
-        except Exception as exc:
-            logger.error("Analysis error for %s: %s", stock.symbol, exc)
-            results[stock.symbol] = {
-                "symbol": stock.symbol,
-                "exchange": stock.exchange,
-                "status": "neutral",
-                "summary": f"Error: {exc}",
-                "current_price": 0.0,
-                "change_pct": 0.0,
-                "change": 0.0,
-                "strength": "Weak",
-                "stock_id": stock.id,
-            }
+
+    # Present results in watchlist order, not completion order, so the
+    # results page renders exactly as the sequential scan used to.
+    results = {s.symbol: completed[s.symbol] for s in stocks if s.symbol in completed}
 
     progress.empty()
     st.session_state.analysis_results = results

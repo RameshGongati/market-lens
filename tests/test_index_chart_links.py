@@ -233,6 +233,24 @@ def test_fetch_history_synthesizes_for_newborn_daily_series(monkeypatch):
     assert (df["Volume"] == 0).all()
 
 
+def test_failed_daily_fetch_does_not_trigger_synthesis(monkeypatch):
+    import pandas as pd
+    from data.sources import yahoo_finance as yfin
+
+    empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume",
+                                  "Adj Close"])
+    # No "60m" entry: a synthesis attempt would raise inside _FakeTicker.
+    # An empty daily response means the fetch failed or was rate-limited —
+    # firing an extra hourly request per failed symbol slowed whole scans.
+    monkeypatch.setattr(yfin.yf, "Ticker", lambda _s: _FakeTicker({"1d": empty}))
+    monkeypatch.setattr(yfin, "_repair_last_bar", lambda df, s: df)
+    monkeypatch.setattr(yfin, "fill_missing_sessions", lambda df, s: df)
+
+    df = yfin.YahooFinanceSource().fetch_history("RELIANCE.NS",
+                                                 period="1y", interval="1d")
+    assert df.empty
+
+
 def test_fetch_history_leaves_deep_daily_series_alone(monkeypatch):
     import pandas as pd
     from data.sources import yahoo_finance as yfin

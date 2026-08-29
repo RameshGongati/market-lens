@@ -17,6 +17,7 @@ the Run Analysis flow. Zone context is read from the last scan's result dicts
 from __future__ import annotations
 
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import pandas as pd
@@ -222,12 +223,64 @@ def _nifty_extended(manager) -> bool:
         return False
 
 
-def _zone_result_for(symbol: str) -> dict | None:
-    """Read-only: the last Run Analysis result dict for this symbol, if any."""
-    for res in st.session_state.get("analysis_results", []) or []:
-        if isinstance(res, dict) and res.get("symbol") == symbol:
-            return res
-    return None
+# Concurrent fetches per data source — same policy as the dashboard scan:
+# Yahoo serves a modest pool without throttling; NSE-direct sources rate-limit
+# and share a session, so they keep the original sequential behaviour.
+_SIGNAL_SCAN_WORKERS = {"Yahoo Finance": 8}
+
+
+def _scan_symbol_worker(
+    symbol: str,
+    company_name: str,
+    full_symbol: str,
+    fetch_fn,
+    zone_result: dict | None,
+    earnings_date,
+    market_ext: bool,
+    today: dt.date,
+) -> list[dict]:
+    """Fetch + detect + track ONE symbol; returns its signal rows.
+
+    Runs on a worker thread: no Streamlit calls, no session state — every
+    contextual input is resolved by the caller beforehand. The fetch asks for
+    1y of daily bars: detection only keeps signals from the last
+    SIGNAL_LOOKBACK_BARS sessions, so the Daily interval's 5-year chart window
+    was pure overhead here.
+    """
+    df = fetch_fn(full_symbol, "1y", "1d")
+    if df is None or len(df) < 30:
+        return []
+    df = drop_forming_bar(df)
+    keep_from = max(0, len(df) - SIGNAL_LOOKBACK_BARS)
+    rows: list[dict] = []
+    for sig in detect_gap_up_continuation(df):
+        if sig.i < keep_from:
+            continue
+        tracked = track_signal(df, sig)
+        if tracked is None:      # backtest risk guard would skip it
+            continue
+        rows.append(build_row(
+            symbol,
+            company_name,
+            tracked,
+            from_zone=zone_context_tag(zone_result, sig.close),
+            volume_ok=volume_expansion_tag(df, sig.i),
+            result_days=days_to_result(earnings_date, today),
+            market_extended=market_ext,
+        ))
+    return rows
+
+
+def _zone_results_by_symbol() -> dict[str, dict]:
+    """Read-only lookup of the last Run Analysis results, keyed by symbol.
+
+    ``analysis_results`` is stored as ``{symbol: result}``; a defensive branch
+    also accepts a list of result dicts (older snapshots).
+    """
+    stored = st.session_state.get("analysis_results") or {}
+    if isinstance(stored, dict):
+        return {sym: res for sym, res in stored.items() if isinstance(res, dict)}
+    return {str(res.get("symbol")): res for res in stored if isinstance(res, dict)}
 
 
 # ------------------------------------------------------------------ scan
@@ -247,40 +300,43 @@ def _run_scan(scope: str) -> None:
     except Exception:
         earnings = {}
     market_ext = _nifty_extended(manager)
+    zone_results = _zone_results_by_symbol()
 
     placeholder = st.empty()
-    rows: list[dict] = []
     errors = 0
     today = dt.datetime.now(_IST).date()
-    for k, stock in enumerate(stocks, 1):
-        placeholder.markdown(scan_progress(label, stock.symbol, k, len(stocks)),
-                             unsafe_allow_html=True)
-        if stock.symbol in EXCLUDED_SYMBOLS:
-            continue
-        try:
-            full_symbol = f"{stock.symbol}.NS" if source_name == "Yahoo Finance" else stock.symbol
-            df, _meta = fetch_by_interval(full_symbol, "Daily", fetch_fn=manager.get_history)
-            if df is None or len(df) < 30:
-                continue
-            df = drop_forming_bar(df)
-            keep_from = max(0, len(df) - SIGNAL_LOOKBACK_BARS)
-            for sig in detect_gap_up_continuation(df):
-                if sig.i < keep_from:
-                    continue
-                tracked = track_signal(df, sig)
-                if tracked is None:      # backtest risk guard would skip it
-                    continue
-                rows.append(build_row(
-                    stock.symbol,
-                    getattr(stock, "company_name", "") or stock.symbol,
-                    tracked,
-                    from_zone=zone_context_tag(_zone_result_for(stock.symbol), sig.close),
-                    volume_ok=volume_expansion_tag(df, sig.i),
-                    result_days=days_to_result(earnings.get(stock.symbol), today),
-                    market_extended=market_ext,
-                ))
-        except Exception:  # noqa: BLE001
-            errors += 1
+    scannable = [s for s in stocks if s.symbol not in EXCLUDED_SYMBOLS]
+    workers = _SIGNAL_SCAN_WORKERS.get(source_name, 1)
+    rows_by_symbol: dict[str, list[dict]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                _scan_symbol_worker,
+                stock.symbol,
+                getattr(stock, "company_name", "") or stock.symbol,
+                f"{stock.symbol}.NS" if source_name == "Yahoo Finance" else stock.symbol,
+                manager.get_history,
+                zone_results.get(stock.symbol),
+                earnings.get(stock.symbol),
+                market_ext,
+                today,
+            ): stock
+            for stock in scannable
+        }
+        for done, future in enumerate(as_completed(futures), 1):
+            stock = futures[future]
+            placeholder.markdown(
+                scan_progress(label, stock.symbol, done, len(scannable)),
+                unsafe_allow_html=True,
+            )
+            try:
+                rows_by_symbol[stock.symbol] = future.result()
+            except Exception:  # noqa: BLE001
+                errors += 1
+    # Rows in universe order, as the sequential scan produced them.
+    rows: list[dict] = []
+    for stock in scannable:
+        rows.extend(rows_by_symbol.get(stock.symbol, []))
     placeholder.empty()
 
     settings = {"scope": scope, "rule": "gap_up_continuation_daily_v1.1",

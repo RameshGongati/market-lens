@@ -277,6 +277,12 @@ class YahooFinanceSource(DataSource):
             )
             if df.empty:
                 logger.warning("No history returned for %s", symbol)
+            # Rows Yahoo actually served, before any filtering: the newborn-
+            # series synthesis below must distinguish "few bars exist" from
+            # "the fetch failed/rate-limited" — firing an extra hourly request
+            # per FAILED symbol slowed whole scans down exactly when Yahoo
+            # was already throttling.
+            raw_daily_rows = len(df)
             # Drop the "Adj Close" column added when auto_adjust=False
             df = df[["Open", "High", "Low", "Close", "Volume"]]
             # Index providers publish valid intraday OHLC bars with zero
@@ -310,7 +316,7 @@ class YahooFinanceSource(DataSource):
                 # resampled series beats one lone candle. Placed after the
                 # volume>0 filter above deliberately: indices trade no volume,
                 # so the synthesized frame must not pass through it.
-                if len(df) < _SYNTH_MIN_DAILY_ROWS:
+                if 0 < raw_daily_rows and len(df) < _SYNTH_MIN_DAILY_ROWS:
                     synthesized = synthesize_daily_from_hourly(symbol)
                     if synthesized is not None and len(synthesized) > len(df):
                         logger.info(
