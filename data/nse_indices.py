@@ -94,8 +94,21 @@ def _fetch_index_csv(name: str) -> list[str]:
 # Index underlyings that appear in F&O data but are not individual
 # stocks — these must be excluded from the F&O stock watchlist.
 _INDEX_UNDERLYINGS = {
-    "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50",
+    "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50", "NIFTYFPI",
 }
+
+
+def _is_index_label(symbol: str) -> bool:
+    """True for index-underlying labels the F&O feed mixes among stocks.
+
+    The OI-spurts payload carries no instrument-type field, so the label
+    itself is the only signal. NSE brands every index derivative
+    NIFTY-something (BANKNIFTY, NIFTYFPI, NIFTYNXT50...), and no NSE equity
+    ticker contains "NIFTY" (checked against the 2,374-stock master), so the
+    substring rule also catches future index launches — NIFTYFPI drifted
+    into the watchlist precisely because the fixed set above predates it.
+    """
+    return symbol in _INDEX_UNDERLYINGS or "NIFTY" in symbol.upper()
 
 
 def _fetch_fno_stocks(session: requests.Session) -> list[str]:
@@ -114,7 +127,7 @@ def _fetch_fno_stocks(session: requests.Session) -> list[str]:
         for item in data
         if "symbol" in item
         and " " not in item["symbol"]
-        and item["symbol"] not in _INDEX_UNDERLYINGS
+        and not _is_index_label(item["symbol"])
     ]
     return sorted(symbols)
 
