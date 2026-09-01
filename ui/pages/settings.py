@@ -353,6 +353,7 @@ def _render_dashboard_settings(prefs: dict) -> None:
         current_scan = bool(prefs.get("dashboard_show_scan_overview", True))
         current_watchlist = bool(prefs.get("dashboard_show_watchlist_movers", True))
         current_market = bool(prefs.get("dashboard_show_all_nse_movers", False))
+        current_cues = bool(prefs.get("dashboard_show_global_cues", True))
 
         with indices_col:
             show_indices = st.toggle(
@@ -372,6 +373,17 @@ def _render_dashboard_settings(prefs: dict) -> None:
                 help="Shows breadth, strongest long/short names and latest zone-state counts.",
             )
             st.caption("Uses the latest saved analysis results; it does not run a new scan.")
+
+        show_cues = st.toggle(
+            "Show global cues (pre-open)",
+            value=current_cues,
+            key="set_dashboard_global_cues",
+            help="US overnight close, Asian opening prints, commodities, DXY "
+                 "and yields, interpreted with the historical hit rates from "
+                 "the global-influence study. Cues describe the OPENING GAP "
+                 "only — they stop predicting after 09:15.",
+        )
+        st.caption("One small Yahoo batch, cached for 5 minutes.")
 
         st.markdown("---")
         watchlist_col, market_col = st.columns(2)
@@ -407,6 +419,8 @@ def _render_dashboard_settings(prefs: dict) -> None:
             changed["dashboard_show_watchlist_movers"] = show_watchlist
         if show_market != current_market:
             changed["dashboard_show_all_nse_movers"] = show_market
+        if show_cues != current_cues:
+            changed["dashboard_show_global_cues"] = show_cues
         if changed:
             save_preferences(changed)
             st.session_state["settings_flash"] = (

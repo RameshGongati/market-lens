@@ -69,6 +69,14 @@ def headline_index_cached() -> dict:
     return dict(fetch_index_snapshot(name, INDEX_TICKERS[name]))
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def global_cues_cached() -> dict:
+    """Pre-open global cue report, refreshed every 5 minutes."""
+    from data.global_cues import build_cue_report, fetch_global_cues
+
+    return build_cue_report(fetch_global_cues())
+
+
 def _sparkline(values: list[float], up: bool) -> str:
     """Inline SVG sparkline — small enough to sit inside a metric row.
 
@@ -269,6 +277,89 @@ def _index_chart_url(snap: dict) -> str | None:
     return build_detail_url(ticker, exchange, src="Yahoo Finance")
 
 
+_BIAS_STYLES = {
+    "bullish": ("#F0FAF5", "#B9E3CF", "#16794A", "GAP BIAS: BULLISH"),
+    "bearish": ("#FFF4F3", "#F0C8C4", "#C23B33", "GAP BIAS: BEARISH"),
+    "mixed": ("#FFF8EC", "#F0DCB4", "#B4791A", "GAP BIAS: MIXED"),
+    "unknown": ("#F4F5F7", "#DDE1E8", "#707780", "GAP BIAS: UNKNOWN"),
+}
+
+
+def _cue_chip(row: dict, key: str = "change") -> str:
+    """One inline cue chip; Asia rows prefer today's opening print."""
+    value = row.get("open_gap") if row.get("open_gap") is not None else row.get(key)
+    label = html.escape(row["label"])
+    if row.get("open_gap") is not None:
+        label += " (open)"
+    if value is None:
+        return (f"<span style='display:inline-flex;gap:5px;align-items:center;"
+                f"background:#FFFFFF;border:1px solid #E3E7EE;border-radius:7px;"
+                f"padding:3px 8px;font-size:0.7rem;color:#9AA0A8;'>{label} —</span>")
+    unit = row.get("unit", "%")
+    shown = f"{value:+.0f}{unit}" if unit == "bp" else f"{value:+.2f}%"
+    colour = "#16794A" if value >= 0 else "#C23B33"
+    return (f"<span style='display:inline-flex;gap:5px;align-items:center;"
+            f"background:#FFFFFF;border:1px solid #E3E7EE;border-radius:7px;"
+            f"padding:3px 8px;font-size:0.7rem;'>"
+            f"<span style='color:#566175;font-weight:700;'>{label}</span>"
+            f"<span style='color:{colour};font-weight:800;'>{shown}</span></span>")
+
+
+def _render_global_cues(report: dict) -> None:
+    """Pre-open global cues with the study's own hit rates as evidence labels.
+
+    Every number shown here is a HISTORICAL frequency from the 10y
+    global-influence study — the card never predicts, and its caption states
+    the study's central finding: cues price the open, not the day.
+    """
+    with st.container(border=True):
+        section_title("Global Cues (Pre-Open)")
+        if not report.get("ok"):
+            st.caption("Global cue data unavailable right now — the card will "
+                       "populate on the next refresh.")
+            return
+        bg, border, colour, label = _BIAS_STYLES.get(
+            report.get("bias", "unknown"), _BIAS_STYLES["unknown"])
+        st.markdown(
+            f"<div style='background:{bg};border:1px solid {border};"
+            f"border-left:4px solid {colour};border-radius:8px;"
+            f"padding:8px 12px;margin-bottom:8px;'>"
+            f"<span style='font-size:0.7rem;font-weight:800;color:{colour};"
+            f"letter-spacing:0.4px;'>{label}</span>"
+            f"<div style='font-size:0.78rem;color:#3D4657;margin-top:2px;'>"
+            f"{html.escape(report.get('evidence', ''))}</div></div>",
+            unsafe_allow_html=True,
+        )
+        groups = report.get("groups", {})
+        for grp, title in (("us", "US overnight"), ("asia", "Asia this morning"),
+                           ("cmdty", "Commodities · FX · rates")):
+            rows = groups.get(grp) or []
+            if not rows:
+                continue
+            chips = "".join(_cue_chip(r) for r in rows)
+            st.markdown(
+                f"<div style='margin:4px 0;'><span style='font-size:0.66rem;"
+                f"font-weight:800;color:#7A818D;text-transform:uppercase;"
+                f"margin-right:7px;'>{title}</span>"
+                f"<span style='display:inline-flex;flex-wrap:wrap;gap:5px;"
+                f"vertical-align:middle;'>{chips}</span></div>",
+                unsafe_allow_html=True,
+            )
+        for flag in report.get("risk_flags", []):
+            st.markdown(
+                f"<div style='background:#FFF4F3;border:1px solid #F0C8C4;"
+                f"border-radius:7px;padding:6px 10px;margin:5px 0;"
+                f"font-size:0.74rem;color:#8A2A24;'>&#9888;&#65039; "
+                f"{html.escape(flag)}</div>", unsafe_allow_html=True)
+        for flag in report.get("sector_flags", []):
+            st.markdown(
+                f"<div style='background:#F6F9FF;border:1px solid #D9E4F5;"
+                f"border-radius:7px;padding:6px 10px;margin:5px 0;"
+                f"font-size:0.74rem;color:#2C4A77;'>"
+                f"{html.escape(flag)}</div>", unsafe_allow_html=True)
+        st.caption(f"{report.get('caption', '')} · As of {report.get('as_of', '')}")
+
+
 def _render_indices_overview(indices: list[dict]) -> None:
     """Option-enabled NSE/BSE indices, arranged as compact stable tiles.
 
@@ -432,6 +523,7 @@ def render_market_overview() -> None:
     prefs = load_preferences()
     show_indices_overview = bool(prefs.get("dashboard_show_indices_overview", True))
     show_scan_overview = bool(prefs.get("dashboard_show_scan_overview", True))
+    show_global_cues = bool(prefs.get("dashboard_show_global_cues", True))
 
     # ---- Header -----------------------------------------------------------
     head_l, head_r = st.columns([3, 2])
@@ -528,6 +620,10 @@ def render_market_overview() -> None:
     # ---- Index overview + scan overview + heatmap -------------------------
     left, right = st.columns([3, 2])
     with left:
+        # The cues card fetches only when enabled — a hidden panel must cost
+        # nothing, same rule as the mover universes.
+        if show_global_cues:
+            _render_global_cues(global_cues_cached())
         if show_indices_overview:
             _render_indices_overview(indices)
         if show_scan_overview:

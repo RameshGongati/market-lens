@@ -67,6 +67,8 @@ _DEFAULTS: dict[str, Any] = {
     "dashboard_show_scan_overview": True,
     "dashboard_show_watchlist_movers": True,
     "dashboard_show_all_nse_movers": False,
+    # Pre-open global cues card (one small Yahoo batch, cached 5 minutes).
+    "dashboard_show_global_cues": True,
 }
 
 
