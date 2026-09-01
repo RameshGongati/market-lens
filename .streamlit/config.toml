@@ -35,3 +35,7 @@ textColor = "#26262B"
 # confuse someone reading a trading screen. "minimal" keeps the running-status
 # indicator, which is genuinely useful during a scan.
 toolbarMode = "minimal"
+
+[server]
+# Serves the small, locally-owned sidebar icon assets from /app/static/.
+enableStaticServing = true

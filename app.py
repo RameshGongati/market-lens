@@ -129,9 +129,10 @@ def main() -> None:
                 > [data-testid="stElementContainer"]:first-child
                   [style*="letter-spacing: 0.11px"]
             ) {
-                background-color: #E4E1D4;
-                border-color: #D0CDBC;
+                background: linear-gradient(180deg, #F8FBFF 0%, #F5F8FC 100%);
+                border-color: #DCE6F2;
                 border-radius: 14px;
+                box-shadow: 0 7px 22px rgba(31, 63, 104, 0.06);
             }
 
             /* Sidebar cards: a bordered container whose FIRST child holds a
@@ -157,6 +158,32 @@ def main() -> None:
             /* "Dashboard" wraps to two lines in a three-column sidebar row. */
             section[data-testid="stSidebar"] .stButton button {
                 white-space: nowrap;
+                min-height: 40px;
+                border-radius: 8px;
+                border-color: #E0E7F0;
+                background-color: #FFFFFF;
+                box-shadow: 0 2px 7px rgba(36, 67, 104, 0.05);
+            }
+            section[data-testid="stSidebar"] .stButton button:hover {
+                border-color: #9BBEFF;
+                background-color: #F6FAFF;
+            }
+            /* The illustrated sidebar rows are native Streamlit buttons with
+               custom faces. Streamlit wraps every button in its own element
+               container; if those wrappers keep their default spacing, the
+               nav rows look like separate blocks with huge gaps. Keep wrapper
+               spacing flat and let the button CSS own the rhythm. */
+            section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(
+                > [data-testid="stButton"]
+            ),
+            section[data-testid="stSidebar"] [data-testid="stButton"] {
+                margin-top: 0 !important;
+                margin-bottom: 0 !important;
+                padding-top: 0 !important;
+                padding-bottom: 0 !important;
+            }
+            section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+                gap: 0.45rem !important;
             }
 
             /* Streamlit's sidebar defaults run small and low-contrast — its
@@ -177,6 +204,13 @@ def main() -> None:
             button[data-testid="stBaseButton-primary"] p {
                 color: #FFFFFF;
             }
+            section[data-testid="stSidebar"]
+            button[data-testid="stBaseButton-primary"] {
+                background: linear-gradient(135deg, #176BFF 0%, #1859D9 100%);
+                border-color: #176BFF;
+                box-shadow: 0 5px 12px rgba(23, 91, 217, 0.22);
+            }
+
             section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
                 font-size: 0.84rem;
                 color: #55555E;
@@ -413,6 +447,25 @@ def main() -> None:
     )
 
     init_session_state()
+
+    # Main-navigation links use a same-tab ``?nav=`` route so their custom
+    # HTML can retain the exact layout and illustrated-icon treatment the
+    # sidebar needs. Process each value only once: retaining it in the URL
+    # must never override a later in-app navigation action.
+    _qp_nav = st.query_params.get("nav")
+    _nav_pages = {
+        "dashboard",
+        "watchlist_manager",
+        "pattern_scanner",
+        "signals",
+        "alerts",
+        "reports",
+        "trade_journal",
+        "settings",
+    }
+    if _qp_nav in _nav_pages and st.session_state.get("_nav_qp_last") != _qp_nav:
+        st.session_state.active_page = _qp_nav
+        st.session_state["_nav_qp_last"] = _qp_nav
 
     # Open-in-new-tab support: if URL has ?stock=SYMBOL, jump straight to
     # stock detail view so a new browser tab shows the chart directly.
