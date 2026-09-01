@@ -12,7 +12,7 @@ A separate **Chart Pattern Scanner** sits alongside the GTF engine — triangles
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`, 7 tables) for watchlists, analysis results, alerts, notes, the last-scan snapshot and the pattern-scan cache; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (571 tests across 28 files)
+- **Tests:** pytest (610 tests across 32 files)
 - **Dependency note:** `jugaad-data` is installed in the venv but MISSING from `requirements.txt` — a fresh `pip install -r requirements.txt` breaks the Jugaad source. Research-only deps (matplotlib, mplfinance, python-docx) live in `requirements-research.txt` and are NOT needed to run the app
 
 ## Repo Structure
@@ -84,6 +84,11 @@ data/
                                 #   (ema20=None), never a fake EMA. Market bias = NIFTY vs 20-EMA.
                                 #   NOTE: Yahoo's ^NSMIDCP IS "NIFTY NEXT 50" despite the name —
                                 #   do not "fix" that mapping to a midcap index
+  global_cues.py                # Pre-open global cues for the dashboard card: fetch (never
+                                #   raises) + PURE interpretation quoting the 10y global-influence
+                                #   study's hit rates (research_engine/output/global_influence).
+                                #   Asia's same-morning OPENS are shown, never their prior closes
+                                #   (measured as noise); flags fire only at validated thresholds
   market_heatmap.py             # Heatmap universe: 20 index/sector groups, batched Yahoo quotes,
                                 #   unweighted-basket fallback for patchy sector indices
   nse_indices.py                # Refreshes predefined_watchlists.json from live NSE (writes the
@@ -116,10 +121,12 @@ ui/
                                 #   sidebar UI to set it
   pages/dashboard.py            # Scan engine (run_scan, scan_context) + shared helpers.
                                 #   NOT a page — see Gotcha 22
-  pages/market_overview.py      # Dashboard landing page (option-index overview, scan overview,
-                                #   heatmap widget, movers, top opportunities, quick tools).
-                                #   Four panels are preference-gated (Settings > Dashboard
-                                #   Content); disabled mover panels build NO quote universe, and
+  pages/market_overview.py      # Dashboard landing page (global cues card, option-index
+                                #   overview, scan overview, heatmap widget, movers, top
+                                #   opportunities, quick tools).
+                                #   Five panels are preference-gated (Settings > Dashboard
+                                #   Content); disabled panels fetch NOTHING (movers build no
+                                #   quote universe, a hidden cues card makes no Yahoo batch), and
                                 #   Market Bias falls back to a NIFTY-only fetch when the index
                                 #   panel is off. All-NSE movers default OFF (full-universe quote)
   pages/market_heatmap.py       # Full heatmap page: group grid + per-group stock tiles,
@@ -129,7 +136,7 @@ ui/
                                 #   executes the scan and saves the latest_analysis_snapshot
   pages/alerts_page.py          # Zone-proximity matches + Telegram alert history
   pages/reports_page.py         # F&O results monitor (earnings calendar, timing filters)
-  pages/settings.py             # Status strip, dashboard-content panel (4 persisted
+  pages/settings.py             # Status strip, dashboard-content panel (5 persisted
                                 #   visibility toggles), chart/alert/appearance panels,
                                 #   Telegram setup, monitor control, data management
   pages/pattern_scanner.py      # Pattern scan setup (family, type, scope, filters)
@@ -175,7 +182,7 @@ utils/
   logger.py                     # File + console logging
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
 watchlist/models.py             # Watchlist & Stock dataclasses
-tests/                          # 28 test files, 571 tests
+tests/                          # 32 test files, 610 tests
 ```
 
 ## Running Locally

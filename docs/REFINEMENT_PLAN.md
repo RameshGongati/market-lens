@@ -423,6 +423,31 @@ pyflakes flags it because pyflakes does not honour `# noqa`.)
 
 ## Completed Features (Non-GTF)
 
+### Global Cues Pre-Open Card (DONE — `13bea23`, 2026-09-02)
+
+Graduated from the global-markets influence study (`bead996`; full report
+in `research_engine/output/global_influence/GLOBAL_INFLUENCE_REPORT.md`,
+10 years, 45 series, no-lookahead calendar). The study's verdict frames
+the card: global cues price the OPENING GAP (Asian same-morning opens
+corr 0.45–0.58, US close ~0.53, US VIX −0.44; ES overnight drift adds
+~0.40 beyond the US close) and stop predicting after 09:15 (all
+open-to-close correlations within −0.10..+0.05). Refuted along the way:
+rupee-weak→IT-next-day, Europe's open driving India's afternoon, and
+previous-day Asia closes as signals.
+
+The card (`data/global_cues.py` + dashboard panel) shows US overnight /
+Asia opens / commodities-FX-rates chips, a gap-bias strip quoting the
+matching rule's historical frequency and sample size, sector flags
+(crude→OMC/paints/airlines, copper→metals, gold→gold names, Nasdaq→IT)
+and risk banners (US VIX spike, DXY+yields combo) at validated
+thresholds only, and the honesty caption verbatim. Preference-gated
+(5th Dashboard Content toggle, default on); hidden card fetches nothing.
+
+A second study committed alongside (`deda146`): the 9/21-EMA-cross /
+EMA+pivot / EMA+pivot+VWAP daily logics — pivot variants refuted (select
+slightly worse-than-average next days), 9/21 cross long a weak
+non-graduating +1.7pp one-day effect (+0.05R, PF 1.08).
+
 ### Configurable Dashboard Panels + Option-Index Overview (DONE — `410d314`, 2026-08-28)
 
 Settings gained a **Dashboard Content** panel with four persisted toggles
