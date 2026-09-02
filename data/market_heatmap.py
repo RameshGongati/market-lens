@@ -231,6 +231,231 @@ def _stale_yahoo_daily_symbols(
     }
 
 
+def _fast_info_value(info: Any, key: str) -> Any:
+    """Read one field from yfinance's FastInfo (or a plain dict in tests).
+
+    FastInfo answers ``.get`` for camelCase keys but returns None — without
+    raising — for the snake_case names used here, while exposing the same
+    fields as snake_case ATTRIBUTES. So a None from ``.get`` must still fall
+    through to ``getattr``, not only an exception.
+    """
+    if isinstance(info, dict):
+        return info.get(key)
+    value = None
+    try:
+        value = info.get(key)
+    except Exception:
+        value = None
+    if value is None:
+        value = getattr(info, key, None)
+    return value
+
+
+def _mover_yahoo_daily_symbols(quotes: QuoteMap, *, limit_per_side: int = 8) -> set[str]:
+    """Find batch-calculated top movers worth validating against fast quotes."""
+    gainers: list[tuple[float, str]] = []
+    losers: list[tuple[float, str]] = []
+    for symbol, quote in quotes.items():
+        if not quote.get("ok"):
+            continue
+        try:
+            change_pct = float(quote.get("change_pct", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(change_pct) or change_pct == 0:
+            continue
+        if change_pct > 0:
+            gainers.append((change_pct, symbol))
+        else:
+            losers.append((change_pct, symbol))
+
+    gainers.sort(reverse=True)
+    losers.sort()
+    return {
+        symbol
+        for _change_pct, symbol in gainers[:limit_per_side] + losers[:limit_per_side]
+    }
+
+
+def _quote_from_price_prev(
+    symbol: str,
+    price: float,
+    prev_close: float,
+    *,
+    volume: int = 0,
+    source: str = "",
+) -> dict[str, Any] | None:
+    if not (
+        math.isfinite(price)
+        and price > 0
+        and math.isfinite(prev_close)
+        and prev_close > 0
+    ):
+        return None
+    change = price - prev_close
+    return {
+        "symbol": _clean_yahoo_symbol(symbol),
+        "price": price,
+        "change": change,
+        "change_pct": change / prev_close * 100.0,
+        "volume": volume,
+        "ok": True,
+        "source": source,
+        "error": "",
+    }
+
+
+def _fetch_yahoo_fast_quote(yf: Any, symbol: str, ticker: str) -> dict[str, Any] | None:
+    try:
+        info = yf.Ticker(ticker).fast_info
+        price = float(
+            _fast_info_value(info, "last_price")
+            or _fast_info_value(info, "regular_market_price")
+            or 0
+        )
+        prev_close = float(
+            _fast_info_value(info, "previous_close")
+            or _fast_info_value(info, "regular_market_previous_close")
+            or 0
+        )
+        volume = int(float(_fast_info_value(info, "last_volume") or _fast_info_value(info, "volume") or 0))
+        return _quote_from_price_prev(
+            symbol,
+            price,
+            prev_close,
+            volume=volume,
+            source="yahoo_fast",
+        )
+    except Exception as exc:
+        logger.debug("Yahoo fast heatmap quote unavailable for %s: %s", symbol, exc)
+        return None
+
+
+def _fetch_yahoo_intraday_quote(
+    yf: Any,
+    symbol: str,
+    ticker: str,
+    prev_close: float,
+    *,
+    volume: int = 0,
+) -> dict[str, Any] | None:
+    for interval in ("1m", "5m", "15m"):
+        try:
+            raw = yf.download(
+                ticker,
+                period="1d",
+                interval=interval,
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+            if raw.empty:
+                continue
+            if isinstance(raw.columns, pd.MultiIndex):
+                if ticker not in raw.columns.get_level_values(1):
+                    continue
+                frame = raw.xs(ticker, level=1, axis=1)
+            else:
+                frame = raw
+            closes = frame["Close"].dropna().astype(float)
+            if closes.empty:
+                continue
+            volumes = frame["Volume"].dropna().astype(float) if "Volume" in frame else pd.Series(dtype=float)
+            intraday_volume = int(volumes.sum()) if not volumes.empty else volume
+            return _quote_from_price_prev(
+                symbol,
+                float(closes.iloc[-1]),
+                prev_close,
+                volume=intraday_volume or volume,
+                source="yahoo_intraday",
+            )
+        except Exception as exc:
+            logger.debug("Yahoo %s intraday repair failed for %s: %s", interval, symbol, exc)
+    return None
+
+
+def _create_nse_quote_session():
+    """A warmed jugaad NSELive client for NSE equity quotes, or None.
+
+    A plain requests session gets a 403 from NSE's edge on /api/quote-equity
+    (verified); jugaad's NSELive carries the header/cookie dance NSE accepts
+    and is already this codebase's working NSE channel (options chain, index
+    quotes). Returning None (offline, blocked, library missing) simply means
+    the repair falls back to Yahoo's fast quote.
+    """
+    try:
+        from jugaad_data.nse import NSELive
+
+        return NSELive()
+    except Exception as exc:  # noqa: BLE001 — repair is best-effort
+        logger.debug("NSE quote session unavailable: %s", exc)
+        return None
+
+
+def _fetch_nse_equity_quote(symbol: str, session) -> dict[str, Any] | None:
+    """NSE's own live quote for one equity, normalized, or None."""
+    try:
+        data = session.stock_quote(symbol)
+        price_info = data.get("priceInfo") or {}
+        price = float(price_info.get("lastPrice") or 0)
+        prev_close = float(price_info.get("previousClose") or 0)
+        traded = (data.get("securityWiseDP") or {}).get("quantityTraded") or 0
+        return _quote_from_price_prev(
+            symbol,
+            price,
+            prev_close,
+            volume=int(float(traded)),
+            source="nse",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("NSE quote unavailable for %s: %s", symbol, exc)
+        return None
+
+
+def _repair_yahoo_quotes(
+    quotes: QuoteMap,
+    ticker_by_symbol: dict[str, str],
+    repair_reasons: dict[str, str],
+    yf: Any,
+) -> None:
+    """Re-check flagged quotes against live sources, updating in place.
+
+    NSE's own quote is preferred — it is the exchange the batch is trying to
+    describe, the same authority choice market_indices.py makes for index
+    levels. Yahoo's fast quote is the fallback. A symbol whose repair returns
+    nothing keeps its original quote: a possibly-stale number the log calls
+    out beats a fabricated one.
+    """
+    if not repair_reasons:
+        return
+    session = _create_nse_quote_session()
+    # NSE's per-equity quote endpoint is edge-blocked in some environments
+    # (verified: /api/quote-equity 403s even through jugaad's session while
+    # the index/chain endpoints work). Two consecutive failures mean the
+    # session is blocked, not that two symbols are odd — stop paying a
+    # round trip per symbol and let Yahoo's fast quote carry the repair.
+    nse_failures = 0
+    for plain, reason in repair_reasons.items():
+        quote = None
+        if session is not None and nse_failures < 2:
+            quote = _fetch_nse_equity_quote(plain, session)
+            nse_failures = 0 if quote is not None else nse_failures + 1
+        if quote is None:
+            ticker = ticker_by_symbol.get(plain) or _format_yahoo_symbol(plain)
+            quote = _fetch_yahoo_fast_quote(yf, plain, ticker)
+        if quote is None:
+            logger.warning("Quote repair (%s) found no live source for %s",
+                           reason, plain)
+            continue
+        old_pct = float(quotes.get(plain, {}).get("change_pct", 0.0) or 0.0)
+        quotes.setdefault(plain, _empty_quote(plain)).update(quote)
+        logger.info(
+            "Repaired quote (%s) for %s via %s (%+.2f%% -> %+.2f%%)",
+            reason, plain, quote.get("source", "?"),
+            old_pct, float(quote.get("change_pct", 0.0) or 0.0),
+        )
+
+
 def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
     """Fetch latest close-to-close changes from Yahoo in one batch."""
     unique = _dedupe(symbols)
@@ -260,6 +485,7 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
 
     out: QuoteMap = {}
     session_dates: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+    incomplete_daily: dict[str, tuple[float, int]] = {}
     ticker_by_symbol = dict(zip(unique, tickers))
     for plain, ticker in zip(unique, tickers):
         try:
@@ -270,7 +496,21 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
                 frame = raw[ticker]
             else:
                 frame = raw
-            closes = frame["Close"].dropna().astype(float)
+            close_series = frame["Close"].astype(float)
+            closes = close_series.dropna()
+            volumes = frame["Volume"].dropna().astype(float) if "Volume" in frame else pd.Series(dtype=float)
+            latest_volume = int(volumes.iloc[-1]) if not volumes.empty else 0
+
+            if not closes.empty:
+                latest_date = pd.Timestamp(close_series.index[-1]).normalize()
+                last_valid_date = pd.Timestamp(closes.index[-1]).normalize()
+                if latest_date > last_valid_date:
+                    prev_close = float(closes.iloc[-1])
+                    out[plain] = _empty_quote(plain, "Latest daily close unavailable")
+                    out[plain]["volume"] = latest_volume
+                    incomplete_daily[plain] = (prev_close, latest_volume)
+                    continue
+
             if len(closes) < 2:
                 out[plain] = _empty_quote(plain, "Insufficient data")
                 continue
@@ -281,42 +521,41 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
                 pd.Timestamp(closes.index[-2]).normalize(),
             )
             change = last - prev
-            volumes = frame["Volume"].dropna().astype(float) if "Volume" in frame else pd.Series(dtype=float)
-            volume = int(volumes.iloc[-1]) if not volumes.empty else 0
             out[plain] = {
                 "symbol": plain,
                 "price": last,
                 "change": change,
                 "change_pct": (change / prev * 100.0) if prev else 0.0,
-                "volume": volume,
+                "volume": latest_volume,
                 "ok": math.isfinite(last) and last > 0,
                 "error": "",
             }
         except Exception as exc:
             out[plain] = _empty_quote(plain, str(exc))
 
-    # Repair only per-symbol holes in Yahoo's batch daily history. This keeps
-    # the fast batch path for the normal case while matching the quote method
-    # used by the stock-detail page for the affected symbols.
-    for plain in _stale_yahoo_daily_symbols(session_dates):
-        try:
-            info = yf.Ticker(ticker_by_symbol[plain]).fast_info
-            price = float(getattr(info, "last_price", 0) or 0)
-            prev_close = float(getattr(info, "previous_close", 0) or 0)
-            if not (math.isfinite(price) and price > 0 and math.isfinite(prev_close) and prev_close > 0):
-                continue
-            change = price - prev_close
-            out[plain].update({
-                "price": price,
-                "change": change,
-                "change_pct": change / prev_close * 100.0,
-                "ok": True,
-            })
+    for plain, (prev_close, volume) in incomplete_daily.items():
+        quote = _fetch_yahoo_intraday_quote(
+            yf,
+            plain,
+            ticker_by_symbol[plain],
+            prev_close,
+            volume=volume,
+        )
+        if quote is not None:
+            out[plain].update(quote)
             logger.info(
-                "Repaired stale Yahoo daily change for %s using fast quote", plain
+                "Completed missing Yahoo daily close for %s from intraday quote (%+.2f%%)",
+                plain,
+                float(quote.get("change_pct", 0.0) or 0.0),
             )
-        except Exception as exc:
-            logger.warning("Yahoo quote repair failed for %s: %s", plain, exc)
+
+    # Repair per-symbol holes in Yahoo's batch daily history through the same
+    # NSE-first path the mover validation uses.
+    repair_reasons = {
+        plain: "stale daily row"
+        for plain in _stale_yahoo_daily_symbols(session_dates)
+    }
+    _repair_yahoo_quotes(out, ticker_by_symbol, repair_reasons, yf)
     return out
 
 
@@ -472,6 +711,18 @@ def stock_tiles_for_symbols(
         quotes = quote_fetcher(clean_symbols)
     else:
         quotes = fetch_source_quotes(clean_symbols, source_name, credentials)
+        if source_name == "Yahoo Finance":
+            try:
+                import yfinance as yf
+
+                ticker_by_symbol = {symbol: _format_yahoo_symbol(symbol) for symbol in clean_symbols}
+                repair_reasons = {
+                    symbol: "mover validation"
+                    for symbol in _mover_yahoo_daily_symbols(quotes, limit_per_side=10)
+                }
+                _repair_yahoo_quotes(quotes, ticker_by_symbol, repair_reasons, yf)
+            except Exception as exc:
+                logger.debug("Yahoo mover validation skipped: %s", exc)
     results = results or {}
     rows: list[dict[str, Any]] = []
     for symbol in clean_symbols:

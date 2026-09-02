@@ -12,6 +12,8 @@ from data import market_heatmap as mh
 from ui.components.panels import page_title, section_title, spacer
 from ui.components.stock_card import build_detail_url
 
+_STOCK_TILE_CACHE_VERSION = "nse-live-mover-validation-v1"
+
 
 def _credentials_for(source_name: str) -> dict[str, str]:
     creds = st.session_state.get("credentials", {}) or {}
@@ -23,12 +25,14 @@ def _cached_group_tiles() -> list[dict[str, Any]]:
     return mh.group_tiles({}, allow_basket_fallback=True)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=90, show_spinner=False)
 def _cached_symbol_stock_tiles(
     symbols: tuple[str, ...],
     source_name: str,
     credentials: tuple[tuple[str, str], ...],
+    cache_version: str,
 ) -> list[dict[str, Any]]:
+    _ = cache_version
     return mh.stock_tiles_for_symbols(
         symbols,
         source_name=source_name,
@@ -229,14 +233,20 @@ def render_dashboard_heatmap_card(results: dict[str, dict[str, Any]]) -> None:
         with title:
             section_title("Market Heatmap")
         with action:
-            if st.button(
-                "View Full Heatmap",
-                icon=":material/open_in_new:",
-                use_container_width=True,
-                key="mo_full_heatmap",
-            ):
-                st.session_state.active_page = "market_heatmap"
-                st.rerun()
+            st.markdown(
+                "<a href='{url}' target='_blank' rel='noopener noreferrer' "
+                "style='display:flex;align-items:center;justify-content:center;"
+                "gap:7px;width:100%;min-height:38px;padding:0 12px;"
+                "border:1px solid #D9DEE7;border-radius:8px;background:#FFFFFF;"
+                "color:#344054;text-decoration:none;font-size:0.82rem;"
+                "font-weight:750;box-sizing:border-box;'>"
+                "<span style=\"font-family:'Material Symbols Rounded';"
+                "font-size:1rem;line-height:1;\">open_in_new</span>"
+                "<span>View Full Heatmap</span></a>".format(
+                    url=html.escape(_full_heatmap_url(), quote=True)
+                ),
+                unsafe_allow_html=True,
+            )
 
         cells = "".join(_group_tile_html(row, compact=True) for row in tiles)
         st.markdown(
@@ -306,6 +316,10 @@ def _sector_strength_row(row: dict[str, Any], max_abs: float) -> str:
 
 def _heatmap_group_url(group_id: str) -> str:
     return "?" + urlencode({"heatmap_group": group_id, "heatmap_view": "Group Stocks"})
+
+
+def _full_heatmap_url() -> str:
+    return "?" + urlencode({"nav": "market_heatmap"})
 
 
 def _render_joined_grid(cells: str, *, columns: int) -> None:
@@ -497,7 +511,12 @@ def _render_group_detail(
         if chosen_key.startswith("group:"):
             st.session_state["heatmap_selected_group"] = chosen_key.partition(":")[2]
         rows = _overlay_stock_setups(
-            _cached_symbol_stock_tiles(symbols, source_name, credentials),
+            _cached_symbol_stock_tiles(
+                symbols,
+                source_name,
+                credentials,
+                _STOCK_TILE_CACHE_VERSION,
+            ),
             results,
         )
         gainers = sum(1 for row in rows if row.get("ok") and row.get("change_pct", 0.0) > 0)
@@ -542,7 +561,12 @@ def render_dashboard_movers_card(
     compact: bool = False,
 ) -> None:
     rows = _overlay_stock_setups(
-        _cached_symbol_stock_tiles(symbols, source_name, credentials),
+        _cached_symbol_stock_tiles(
+            symbols,
+            source_name,
+            credentials,
+            _STOCK_TILE_CACHE_VERSION,
+        ),
         results,
     )
     valid = [r for r in rows if r.get("ok")]

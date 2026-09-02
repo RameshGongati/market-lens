@@ -462,6 +462,7 @@ def main() -> None:
         "reports",
         "trade_journal",
         "settings",
+        "market_heatmap",
     }
     if _qp_nav in _nav_pages and st.session_state.get("_nav_qp_last") != _qp_nav:
         st.session_state.active_page = _qp_nav

@@ -66,6 +66,57 @@ def test_stale_yahoo_daily_symbol_allows_market_wide_holiday_gap() -> None:
     assert mh._stale_yahoo_daily_symbols(dates) == set()
 
 
+def test_mover_yahoo_daily_symbols_selects_top_gainers_and_losers() -> None:
+    quotes = {
+        "AAA": {"ok": True, "change_pct": 4.0},
+        "BBB": {"ok": True, "change_pct": 1.0},
+        "CCC": {"ok": True, "change_pct": -3.0},
+        "DDD": {"ok": True, "change_pct": -0.5},
+        "EEE": {"ok": True, "change_pct": 0.0},
+        "FFF": {"ok": False, "change_pct": 9.0},
+    }
+
+    assert mh._mover_yahoo_daily_symbols(quotes, limit_per_side=1) == {"AAA", "CCC"}
+
+
+def test_repair_yahoo_quotes_prefers_nse_live_quote(monkeypatch) -> None:
+    quotes = {
+        "PAYTM": {
+            "symbol": "PAYTM",
+            "price": 1000.0,
+            "change": 30.0,
+            "change_pct": 3.0,
+            "volume": 100,
+            "ok": True,
+            "error": "",
+        }
+    }
+
+    monkeypatch.setattr(mh, "_create_nse_quote_session", lambda: object())
+    monkeypatch.setattr(
+        mh,
+        "_fetch_nse_equity_quote",
+        lambda symbol, session: mh._quote_from_price_prev(
+            symbol,
+            940.0,
+            1000.0,
+            volume=200,
+            source="nse",
+        ),
+    )
+
+    mh._repair_yahoo_quotes(
+        quotes,
+        {"PAYTM": "PAYTM.NS"},
+        {"PAYTM": "mover validation"},
+        yf=object(),
+    )
+
+    assert quotes["PAYTM"]["price"] == 940.0
+    assert quotes["PAYTM"]["change_pct"] == -6.0
+    assert quotes["PAYTM"]["source"] == "nse"
+
+
 def test_group_tiles_use_basket_fallback_and_setup_counts(monkeypatch) -> None:
     monkeypatch.setattr(
         mh,
