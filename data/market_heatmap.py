@@ -331,47 +331,71 @@ def _fetch_yahoo_fast_quote(yf: Any, symbol: str, ticker: str) -> dict[str, Any]
         return None
 
 
-def _fetch_yahoo_intraday_quote(
+def _fetch_yahoo_intraday_quotes_batch(
     yf: Any,
-    symbol: str,
-    ticker: str,
-    prev_close: float,
-    *,
-    volume: int = 0,
-) -> dict[str, Any] | None:
-    for interval in ("1m", "5m", "15m"):
+    incomplete: dict[str, tuple[float, int]],
+    ticker_by_symbol: dict[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Complete many missing daily closes from ONE intraday download.
+
+    Yahoo leaves the current session's daily close NaN for the WHOLE market
+    on some evenings (Gotcha 16), so the incomplete set is routinely
+    every-symbol-on-the-page — a per-symbol repair loop paid dozens of
+    sequential round trips per cache refresh. One batched request covers
+    them all; 15m bars retry whatever the 5m batch missed. Symbols still
+    unresolved after both passes genuinely lack intraday data and stay
+    marked unavailable.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    remaining = dict(incomplete)
+    for interval in ("5m", "15m"):
+        if not remaining:
+            break
+        tickers = {ticker_by_symbol[plain]: plain for plain in remaining
+                   if plain in ticker_by_symbol}
+        if not tickers:
+            break
         try:
             raw = yf.download(
-                ticker,
+                tickers=" ".join(tickers),
                 period="1d",
                 interval=interval,
                 auto_adjust=False,
+                group_by="ticker",
+                threads=True,
                 progress=False,
-                threads=False,
             )
-            if raw.empty:
-                continue
-            if isinstance(raw.columns, pd.MultiIndex):
-                if ticker not in raw.columns.get_level_values(1):
+        except Exception as exc:  # noqa: BLE001 — repair is best-effort
+            logger.debug("Yahoo %s intraday batch failed: %s", interval, exc)
+            continue
+        if raw is None or raw.empty:
+            continue
+        for ticker, plain in tickers.items():
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    frame = raw[ticker]
+                else:
+                    frame = raw
+                closes = frame["Close"].dropna().astype(float)
+                if closes.empty:
                     continue
-                frame = raw.xs(ticker, level=1, axis=1)
-            else:
-                frame = raw
-            closes = frame["Close"].dropna().astype(float)
-            if closes.empty:
+                volumes = (frame["Volume"].dropna().astype(float)
+                           if "Volume" in frame else pd.Series(dtype=float))
+                prev_close, latest_volume = remaining[plain]
+                intraday_volume = int(volumes.sum()) if not volumes.empty else latest_volume
+                quote = _quote_from_price_prev(
+                    plain,
+                    float(closes.iloc[-1]),
+                    prev_close,
+                    volume=intraday_volume or latest_volume,
+                    source="yahoo_intraday",
+                )
+                if quote is not None:
+                    out[plain] = quote
+            except (KeyError, TypeError, ValueError):
                 continue
-            volumes = frame["Volume"].dropna().astype(float) if "Volume" in frame else pd.Series(dtype=float)
-            intraday_volume = int(volumes.sum()) if not volumes.empty else volume
-            return _quote_from_price_prev(
-                symbol,
-                float(closes.iloc[-1]),
-                prev_close,
-                volume=intraday_volume or volume,
-                source="yahoo_intraday",
-            )
-        except Exception as exc:
-            logger.debug("Yahoo %s intraday repair failed for %s: %s", interval, symbol, exc)
-    return None
+        remaining = {p: v for p, v in remaining.items() if p not in out}
+    return out
 
 
 def _create_nse_quote_session():
@@ -533,21 +557,19 @@ def fetch_yahoo_changes(symbols: Sequence[str]) -> QuoteMap:
         except Exception as exc:
             out[plain] = _empty_quote(plain, str(exc))
 
-    for plain, (prev_close, volume) in incomplete_daily.items():
-        quote = _fetch_yahoo_intraday_quote(
-            yf,
-            plain,
-            ticker_by_symbol[plain],
-            prev_close,
-            volume=volume,
-        )
-        if quote is not None:
+    if incomplete_daily:
+        repaired = _fetch_yahoo_intraday_quotes_batch(
+            yf, incomplete_daily, ticker_by_symbol)
+        for plain, quote in repaired.items():
             out[plain].update(quote)
-            logger.info(
-                "Completed missing Yahoo daily close for %s from intraday quote (%+.2f%%)",
-                plain,
-                float(quote.get("change_pct", 0.0) or 0.0),
+            logger.debug(
+                "Completed missing daily close for %s from intraday (%+.2f%%)",
+                plain, float(quote.get("change_pct", 0.0) or 0.0),
             )
+        logger.info(
+            "Completed %d of %d missing Yahoo daily closes from one intraday "
+            "batch", len(repaired), len(incomplete_daily),
+        )
 
     # Repair per-symbol holes in Yahoo's batch daily history through the same
     # NSE-first path the mover validation uses.

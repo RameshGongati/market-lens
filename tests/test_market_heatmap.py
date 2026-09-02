@@ -117,6 +117,39 @@ def test_repair_yahoo_quotes_prefers_nse_live_quote(monkeypatch) -> None:
     assert quotes["PAYTM"]["source"] == "nse"
 
 
+def test_intraday_batch_completes_missing_closes_in_one_call() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class _FakeYF:
+        @staticmethod
+        def download(tickers: str, period: str, interval: str, **_kw) -> pd.DataFrame:
+            calls.append((interval, tickers))
+            idx = pd.date_range("2026-09-01 09:15", periods=3, freq="5min")
+            if interval == "5m":
+                cols = pd.MultiIndex.from_product([["AAA.NS"], ["Close", "Volume"]])
+                return pd.DataFrame(
+                    [[100.0, 10], [101.0, 10], [102.0, 10]], index=idx, columns=cols)
+            # The 15m retry serves only what the 5m batch missed.
+            cols = pd.MultiIndex.from_product([["BBB.NS"], ["Close", "Volume"]])
+            return pd.DataFrame(
+                [[50.0, 5], [49.0, 5], [48.5, 5]], index=idx, columns=cols)
+
+    got = mh._fetch_yahoo_intraday_quotes_batch(
+        _FakeYF,
+        {"AAA": (100.0, 111), "BBB": (50.0, 222)},
+        {"AAA": "AAA.NS", "BBB": "BBB.NS"},
+    )
+
+    assert got["AAA"]["price"] == 102.0 and got["AAA"]["change_pct"] == 2.0
+    assert got["AAA"]["source"] == "yahoo_intraday"
+    assert got["AAA"]["volume"] == 30            # intraday volume summed
+    assert got["BBB"]["price"] == 48.5 and got["BBB"]["change_pct"] == -3.0
+    # One batched request per interval — and the retry asked ONLY for the
+    # symbol the first batch missed, never re-fetching resolved ones.
+    assert [interval for interval, _ in calls] == ["5m", "15m"]
+    assert calls[1][1] == "BBB.NS"
+
+
 def test_group_tiles_use_basket_fallback_and_setup_counts(monkeypatch) -> None:
     monkeypatch.setattr(
         mh,
