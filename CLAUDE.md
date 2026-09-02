@@ -12,7 +12,7 @@ A separate **Chart Pattern Scanner** sits alongside the GTF engine — triangles
 - **Storage:** SQLite (`~/.market-lens/market_lens.db`, 7 tables) for watchlists, analysis results, alerts, notes, the last-scan snapshot and the pattern-scan cache; JSON (`~/.market-lens/user_preferences.json`) for preferences
 - **Alerts:** Telegram Bot API, config in `config/alert_config.json` (gitignored — holds the bot token)
 - **Export:** openpyxl (Excel), reportlab (PDF)
-- **Tests:** pytest (610 tests across 32 files)
+- **Tests:** pytest (612 tests across 32 files)
 - **Dependency note:** `jugaad-data` is installed in the venv but MISSING from `requirements.txt` — a fresh `pip install -r requirements.txt` breaks the Jugaad source. Research-only deps (matplotlib, mplfinance, python-docx) live in `requirements-research.txt` and are NOT needed to run the app
 
 ## Repo Structure
@@ -182,7 +182,7 @@ utils/
   logger.py                     # File + console logging
 watchlist/manager.py            # Business-rule layer over DB (limits, uniqueness)
 watchlist/models.py             # Watchlist & Stock dataclasses
-tests/                          # 32 test files, 610 tests
+tests/                          # 32 test files, 612 tests
 ```
 
 ## Running Locally
@@ -262,7 +262,8 @@ Two facts a reader of the module list would get wrong:
 A market/sector heatmap dashboard: 20 index/sector groups (`data/market_heatmap.py:GROUPS`) drawn as a clickable tile grid on its own page, with a compact widget on the Market Overview. Not in the sidebar nav — reached from the dashboard's "View Full Heatmap" button, the Quick Tools grid, or a `?heatmap_group=` URL.
 
 - **Tiles are real URL navigations** (`<a target='_self'>` to `?heatmap_group=<id>&heatmap_view=Group Stocks`), which can start a FRESH Streamlit session. Three restore mechanisms make that survivable: `init_session_state()` seeds 11 keys from saved preferences; an empty `analysis_results` is restored from the single-row `latest_analysis_snapshot` SQLite table (written by the results page after each scan); and the heatmap query-param handler uses an idempotency tuple `_hm_qp_last = (group, view)` — not a one-shot flag — so tile-to-tile navigation re-fires but a plain rerun does not clobber in-page selections.
-- **Quotes and scan overlays are cached separately.** Group tiles use `@st.cache_data(ttl=900)`, stock tiles `ttl=300`; the scan-setup counts are layered on AFTER the cache (`_overlay_setup_counts`), so a fresh scan updates setups without invalidating quotes.
+- **Quotes and scan overlays are cached separately.** Group tiles use `@st.cache_data(ttl=900)`, stock tiles `ttl=90` (plus a cache-version salt so a deploy busts already-cached quotes); the scan-setup counts are layered on AFTER the cache (`_overlay_setup_counts`), so a fresh scan updates setups without invalidating quotes.
+- **Quotes are repaired, not trusted.** Yahoo's current-session daily row can carry `Close=NaN` for the whole market in the evening (Gotcha 16); such quotes are completed from Yahoo intraday against the last valid close, or marked unavailable — never computed from two old sessions (that is how a stock that fell showed as a top gainer). Displayed top movers are additionally revalidated through `_repair_yahoo_quotes`, which prefers NSE's live quote and falls back to Yahoo's fast quote behind a two-failure circuit breaker (NSE's per-equity endpoints are edge-blocked in some environments while its index/chain endpoints work). On a whole-market NaN-close evening every symbol pays an intraday fetch — a known cost; batching is the fix if it ever hurts.
 - **Sector tiles can be a basket average, not the index.** When Yahoo's index ticker is missing/not-ok, the tile falls back to an unweighted mean of up to 60 constituents' `change_pct` (`source="basket"` is the only signal). NIFTY200/NIFTY500 tiles are backed by the F&O watchlist by design (`note="F&O coverage"`). Note the division of labour with `market_indices.py`: sector indices live ONLY in `market_heatmap.py` (which papers over Yahoo gaps with the basket), while `market_indices.py` covers only option-enabled index underlyings and papers over Yahoo gaps with a live NSE quote instead — same problem, two different fallbacks.
 
 ## Dropped Rules
